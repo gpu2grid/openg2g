@@ -1,0 +1,8 @@
+.envrc
+
+site
+dist
+build
+
+*.egg-info
+**/__pycache__

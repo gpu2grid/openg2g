@@ -1,0 +1,417 @@
+"""OpenDSS-based grid simulator.
+
+Requires ``pip install opendssdirect.py`` (optional dependency).
+"""
+
+from __future__ import annotations
+
+import math
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+import numpy as np
+
+from openg2g.clock import SimulationClock
+from openg2g.types import BusVoltages, ControlAction, GridState, ThreePhase
+
+if TYPE_CHECKING:
+    import opendssdirect as dss
+else:
+    try:
+        import opendssdirect as dss
+    except ImportError:
+        dss = None
+
+_PHASES = (1, 2, 3)
+_PHASE_NAME = {1: "A", 2: "B", 3: "C"}
+
+
+def _require_dss() -> None:
+    if dss is None:  # type: ignore[comparison-overlap]  # runtime guard
+        raise ImportError(
+            "opendssdirect is required for OpenDSSGrid. "
+            "Install it with: pip install opendssdirect.py"
+        )
+
+
+class OpenDSSGrid:
+    """OpenDSS-based grid simulator for distribution-level voltage analysis.
+
+    Args:
+        case_dir: Absolute path to the directory containing OpenDSS case files.
+        master: Name of the master DSS file (relative to *case_dir*).
+        dc_bus: Bus name where the datacenter is connected.
+        dc_kv_ll: Line-to-line voltage (kV) at the DC bus.
+        pf_dc: Power factor of the datacenter loads.
+        dt_s: Grid simulation timestep (seconds).
+        dc_conn: Connection type for DC loads (default ``"wye"``).
+        controls_off: If True, disable OpenDSS voltage regulators / controls.
+        tap_schedule: List of ``(time_s, {regcontrol_name: tap_pu})`` tuples
+            for scheduled tap changes, sorted by time.
+        freeze_regcontrols: If True, disable regcontrols after setting taps.
+        exclude_buses: Buses to exclude from voltage indexing (e.g., source bus).
+        sub_step_mode: How to handle multiple DC sub-samples per grid step:
+            ``"all"`` runs one DSS solve per sub-sample (default, exact);
+            ``"last"`` only solves for the final sub-sample (faster);
+            ``"resample"`` resamples DC power onto ``n_dss + 1`` evenly-spaced
+            grid points via ``np.interp`` and runs that many DSS solves
+            (matches the original OFO script's ``resample_to_uniform_grid``).
+    """
+
+    def __init__(
+        self,
+        *,
+        case_dir: str | Path,
+        master: str,
+        dc_bus: str,
+        dc_kv_ll: float,
+        pf_dc: float,
+        dt_s: float = 1.0,
+        dc_conn: str = "wye",
+        controls_off: bool = True,
+        tap_schedule: list[tuple[float, dict[str, float]]] | None = None,
+        freeze_regcontrols: bool = True,
+        exclude_buses: tuple[str, ...] = ("rg60",),
+        sub_step_mode: str = "all",
+    ):
+        _require_dss()
+
+        self._case_dir = str(Path(case_dir).resolve())
+        self._master = str(master)
+        self._dc_bus = str(dc_bus)
+        self._dc_kv_ll = float(dc_kv_ll)
+        self._pf_dc = float(pf_dc)
+        self._dt_s = float(dt_s)
+        self._dc_conn = str(dc_conn)
+        self._controls_off = bool(controls_off)
+        self._freeze_regcontrols = bool(freeze_regcontrols)
+
+        self._tap_schedule = sorted(list(tap_schedule or []), key=lambda x: float(x[0]))
+        self._tap_idx = 0
+        self._reg_map: dict[str, tuple[str, int]] | None = None
+
+        # Populated during _init_dss
+        self.all_buses: list[str] = []
+        self.buses_with_phase: dict[int, list[str]] = {}
+        self.v_index: list[tuple[str, int]] = []
+
+        if sub_step_mode not in ("all", "last", "resample"):
+            raise ValueError(
+                f"sub_step_mode must be 'all', 'last', or 'resample', got {sub_step_mode!r}"
+            )
+        self._sub_step_mode = str(sub_step_mode)
+
+        self._exclude_buses = tuple(str(b) for b in exclude_buses)
+        self._init_dss()
+        self.v_index = self._build_v_index()
+        self._build_vmag_indices()
+
+    @property
+    def dt_s(self) -> float:
+        return self._dt_s
+
+    @property
+    def sub_step_mode(self) -> str:
+        return self._sub_step_mode
+
+    def step(
+        self,
+        clock: SimulationClock,
+        load_trace_w: list[ThreePhase],
+    ) -> GridState:
+        """Advance one grid period, running one DSS solve per sub-step.
+
+        Args:
+            clock: Current simulation clock.
+            load_trace_w: List of ``ThreePhase`` power samples (Watts)
+                accumulated since the last grid step. One DSS solve is run
+                per sample.
+
+        Returns:
+            GridState with voltages from the final solve.
+        """
+        pf = max(min(self._pf_dc, 0.999999), 1e-6)
+        tanphi = math.tan(math.acos(pf))
+
+        if self._sub_step_mode == "resample":
+            samples = self._resample_dc_to_dss(load_trace_w)
+        elif self._sub_step_mode == "all":
+            samples = load_trace_w
+        else:
+            samples = load_trace_w[-1:]
+
+        first_solve_voltages = None
+        for power in samples:
+            kW_A = power.a / 1e3
+            kW_B = power.b / 1e3
+            kW_C = power.c / 1e3
+
+            dss.Loads.Name("DataCenterA")
+            dss.Loads.kW(kW_A)
+            dss.Loads.kvar(kW_A * tanphi)
+            dss.Loads.Name("DataCenterB")
+            dss.Loads.kW(kW_B)
+            dss.Loads.kvar(kW_B * tanphi)
+            dss.Loads.Name("DataCenterC")
+            dss.Loads.kW(kW_C)
+            dss.Loads.kvar(kW_C * tanphi)
+
+            self._solve()
+
+            # In resample mode, capture voltages after the first DSS solve
+            # for logging.  The original script uses "drop_last" to record
+            # the start-of-interval voltage while the controller reads the
+            # end-of-interval voltage directly from the grid's DSS state.
+            if self._sub_step_mode == "resample" and first_solve_voltages is None:
+                first_solve_voltages = self._snapshot_bus_voltages()
+
+        if first_solve_voltages is not None:
+            voltages = first_solve_voltages
+        else:
+            voltages = self._snapshot_bus_voltages()
+        return GridState(time_s=clock.time_s, voltages=voltages)
+
+    def apply_control(self, action: ControlAction) -> None:
+        """Apply tap changes from a control action."""
+        if action.tap_changes:
+            self._set_reg_taps(action.tap_changes)
+
+    def apply_taps_if_needed(self, t_s: float) -> int:
+        """Apply scheduled tap changes up to time *t_s*."""
+        if not self._tap_schedule:
+            return self._tap_idx
+
+        t_now = float(t_s)
+        while self._tap_idx < len(self._tap_schedule):
+            t_ev, taps = self._tap_schedule[self._tap_idx]
+            if float(t_ev) <= t_now + 1e-12:
+                self._set_reg_taps(taps)
+                self._tap_idx += 1
+                self._solve()
+            else:
+                break
+        return self._tap_idx
+
+    def voltages_vector(self) -> np.ndarray:
+        """Return voltage magnitudes (pu) in the fixed v_index ordering."""
+        vmag = np.asarray(dss.Circuit.AllBusMagPu())
+        return vmag[self._v_index_to_vmag]
+
+    def estimate_H(
+        self,
+        dp_kw: float = 100.0,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Estimate voltage sensitivity matrix H = dv/dp (pu per kW).
+
+        Uses finite differences on the 3 single-phase DC loads.
+
+        Returns:
+            H: Sensitivity matrix, shape (M, 3), where M = len(v_index).
+            v0: Baseline voltage vector, shape (M,).
+        """
+        dp_kw = float(dp_kw)
+        if dp_kw <= 0:
+            raise ValueError("dp_kw must be positive.")
+
+        pf = max(min(self._pf_dc, 0.999999), 1e-6)
+        tanphi = math.tan(math.acos(pf))
+        dq_kvar = dp_kw * tanphi
+
+        # Baseline solve
+        self._solve()
+        v0 = self.voltages_vector()
+
+        # Baseline P, Q for each DC load
+        load_names = ("DataCenterA", "DataCenterB", "DataCenterC")
+        p0 = np.zeros(3, dtype=float)
+        q0 = np.zeros(3, dtype=float)
+        for j, ld in enumerate(load_names):
+            dss.Loads.Name(ld)
+            p0[j] = float(dss.Loads.kW())  # type: ignore[arg-type]
+            q0[j] = float(dss.Loads.kvar())  # type: ignore[arg-type]
+
+        M = len(self.v_index)
+        H = np.zeros((M, 3), dtype=float)
+
+        for j, ld in enumerate(load_names):
+            new_p = p0[j] + dp_kw
+            new_q = q0[j] + dq_kvar
+
+            dss.Text.Command(f"Edit Load.{ld} kW={new_p:.6f} kvar={new_q:.6f}")
+            self._solve()
+
+            v_plus = self.voltages_vector()
+            H[:, j] = (v_plus - v0) / dp_kw
+
+            # Restore
+            dss.Text.Command(f"Edit Load.{ld} kW={p0[j]:.6f} kvar={q0[j]:.6f}")
+            self._solve()
+
+        return H, v0
+
+    def _resample_dc_to_dss(self, load_trace_w: list[ThreePhase]) -> list[ThreePhase]:
+        """Resample DC sub-step power onto DSS grid points via np.interp.
+
+        Matches the original ``resample_to_uniform_grid`` convention:
+        ``n_dss + 1`` evenly-spaced DSS points over the grid period, where
+        ``n_dss = floor(dt_s / dt_s) = 1``.
+
+        Args:
+            load_trace_w: DC power samples (Watts) covering the grid period,
+                including the endpoint.
+
+        Returns:
+            Resampled ThreePhase samples at DSS grid points.
+        """
+        n_samples = len(load_trace_w)
+        if n_samples < 2:
+            return list(load_trace_w)
+
+        t_dc = np.linspace(0.0, self._dt_s, n_samples)
+        t_dss = np.array([0.0, self._dt_s])
+
+        P_A = np.array([p.a for p in load_trace_w])
+        P_B = np.array([p.b for p in load_trace_w])
+        P_C = np.array([p.c for p in load_trace_w])
+
+        rA = np.interp(t_dss, t_dc, P_A)
+        rB = np.interp(t_dss, t_dc, P_B)
+        rC = np.interp(t_dss, t_dc, P_C)
+
+        return [
+            ThreePhase(a=float(rA[i]), b=float(rB[i]), c=float(rC[i])) for i in range(len(t_dss))
+        ]
+
+    def _init_dss(self) -> None:
+        dss.Basic.ClearAll()
+        dss.Text.Command(f'cd "{self._case_dir}"')
+        dss.Text.Command(f'Redirect "{self._master}"')
+
+        self._reg_map = self._cache_regcontrol_map()
+
+        # Add 3 single-phase DC loads
+        kv_ln = self._dc_kv_ll / math.sqrt(3.0)
+        for ph, nm in zip(_PHASES, ("DataCenterA", "DataCenterB", "DataCenterC"), strict=True):
+            dss.Text.Command(
+                f"New Load.{nm} bus1={self._dc_bus}.{ph} phases=1 "
+                f"conn={self._dc_conn} kV={kv_ln:.6f} kW=0 kvar=0 model=1"
+            )
+
+        dss.Text.Command("Reset")
+        dss.Text.Command("Set Mode=Time")
+        dss.Text.Command(f"Set Stepsize={self._dt_s}s")
+        dss.Text.Command("Set ControlMode=Time")
+        if self._controls_off:
+            dss.Text.Command("Set ControlMode=Off")
+
+        if self._tap_schedule:
+            self._tap_idx = 0
+            self.apply_taps_if_needed(0.0)
+
+        self._solve()
+        self._cache_buses_with_phases()
+        self._cache_node_map()
+
+    def _solve(self) -> None:
+        if self._controls_off:
+            dss.Solution.SolveNoControl()
+        else:
+            dss.Solution.Solve()
+
+    def _cache_buses_with_phases(self) -> None:
+        self.all_buses = list(dss.Circuit.AllBusNames())  # type: ignore[arg-type]
+        self.buses_with_phase = {ph: [] for ph in _PHASES}
+        for b in self.all_buses:
+            dss.Circuit.SetActiveBus(b)
+            nodes = dss.Bus.Nodes()
+            for ph in _PHASES:
+                if ph in nodes:
+                    self.buses_with_phase[ph].append(str(b))
+
+    def _cache_node_map(self) -> None:
+        """Cache the mapping from AllBusMagPu indices to (bus, phase) pairs."""
+        node_names = list(dss.Circuit.AllNodeNames())  # type: ignore[arg-type]
+        self._node_map: list[tuple[str, int]] = []
+        for name in node_names:
+            parts = name.split(".")
+            bus = parts[0]
+            phase = int(parts[1]) if len(parts) > 1 else 0
+            self._node_map.append((bus, phase))
+
+    def _build_vmag_indices(self) -> None:
+        """Pre-compute index arrays for fast voltage vector extraction."""
+        node_idx = {(bus, ph): i for i, (bus, ph) in enumerate(self._node_map)}
+        self._v_index_to_vmag = np.array(
+            [node_idx[(bus, ph)] for bus, ph in self.v_index],
+            dtype=int,
+        )
+
+    def _get_phase_pu(self, bus: str, phase: int) -> float:
+        dss.Circuit.SetActiveBus(bus)
+        mags_angles = dss.Bus.puVmagAngle()
+        nodes = dss.Bus.Nodes()
+        if phase not in nodes:
+            return float("nan")
+        idx = nodes.index(phase)
+        return float(mags_angles[2 * idx])
+
+    def _snapshot_bus_voltages(self) -> BusVoltages:
+        """Snapshot all per-bus, per-phase voltage magnitudes into BusVoltages.
+
+        Uses ``dss.Circuit.AllBusMagPu()`` for a single bulk read instead
+        of per-bus ``SetActiveBus`` calls, reducing DSS API overhead from
+        ~9N calls to 1 (where N = number of buses).
+        """
+        vmag = dss.Circuit.AllBusMagPu()
+        vals: dict[str, list[float]] = {
+            bus: [float("nan"), float("nan"), float("nan")] for bus in self.all_buses
+        }
+        for i, (bus, phase) in enumerate(self._node_map):
+            if 1 <= phase <= 3:
+                vals[bus][phase - 1] = float(vmag[i])
+        data = {bus: ThreePhase(a=v[0], b=v[1], c=v[2]) for bus, v in vals.items()}
+        return BusVoltages(_data=data)
+
+    def _build_v_index(self) -> list[tuple[str, int]]:
+        excl = {b.lower() for b in self._exclude_buses}
+        v_index: list[tuple[str, int]] = []
+        for ph in _PHASES:
+            for b in self.buses_with_phase.get(ph, []):
+                if str(b).lower() in excl:
+                    continue
+                v_index.append((str(b), int(ph)))
+        return v_index
+
+    @staticmethod
+    def _cache_regcontrol_map() -> dict[str, tuple[str, int]]:
+        reg_map: dict[str, tuple[str, int]] = {}
+        i = dss.RegControls.First()
+        if i == 0:
+            return reg_map
+        while i > 0:
+            rc = dss.RegControls.Name().lower()  # type: ignore[union-attr]
+            xf = dss.RegControls.Transformer()
+            w = int(dss.RegControls.Winding())  # type: ignore[arg-type]
+            reg_map[rc] = (xf, w)  # type: ignore[arg-type]
+            i = dss.RegControls.Next()
+        return reg_map
+
+    def _set_reg_taps(self, tap_map: dict[str, float]) -> tuple[int, int]:
+        if self._reg_map is None:
+            self._reg_map = self._cache_regcontrol_map()
+
+        tap_map_lc = {str(k).lower(): float(v) for k, v in tap_map.items()}
+        applied, skipped = 0, 0
+
+        for rc_key, (xfmr, wdg) in self._reg_map.items():
+            if rc_key in tap_map_lc:
+                tap_pu = tap_map_lc[rc_key]
+            else:
+                skipped += 1
+                continue
+
+            dss.Text.Command(f"Edit Transformer.{xfmr} Wdg={wdg} Tap={tap_pu:.6f}")
+            if self._freeze_regcontrols:
+                dss.Text.Command(f"Edit RegControl.{rc_key} Enabled=false")
+            applied += 1
+        return applied, skipped
