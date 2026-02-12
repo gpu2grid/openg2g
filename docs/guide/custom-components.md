@@ -11,7 +11,8 @@ from __future__ import annotations
 
 from openg2g.clock import SimulationClock
 from openg2g.controller.base import Controller
-from openg2g.types import ControlAction, DatacenterControlAction, DatacenterState, GridState
+from openg2g.context import SimulationContext
+from openg2g.types import Command, ControlAction, DatacenterState, GridState
 
 
 class MyController(Controller):
@@ -30,30 +31,47 @@ class MyController(Controller):
         clock: SimulationClock,
         dc_state: DatacenterState | None,
         grid_state: GridState | None,
+        context: SimulationContext,
     ) -> ControlAction:
         if grid_state is None:
-            return ControlAction()
+            return ControlAction(commands=[])
 
         # Check if any bus voltage is below threshold
         for bus in grid_state.voltages.buses():
             tp = grid_state.voltages[bus]
             for v in (tp.a, tp.b, tp.c):
                 if v < self._v_threshold:
-                    return DatacenterControlAction(
-                        batch_size_by_model={"MyModel": 64}
+                    return ControlAction(
+                        commands=[
+                            Command(
+                                target="datacenter",
+                                kind="set_batch_size",
+                                payload={"batch_size_by_model": {"MyModel": 64}},
+                            )
+                        ]
                     )
 
-        return DatacenterControlAction(batch_size_by_model={"MyModel": 128})
+        return ControlAction(
+            commands=[
+                Command(
+                    target="datacenter",
+                    kind="set_batch_size",
+                    payload={"batch_size_by_model": {"MyModel": 128}},
+                )
+            ]
+        )
 ```
 
 ### Controller Guidelines
 
-- `step()` must return a `ControlAction` (or subclass) on every call.
-- Return `ControlAction()` (base) for a no-op, `DatacenterControlAction(...)` for batch changes, or `GridControlAction(...)` for tap changes.
-- The coordinator uses `isinstance` to route each action to the correct component.
+- `step()` must return a `ControlAction` on every call.
+- Use `ControlAction(commands=[])` for a no-op.
+- Emit `Command(target="datacenter", kind="set_batch_size", ...)` for batch updates.
+- Emit `Command(target="grid", kind="set_taps", ...)` for tap updates.
 - `dc_state` and `grid_state` may be `None` if those components haven't produced state yet.
 - Keep `step()` fast -- it runs synchronously in the simulation loop.
 - Use `clock.time_s` for time-dependent logic.
+- Declare required features by overriding `required_features()` if needed (for example OFO needs `{"voltage", "sensitivity"}`).
 
 ## Custom Datacenter Backend
 
@@ -66,7 +84,7 @@ import numpy as np
 
 from openg2g.clock import SimulationClock
 from openg2g.datacenter.base import DatacenterBackend
-from openg2g.types import DatacenterControlAction, DatacenterState, ThreePhase
+from openg2g.types import Command, DatacenterState, ThreePhase
 
 
 class SyntheticDatacenter(DatacenterBackend):
@@ -90,15 +108,19 @@ class SyntheticDatacenter(DatacenterBackend):
             power_w=ThreePhase(a=power_w, b=power_w, c=power_w),
         )
 
-    def apply_control(self, action: DatacenterControlAction) -> None:
-        self._batch.update(action.batch_size_by_model)
+    def apply_control(self, command: Command) -> None:
+        if command.kind != "set_batch_size":
+            return
+        batch_map = command.payload.get("batch_size_by_model", {})
+        if isinstance(batch_map, dict):
+            self._batch.update({str(k): int(v) for k, v in batch_map.items()})
 ```
 
 ### Datacenter Guidelines
 
 - `step()` is called at the rate specified by `dt_s`.
 - Return a `DatacenterState` (or subclass) with three-phase power in watts.
-- `apply_control()` receives a `DatacenterControlAction` with batch size changes.
+- `apply_control()` receives one command at a time.
 - For offline backends, consider using `OfflineDatacenterState` which includes per-model power and replica counts.
 
 ## Registering with the Coordinator

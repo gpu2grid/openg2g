@@ -11,7 +11,7 @@ for each tick:
     1. if datacenter is due:  dc_state = datacenter.step(clock)
     2. if grid is due:        grid_state = grid.step(clock, dc_buffer)
     3. for each controller:
-       if controller is due:  action = controller.step(clock, dc_state, grid_state)
+       if controller is due:  action = controller.step(clock, dc_state, grid_state, context)
                               apply action to datacenter and/or grid
 ```
 
@@ -28,7 +28,7 @@ class DatacenterBackend(ABC):
     @property
     def dt_s(self) -> float: ...
     def step(self, clock: SimulationClock) -> DatacenterState: ...
-    def apply_control(self, action: ControlAction) -> None: ...
+    def apply_control(self, command: Command) -> None: ...
 ```
 
 The `step()` method returns a `DatacenterState` containing three-phase power. The coordinator accumulates these into a buffer that is flushed to the grid at each grid step.
@@ -47,16 +47,10 @@ class OpenDSSGrid:
     @property
     def dt_s(self) -> float: ...
     def step(self, clock: SimulationClock, load_trace_w: list[ThreePhase]) -> GridState: ...
-    def apply_control(self, action: ControlAction) -> None: ...
+    def apply_control(self, command: Command) -> None: ...
 ```
 
-The grid receives a list of power samples accumulated since the last grid step. It supports three sub-step modes:
-
-| Mode | Behavior | Use case |
-|---|---|---|
-| `"all"` | One DSS solve per sample | Baseline (exact) |
-| `"resample"` | Interpolate to 2 DSS points | OFO (matches original) |
-| `"last"` | Solve only the last sample | Fast approximation |
+The grid receives a list of power samples accumulated since the last grid step.
 
 The grid returns a `GridState` containing per-bus, per-phase voltages.
 
@@ -68,15 +62,27 @@ Defined in `openg2g.controller.base`:
 class Controller(ABC):
     @property
     def dt_s(self) -> float: ...
-    def step(self, clock, dc_state, grid_state) -> ControlAction: ...
+    def step(self, clock, dc_state, grid_state, context) -> ControlAction: ...
 ```
 
-Controllers receive the latest datacenter and grid state and return a `ControlAction`. Actions can contain:
+Controllers receive the latest datacenter and grid state plus a context of feature interfaces. They return a `ControlAction` containing command envelopes.
 
-- `batch_size_by_model`: new batch sizes to apply to the datacenter
-- `tap_changes`: regulator tap position changes to apply to the grid
+Current built-in command kinds:
+- `target="datacenter", kind="set_batch_size"` with `payload["batch_size_by_model"]`
+- `target="grid", kind="set_taps"` with `payload["tap_changes"]`
 
 Multiple controllers compose in order within the coordinator.
+
+## Feature Interfaces (EE-facing)
+
+A controller can declare which context features it needs:
+
+| Feature name | Meaning | Provided by |
+|---|---|---|
+| `voltage` | Current voltage vector in fixed bus/phase order | `OpenDSSGrid` |
+| `sensitivity` | Voltage sensitivity estimator (`estimate_H`) | `OpenDSSGrid` |
+
+If a required feature is missing, the coordinator fails at startup with a plain-language error.
 
 ## Data Flow
 
@@ -95,7 +101,7 @@ OfflineDatacenter ──power_w──> DC buffer ──> OpenDSSGrid
 2. Power samples accumulate in a buffer until the grid is due.
 3. The grid runs power flow and returns bus voltages.
 4. Controllers read voltages and datacenter state, then emit control actions.
-5. Control actions (batch sizes, tap changes) are applied to the datacenter and grid.
+5. Control commands are routed to datacenter/grid targets.
 
 ## State Types
 
@@ -107,9 +113,8 @@ All state objects are frozen dataclasses defined in `openg2g.types`:
 | `DatacenterState` | `time_s`, `power_w`, `batch_size_by_model`, `active_replicas_by_model` | `DatacenterBackend.step()` |
 | `OfflineDatacenterState` | + `power_by_model_w`, `avg_itl_by_model` | `OfflineDatacenter.step()` |
 | `GridState` | `time_s`, `voltages: BusVoltages` | `OpenDSSGrid.step()` |
-| `ControlAction` | _(base, no-op)_ | `Controller.step()` |
-| `DatacenterControlAction` | `batch_size_by_model` | OFO controller |
-| `GridControlAction` | `tap_changes` | Tap schedule controller |
+| `Command` | `target`, `kind`, `payload`, `metadata` | `Controller.step()` |
+| `ControlAction` | `commands: list[Command]` | `Controller.step()` |
 
 ## SimulationLog
 

@@ -139,6 +139,24 @@ coord = Coordinator(
 
 Tap changes are typically configured via the `tap_schedule` parameter on `OpenDSSGrid` (using the `TapPosition` fluent API) rather than through `TapScheduleController`. Actions from all controllers are applied before the next tick.
 
+### Command Kinds
+
+Built-in controllers currently emit two command kinds:
+
+- `set_batch_size` (target `datacenter`) with payload key `batch_size_by_model`
+- `set_taps` (target `grid`) with payload key `tap_changes`
+
+Backends validate command payloads and raise clear errors on unsupported kinds.
+
+### Feature Interfaces
+
+Controllers can request context features through `required_features()`:
+
+- `voltage`: voltage vector snapshots from grid state
+- `sensitivity`: `estimate_H(dp_kw)` from the grid model
+
+If a required feature is missing, the simulation fails at startup with a plain-language error.
+
 ## Live Mode
 
 For hardware-in-the-loop experiments, pass `live=True` to the coordinator:
