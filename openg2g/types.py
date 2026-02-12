@@ -108,11 +108,11 @@ class TapPosition:
     Each field is the tap ratio for the corresponding phase regulator.
     Combine with :meth:`at` and ``|`` to build a :class:`TapSchedule`::
 
-        S = 0.00625  # standard 5/8% tap step
+        TAP_STEP = 0.00625  # standard 5/8% tap step
         schedule = (
-            TapPosition(a=1.0 + 14 * S, b=1.0 + 6 * S, c=1.0 + 15 * S).at(t=0)
-            | TapPosition(a=1.0 + 16 * S, b=1.0 + 6 * S, c=1.0 + 17 * S).at(t=25 * 60)
-            | TapPosition(a=1.0 + 10 * S, b=1.0 + 6 * S, c=1.0 + 10 * S).at(t=55 * 60)
+            TapPosition(a=1.0 + 14 * TAP_STEP, ...).at(t=0)
+            | TapPosition(a=1.0 + 16 * TAP_STEP, ...).at(t=25 * 60)
+            | TapPosition(a=1.0 + 10 * TAP_STEP, ...).at(t=55 * 60)
         )
     """
 
@@ -130,10 +130,10 @@ class TapSchedule:
 
     Build using :meth:`TapPosition.at` and the ``|`` operator::
 
-        S = 0.00625  # standard 5/8% tap step
+        TAP_STEP = 0.00625  # standard 5/8% tap step
         schedule = (
-            TapPosition(a=1.0 + 14 * S, b=1.0 + 6 * S, c=1.0 + 15 * S).at(t=0)
-            | TapPosition(a=1.0 + 16 * S, b=1.0 + 6 * S, c=1.0 + 17 * S).at(t=25 * 60)
+            TapPosition(a=1.0 + 14 * TAP_STEP, ...).at(t=0)
+            | TapPosition(a=1.0 + 16 * TAP_STEP, ...).at(t=25 * 60)
         )
     """
 

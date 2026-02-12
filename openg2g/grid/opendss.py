@@ -56,8 +56,12 @@ class OpenDSSGrid:
         tap_schedule: Pre-planned regulator tap settings as a
             :class:`~openg2g.types.TapSchedule`, built via the fluent API::
 
-                S = 0.00625  # standard 5/8% tap step
-                TapPosition(a=1.0 + 14 * S, b=1.0 + 6 * S, c=1.0 + 15 * S).at(t=0)
+                TAP_STEP = 0.00625  # standard 5/8% tap step
+                TapPosition(
+                    a=1.0 + 14 * TAP_STEP,
+                    b=1.0 + 6 * TAP_STEP,
+                    c=1.0 + 15 * TAP_STEP,
+                ).at(t=0)
 
             Each :class:`TapPosition` field is a per-unit tap ratio.
         freeze_regcontrols: If True, disable regcontrols after setting taps.

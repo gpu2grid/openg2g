@@ -64,8 +64,10 @@ def main() -> None:
         ModelSpec(model_label="Qwen3-235B-A22B", replicas=210, gpus_per_replica=8),
     ]
 
-    S = 0.00625  # standard 5/8% tap step
-    tap_schedule = TapPosition(a=1.0 + 14 * S, b=1.0 + 6 * S, c=1.0 + 15 * S).at(t=0)
+    TAP_STEP = 0.00625  # standard 5/8% tap step
+    tap_schedule = TapPosition(
+        a=1.0 + 14 * TAP_STEP, b=1.0 + 6 * TAP_STEP, c=1.0 + 15 * TAP_STEP
+    ).at(t=0)
 
     required_measured_gpus = {ms.model_label: ms.gpus_per_replica for ms in models}
 

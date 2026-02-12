@@ -29,16 +29,20 @@ from openg2g.models.spec import ModelSpec
 from openg2g.plotting import plot_allbus_voltages_per_phase, plot_power_3ph
 from openg2g.types import TapPosition
 
-S = 0.00625  # standard 5/8% tap step
+TAP_STEP = 0.00625  # standard 5/8% tap step
 
-INITIAL_TAPS = TapPosition(a=1.0 + 14 * S, b=1.0 + 6 * S, c=1.0 + 15 * S)
+INITIAL_TAPS = TapPosition(a=1.0 + 14 * TAP_STEP, b=1.0 + 6 * TAP_STEP, c=1.0 + 15 * TAP_STEP)
 
 TAP_SCHEDULES = {
     "no-tap": INITIAL_TAPS.at(t=0),
     "tap-change": (
-        TapPosition(a=1.0 + 14 * S, b=1.0 + 6 * S, c=1.0 + 15 * S).at(t=0)
-        | TapPosition(a=1.0 + 16 * S, b=1.0 + 6 * S, c=1.0 + 17 * S).at(t=25 * 60)
-        | TapPosition(a=1.0 + 10 * S, b=1.0 + 6 * S, c=1.0 + 10 * S).at(t=55 * 60)
+        TapPosition(a=1.0 + 14 * TAP_STEP, b=1.0 + 6 * TAP_STEP, c=1.0 + 15 * TAP_STEP).at(t=0)
+        | TapPosition(a=1.0 + 16 * TAP_STEP, b=1.0 + 6 * TAP_STEP, c=1.0 + 17 * TAP_STEP).at(
+            t=25 * 60
+        )
+        | TapPosition(a=1.0 + 10 * TAP_STEP, b=1.0 + 6 * TAP_STEP, c=1.0 + 10 * TAP_STEP).at(
+            t=55 * 60
+        )
     ),
 }
 
