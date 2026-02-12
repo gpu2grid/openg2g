@@ -5,6 +5,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 
 from openg2g.clock import SimulationClock
+from openg2g.context import SimulationContext
 from openg2g.types import ControlAction, DatacenterState, GridState
 
 
@@ -26,5 +27,10 @@ class Controller(ABC):
         clock: SimulationClock,
         dc_state: DatacenterState | None,
         grid_state: GridState | None,
+        context: SimulationContext,
     ) -> ControlAction:
         """Compute a control action. Must complete synchronously."""
+
+    def required_features(self) -> set[str]:
+        """Names of required context features."""
+        return set()
