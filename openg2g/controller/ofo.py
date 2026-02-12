@@ -8,24 +8,21 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
 
 import numpy as np
 
 from openg2g.clock import SimulationClock
 from openg2g.controller.base import Controller
+from openg2g.context import SimulationContext
 from openg2g.models.latency import LatencyFitTable
 from openg2g.models.logistic import LogisticFitBank
 from openg2g.models.spec import ModelSpec
 from openg2g.types import (
+    Command,
     ControlAction,
-    DatacenterControlAction,
     DatacenterState,
     GridState,
 )
-
-if TYPE_CHECKING:
-    from openg2g.grid.opendss import OpenDSSGrid
 
 
 @dataclass
@@ -286,7 +283,6 @@ class OFOBatchController(Controller):
         models: Model specifications.
         fits: Logistic fit bank with power/latency/throughput curves per model.
         latency_table: ITL mixture parameter table for latency sampling.
-        grid: Direct reference to the OpenDSSGrid (for H estimation).
         Lth_by_model: Per-model latency threshold (seconds).
         primal_cfg: Primal optimizer configuration.
         voltage_dual_cfg: Voltage dual configuration (v_min, v_max, rho_v).
@@ -305,7 +301,6 @@ class OFOBatchController(Controller):
         models: list[ModelSpec],
         fits: LogisticFitBank,
         latency_table: LatencyFitTable,
-        grid: OpenDSSGrid,
         Lth_by_model: dict[str, float],
         primal_cfg: PrimalCfg,
         voltage_dual_cfg: VoltageDualCfg,
@@ -321,17 +316,14 @@ class OFOBatchController(Controller):
         self._models = list(models)
         self._fits = fits
         self._latency_table = latency_table
-        self._grid = grid
         self._Lth_by_model = dict(Lth_by_model)
         self._rho_l = float(rho_l)
         self._estimate_H_every = int(estimate_H_every)
         self._estimate_H_dp_kw = float(estimate_H_dp_kw)
 
-        # V_index size from grid
-        M3 = len(grid.v_index)
-
-        # Voltage duals
-        self._voltage_dual = FullNetworkVoltageDual(M3, voltage_dual_cfg)
+        # Voltage duals are initialized lazily once voltage feature is available.
+        self._voltage_dual: FullNetworkVoltageDual | None = None
+        self._voltage_dual_cfg = voltage_dual_cfg
 
         # Latency duals (μ_i per model)
         self._mu_by_model: dict[str, float] = {ms.model_label: 0.0 for ms in models}
@@ -364,6 +356,8 @@ class OFOBatchController(Controller):
 
     @property
     def voltage_dual(self) -> FullNetworkVoltageDual:
+        if self._voltage_dual is None:
+            raise RuntimeError("Voltage dual not initialized yet.")
         return self._voltage_dual
 
     @property
@@ -374,21 +368,35 @@ class OFOBatchController(Controller):
         """Update per-model phase share vectors (from datacenter placement)."""
         self._phase_share_by_model.update(phase_share_by_model)
 
+    def required_features(self) -> set[str]:
+        return {"voltage", "sensitivity"}
+
     def step(
         self,
         clock: SimulationClock,
         dc_state: DatacenterState | None,
         grid_state: GridState | None,
+        context: SimulationContext,
     ) -> ControlAction:
+        if context.voltage is None or context.sensitivity is None:
+            raise RuntimeError(
+                "OFOBatchController requires both 'voltage' and 'sensitivity' context features."
+            )
+
+        if self._voltage_dual is None:
+            self._voltage_dual = FullNetworkVoltageDual(
+                len(context.voltage.v_index), self._voltage_dual_cfg
+            )
+
         # 1. Re-estimate H if needed
         if self._H is None or (
             self._estimate_H_every > 0 and self._ctrl_step_count % self._estimate_H_every == 0
         ):
-            self._H, self._v0 = self._grid.estimate_H(self._estimate_H_dp_kw)
+            self._H, self._v0 = context.sensitivity.estimate_H(self._estimate_H_dp_kw)
 
         # 2. Update voltage duals from grid state
         if grid_state is not None:
-            v_hat = self._grid.voltages_vector()
+            v_hat = context.voltage.voltages_vector()
             self._voltage_dual.update(v_hat)
 
         eta_vec = self._voltage_dual.eta()
@@ -438,4 +446,12 @@ class OFOBatchController(Controller):
         )
 
         self._ctrl_step_count += 1
-        return DatacenterControlAction(batch_size_by_model=batch_next)
+        return ControlAction(
+            commands=[
+                Command(
+                    target="datacenter",
+                    kind="set_batch_size",
+                    payload={"batch_size_by_model": batch_next},
+                )
+            ]
+        )

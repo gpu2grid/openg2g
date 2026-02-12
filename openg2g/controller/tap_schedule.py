@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from openg2g.clock import SimulationClock
 from openg2g.controller.base import Controller
-from openg2g.types import ControlAction, DatacenterState, GridControlAction, GridState
+from openg2g.context import SimulationContext
+from openg2g.types import Command, ControlAction, DatacenterState, GridState
 
 
 class TapScheduleController(Controller):
@@ -35,6 +36,7 @@ class TapScheduleController(Controller):
         clock: SimulationClock,
         dc_state: DatacenterState | None,
         grid_state: GridState | None,
+        context: SimulationContext,
     ) -> ControlAction:
         t_now = clock.time_s
         tap_changes: dict[str, float] = {}
@@ -48,5 +50,13 @@ class TapScheduleController(Controller):
                 break
 
         if tap_changes:
-            return GridControlAction(tap_changes=tap_changes)
-        return ControlAction()
+            return ControlAction(
+                commands=[
+                    Command(
+                        target="grid",
+                        kind="set_taps",
+                        payload={"tap_changes": tap_changes},
+                    )
+                ]
+            )
+        return ControlAction(commands=[])

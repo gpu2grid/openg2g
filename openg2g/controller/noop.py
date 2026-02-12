@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from openg2g.clock import SimulationClock
 from openg2g.controller.base import Controller
+from openg2g.context import SimulationContext
 from openg2g.types import ControlAction, DatacenterState, GridState
 
 
@@ -22,5 +23,6 @@ class NoopController(Controller):
         clock: SimulationClock,
         dc_state: DatacenterState | None,
         grid_state: GridState | None,
+        context: SimulationContext,
     ) -> ControlAction:
-        return ControlAction()
+        return ControlAction(commands=[])
