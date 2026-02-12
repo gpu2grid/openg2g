@@ -11,6 +11,7 @@ from collections.abc import Callable
 
 from openg2g.clock import SimulationClock
 from openg2g.datacenter.base import DatacenterBackend
+from openg2g.events import EventEmitter
 from openg2g.types import Command, OnlineDatacenterState, ThreePhase
 
 logger = logging.getLogger(__name__)
@@ -31,6 +32,10 @@ class OnlineDatacenter(DatacenterBackend):
             ``{model_label: batch_size}`` when ``apply_control`` receives new
             batch sizes.  Typically sends an HTTP request to the inference
             server.
+        replica_count_provider: Optional provider for active replica counts by
+            model.
+        observed_itl_provider: Optional provider for observed average ITL
+            (seconds) by model.
         power_tolerance_s: Maximum age (seconds) of a power reading before a
             warning is issued.  Only relevant in live mode.
     """
@@ -43,6 +48,7 @@ class OnlineDatacenter(DatacenterBackend):
         phase_assignment: dict[int, int] | None = None,
         batch_control_callback: Callable[[dict[str, int]], None] | None = None,
         replica_count_provider: Callable[[], dict[str, int]] | None = None,
+        observed_itl_provider: Callable[[], dict[str, float]] | None = None,
         power_tolerance_s: float = 0.5,
     ):
         try:
@@ -58,6 +64,9 @@ class OnlineDatacenter(DatacenterBackend):
         # Optional hook for HIL setups (e.g., vLLM replicas) to report
         # active replica counts per model each step.
         self._replica_provider = replica_count_provider
+        # Optional hook for observed per-model latency (seconds), e.g., from
+        # online request telemetry in HIL experiments.
+        self._observed_itl_provider = observed_itl_provider
         self._power_tolerance = float(power_tolerance_s)
 
         # Phase assignment: default round-robin
@@ -73,10 +82,24 @@ class OnlineDatacenter(DatacenterBackend):
         self._last_read_time: float = 0.0
         self._batch_by_model: dict[str, int] = {}
         self._step_count: int = 0
+        self._events: EventEmitter | None = None
+        self._state: OnlineDatacenterState | None = None
+        self._history: list[OnlineDatacenterState] = []
 
     @property
     def dt_s(self) -> float:
         return self._dt
+
+    @property
+    def state(self) -> OnlineDatacenterState | None:
+        return self._state
+
+    def history(self, n: int | None = None) -> list[OnlineDatacenterState]:
+        if n is None:
+            return list(self._history)
+        if n <= 0:
+            return []
+        return list(self._history[-int(n) :])
 
     def step(self, clock: SimulationClock) -> OnlineDatacenterState:
         """Read current GPU power and return per-phase aggregated state."""
@@ -106,13 +129,25 @@ class OnlineDatacenter(DatacenterBackend):
             except Exception as exc:
                 logger.warning("Replica count provider failed: %s", exc)
 
-        return OnlineDatacenterState(
+        observed_itl_s: dict[str, float] = {}
+        if self._observed_itl_provider is not None:
+            try:
+                raw_itl = self._observed_itl_provider()
+                observed_itl_s = {str(k): float(v) for k, v in raw_itl.items()}
+            except Exception as exc:
+                logger.warning("Observed ITL provider failed: %s", exc)
+
+        state = OnlineDatacenterState(
             time_s=clock.time_s,
             power_w=ThreePhase(a=phase_power[0], b=phase_power[1], c=phase_power[2]),
             gpu_power_readings=gpu_power,
             batch_size_by_model=dict(self._batch_by_model),
             active_replicas_by_model=active_replicas,
+            observed_itl_s_by_model=observed_itl_s,
         )
+        self._state = state
+        self._history.append(state)
+        return state
 
     def apply_control(self, command: Command) -> None:
         """Apply batch size command via the control callback."""
@@ -122,8 +157,19 @@ class OnlineDatacenter(DatacenterBackend):
         if not isinstance(batch_map, dict):
             raise ValueError("set_batch_size requires payload['batch_size_by_model'] as a dict.")
         self._batch_by_model.update({str(k): int(v) for k, v in batch_map.items()})
+        if self._events is not None:
+            self._events.emit(
+                "datacenter.batch_size.updated",
+                {
+                    "kind": command.kind,
+                    "batch_size_by_model": dict(self._batch_by_model),
+                },
+            )
         if self._batch_callback is not None:
             try:
                 self._batch_callback(dict(self._batch_by_model))
             except Exception as exc:
                 logger.error("Batch control callback failed: %s", exc)
+
+    def bind_event_emitter(self, emitter: EventEmitter) -> None:
+        self._events = emitter

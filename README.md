@@ -83,6 +83,11 @@ Coordinator
 
 Each component exposes a `step()` method called by the coordinator at the appropriate rate. Controllers produce `ControlAction` objects that are applied to the datacenter and grid.
 
+Current controller contract:
+
+- `Controller.step(clock, datacenter, grid, events) -> ControlAction`
+- `events` is always available and can be used to emit clock-stamped events.
+
 ## Documentation
 
 Full documentation is available at the [documentation site](https://your-org.github.io/openg2g/), including:

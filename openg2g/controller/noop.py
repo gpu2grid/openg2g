@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 from openg2g.clock import SimulationClock
-from openg2g.context import SimulationContext
 from openg2g.controller.base import Controller
-from openg2g.types import ControlAction, DatacenterState, GridState
+from openg2g.datacenter.base import DatacenterBackend
+from openg2g.events import EventEmitter
+from openg2g.grid.base import GridBackend
+from openg2g.grid.opendss import OpenDSSGrid
+from openg2g.types import ControlAction
 
 
-class NoopController(Controller):
+class NoopController(Controller[DatacenterBackend, OpenDSSGrid]):
     """Controller that always returns an empty action."""
 
     def __init__(self, dt_s: float = 1.0):
@@ -21,8 +24,9 @@ class NoopController(Controller):
     def step(
         self,
         clock: SimulationClock,
-        dc_state: DatacenterState | None,
-        grid_state: GridState | None,
-        context: SimulationContext,
+        datacenter: DatacenterBackend,
+        grid: GridBackend,
+        events: EventEmitter,
     ) -> ControlAction:
+        del clock, datacenter, grid, events
         return ControlAction(commands=[])

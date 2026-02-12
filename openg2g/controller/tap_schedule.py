@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 from openg2g.clock import SimulationClock
-from openg2g.context import SimulationContext
 from openg2g.controller.base import Controller
-from openg2g.types import Command, ControlAction, DatacenterState, GridState
+from openg2g.datacenter.base import DatacenterBackend
+from openg2g.events import EventEmitter
+from openg2g.grid.base import GridBackend
+from openg2g.grid.opendss import OpenDSSGrid
+from openg2g.types import Command, ControlAction
 
 
-class TapScheduleController(Controller):
+class TapScheduleController(Controller[DatacenterBackend, OpenDSSGrid]):
     """Applies pre-defined tap changes at scheduled times.
 
     Args:
@@ -34,10 +37,11 @@ class TapScheduleController(Controller):
     def step(
         self,
         clock: SimulationClock,
-        dc_state: DatacenterState | None,
-        grid_state: GridState | None,
-        context: SimulationContext,
+        datacenter: DatacenterBackend,
+        grid: GridBackend,
+        events: EventEmitter,
     ) -> ControlAction:
+        del datacenter, grid, events
         t_now = clock.time_s
         tap_changes: dict[str, float] = {}
 

@@ -31,6 +31,11 @@ class SimulationClock:
     def step(self) -> int:
         return self._step
 
+    @property
+    def step_index(self) -> int:
+        """Global simulation tick index (alias for ``step``)."""
+        return self._step
+
     def advance(self) -> float:
         """Advance one tick. Returns new simulation time in seconds."""
         self._step += 1

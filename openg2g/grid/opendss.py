@@ -12,6 +12,8 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from openg2g.clock import SimulationClock
+from openg2g.events import EventEmitter
+from openg2g.grid.base import GridBackend
 from openg2g.types import (
     BusVoltages,
     Command,
@@ -41,7 +43,7 @@ def _require_dss() -> None:
         )
 
 
-class OpenDSSGrid:
+class OpenDSSGrid(GridBackend):
     """OpenDSS-based grid simulator for distribution-level voltage analysis.
 
     Args:
@@ -100,20 +102,38 @@ class OpenDSSGrid:
         ]
         self._tap_idx = 0
         self._reg_map: dict[str, tuple[str, int]] | None = None
+        self._events: EventEmitter | None = None
+        self._state: GridState | None = None
+        self._history: list[GridState] = []
 
         # Populated during _init_dss
         self.all_buses: list[str] = []
         self.buses_with_phase: dict[int, list[str]] = {}
-        self.v_index: list[tuple[str, int]] = []
+        self._v_index: list[tuple[str, int]] = []
 
         self._exclude_buses = tuple(str(b) for b in exclude_buses)
         self._init_dss()
-        self.v_index = self._build_v_index()
+        self._v_index = self._build_v_index()
         self._build_vmag_indices()
 
     @property
     def dt_s(self) -> float:
         return self._dt_s
+
+    @property
+    def state(self) -> GridState | None:
+        return self._state
+
+    def history(self, n: int | None = None) -> list[GridState]:
+        if n is None:
+            return list(self._history)
+        if n <= 0:
+            return []
+        return list(self._history[-int(n) :])
+
+    @property
+    def v_index(self) -> list[tuple[str, int]]:
+        return list(self._v_index)
 
     def step(
         self,
@@ -184,7 +204,10 @@ class OpenDSSGrid:
             voltages = first_solve_voltages
         else:
             voltages = self._snapshot_bus_voltages()
-        return GridState(time_s=clock.time_s, voltages=voltages)
+        state = GridState(time_s=clock.time_s, voltages=voltages)
+        self._state = state
+        self._history.append(state)
+        return state
 
     def apply_control(self, command: Command) -> None:
         """Apply one command to the OpenDSS grid backend."""
@@ -195,6 +218,14 @@ class OpenDSSGrid:
             raise ValueError("set_taps requires payload['tap_changes'] as a dict.")
         tap_map = {str(k): float(v) for k, v in tap_changes.items()}
         self._set_reg_taps(tap_map)
+        if self._events is not None:
+            self._events.emit(
+                "grid.taps.updated",
+                {"kind": command.kind, "tap_changes": dict(tap_map)},
+            )
+
+    def bind_event_emitter(self, emitter: EventEmitter) -> None:
+        self._events = emitter
 
     def apply_taps_if_needed(self, t_s: float) -> int:
         """Apply scheduled tap changes up to time *t_s*."""
@@ -250,7 +281,7 @@ class OpenDSSGrid:
             p0[j] = float(dss.Loads.kW())  # type: ignore[arg-type]
             q0[j] = float(dss.Loads.kvar())  # type: ignore[arg-type]
 
-        M = len(self.v_index)
+        M = len(self._v_index)
         H = np.zeros((M, 3), dtype=float)
 
         for j, ld in enumerate(load_names):
@@ -361,7 +392,7 @@ class OpenDSSGrid:
         """Pre-compute index arrays for fast voltage vector extraction."""
         node_idx = {(bus, ph): i for i, (bus, ph) in enumerate(self._node_map)}
         self._v_index_to_vmag = np.array(
-            [node_idx[(bus, ph)] for bus, ph in self.v_index],
+            [node_idx[(bus, ph)] for bus, ph in self._v_index],
             dtype=int,
         )
 

@@ -121,7 +121,7 @@ The grid auto-detects its sub-step behavior based on how many DC power samples i
 
 ## Stacking Controllers
 
-Controllers compose in order. Each controller sees the latest state and can emit actions:
+Controllers compose in order. Each controller gets full component handles plus an event emitter:
 
 ```python
 from openg2g.controller.tap_schedule import TapScheduleController
@@ -151,14 +151,12 @@ Built-in controllers currently emit two command kinds:
 
 Backends validate command payloads and raise clear errors on unsupported kinds.
 
-### Feature Interfaces
+Controller interface summary:
 
-Controllers can request context features through `required_features()`:
-
-- `voltage`: voltage vector snapshots from grid state
-- `sensitivity`: `estimate_H(dp_kw)` from the grid model
-
-If a required feature is missing, the simulation fails at startup with a plain-language error.
+- `step(clock, datacenter, grid, events) -> ControlAction`
+- read current state through `datacenter.state` and `grid.state`
+- read history through `datacenter.history(...)` and `grid.history(...)`
+- emit events through `events.emit(topic, data)`
 
 ## Live Mode
 

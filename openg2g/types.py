@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from enum import Enum
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -53,6 +54,7 @@ class DatacenterState:
     power_w: ThreePhase
     batch_size_by_model: dict[str, int] = field(default_factory=dict)
     active_replicas_by_model: dict[str, int] = field(default_factory=dict)
+    observed_itl_s_by_model: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -60,7 +62,6 @@ class OfflineDatacenterState(DatacenterState):
     """Extended state from the offline (trace-based) backend."""
 
     power_by_model_w: dict[str, float] = field(default_factory=dict)
-    avg_itl_by_model: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -92,10 +93,20 @@ class ControlAction:
 class Command:
     """Single command envelope routed by target and kind."""
 
-    target: Literal["datacenter", "grid", "custom"]
+    target: CommandTarget | str
     kind: str
     payload: dict[str, Any] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "target", CommandTarget(self.target))
+
+
+class CommandTarget(str, Enum):
+    """Command routing target."""
+
+    DATACENTER = "datacenter"
+    GRID = "grid"
 
 
 @dataclass(frozen=True)

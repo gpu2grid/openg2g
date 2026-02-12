@@ -58,6 +58,7 @@ known-first-party = ["openg2g"]
 [tool.pyright]
 pythonVersion = "3.10"
 typeCheckingMode = "strict"
+extraPaths = ["mlenergy-data-toolkit"]
 reportMissingTypeStubs = false
 # numpy/pandas/mock stubs have incomplete types; these fire on every
 # .reshape(), DataFrame row access, and MagicMock call.

@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
+from typing import Any
 
 from openg2g.clock import SimulationClock
-from openg2g.context import SimulationContext, validate_required_features
 from openg2g.controller.base import Controller
 from openg2g.datacenter.base import DatacenterBackend
-from openg2g.grid.opendss import OpenDSSGrid
+from openg2g.events import EventEmitter, SimEvent
+from openg2g.grid.base import GridBackend
 from openg2g.types import (
     Command,
+    CommandTarget,
     ControlAction,
     DatacenterState,
     GridState,
@@ -63,6 +66,7 @@ class SimulationLog:
 
     # -- Controller logs --
     batch_log_by_model: dict[str, list[int]] = field(default_factory=dict)
+    events: list[SimEvent] = field(default_factory=list)
 
     def record_dc(self, state: DatacenterState) -> None:
         self.dc_states.append(state)
@@ -95,6 +99,14 @@ class SimulationLog:
                 self.batch_log_by_model[label] = []
             self.batch_log_by_model[label].append(int(b))
 
+    def emit(self, event: SimEvent) -> None:
+        """Event sink entrypoint for component-originated events."""
+        self.events.append(event)
+        if event.topic == "datacenter.batch_size.updated":
+            batch_map = event.data.get("batch_size_by_model", {})
+            if isinstance(batch_map, dict):
+                self.record_batch({str(k): int(v) for k, v in batch_map.items()})
+
 
 class Coordinator:
     """Multi-rate simulation coordinator.
@@ -114,18 +126,17 @@ class Coordinator:
     def __init__(
         self,
         datacenter: DatacenterBackend,
-        grid: OpenDSSGrid,
-        controllers: list[Controller],
+        grid: GridBackend,
+        controllers: Sequence[Controller[Any, Any]],
         T_total_s: float,
         dc_bus: str = "671",
         live: bool = False,
-    ):
+    ) -> None:
         self.datacenter = datacenter
         self.grid = grid
         self.controllers = list(controllers)
         self.T_total_s = float(T_total_s)
         self.dc_bus = str(dc_bus)
-        self.context = self._build_context()
 
         # Compute tick as GCD of all component periods
         periods = [datacenter.dt_s, grid.dt_s] + [c.dt_s for c in controllers]
@@ -135,27 +146,60 @@ class Coordinator:
 
         self.clock = SimulationClock(tick_s=tick, live=live)
 
-    def _build_context(self) -> SimulationContext:
-        return SimulationContext(
-            voltage=self.grid if hasattr(self.grid, "voltages_vector") else None,
-            sensitivity=self.grid if hasattr(self.grid, "estimate_H") else None,
-            raw={"grid": self.grid, "datacenter": self.datacenter},
-        )
+    def _validate_controller_compatibility(self) -> None:
+        for ctrl in self.controllers:
+            dc_types = ctrl.compatible_datacenter_types()
+            try:
+                dc_ok = isinstance(self.datacenter, dc_types)
+            except TypeError:
+                continue
+            if not dc_ok:
+                expected = " | ".join(t.__name__ for t in dc_types)
+                got = type(self.datacenter).__name__
+                raise TypeError(
+                    "Controller/datacenter type mismatch.\n"
+                    f"controller: {ctrl.__class__.__name__}\n"
+                    f"expected datacenter type(s): {expected}\n"
+                    f"got datacenter type: {got}\n\n"
+                    "Controller class definition (generic specialization):\n"
+                    f"{ctrl.__class__.compatibility_snippet()}"
+                    "                              generic part above defines compatibility.\n"
+                    f"Expected generic form: {ctrl.__class__.compatibility_signature()}"
+                )
+
+            grid_types = ctrl.compatible_grid_types()
+            try:
+                grid_ok = isinstance(self.grid, grid_types)
+            except TypeError:
+                continue
+            if not grid_ok:
+                expected = " | ".join(t.__name__ for t in grid_types)
+                got = type(self.grid).__name__
+                raise TypeError(
+                    "Controller/grid type mismatch.\n"
+                    f"controller: {ctrl.__class__.__name__}\n"
+                    f"expected grid type(s): {expected}\n"
+                    f"got grid type: {got}\n\n"
+                    "Controller class definition (generic specialization):\n"
+                    f"{ctrl.__class__.compatibility_snippet()}"
+                    "                              generic part above defines compatibility.\n"
+                    f"Expected generic form: {ctrl.__class__.compatibility_signature()}"
+                )
 
     def run(self) -> SimulationLog:
         """Run the full simulation and return the log."""
-        for ctrl in self.controllers:
-            validate_required_features(
-                controller_name=ctrl.__class__.__name__,
-                required=ctrl.required_features(),
-                context=self.context,
-            )
+        log = SimulationLog()
+        controller_events = EventEmitter(self.clock, log, "controller")
 
-        dc_state: DatacenterState | None = None
-        grid_state: GridState | None = None
+        if hasattr(self.datacenter, "bind_event_emitter"):
+            self.datacenter.bind_event_emitter(EventEmitter(self.clock, log, "datacenter"))
+        if hasattr(self.grid, "bind_event_emitter"):
+            self.grid.bind_event_emitter(EventEmitter(self.clock, log, "grid"))
+
+        self._validate_controller_compatibility()
+
         dc_buffer: list[ThreePhase] = []
         interval_start_power: ThreePhase | None = None
-        log = SimulationLog()
 
         n_ticks = int(round(self.T_total_s / self.clock.tick_s))
 
@@ -183,18 +227,12 @@ class Coordinator:
             # 3. Controllers (if due) — in order, actions applied immediately
             for ctrl in self.controllers:
                 if self.clock.is_due(ctrl.dt_s):
-                    action = ctrl.step(self.clock, dc_state, grid_state, self.context)
+                    action = ctrl.step(self.clock, self.datacenter, self.grid, controller_events)
                     for command in action.commands:
-                        if command.target == "datacenter":
+                        if command.target == CommandTarget.DATACENTER:
                             self.datacenter.apply_control(command)
-                            if command.kind == "set_batch_size":
-                                batch_map = command.payload.get("batch_size_by_model", {})
-                                if isinstance(batch_map, dict):
-                                    log.record_batch(batch_map)
-                        elif command.target == "grid":
+                        elif command.target == CommandTarget.GRID:
                             self.grid.apply_control(command)
-                        elif command.target == "custom":
-                            pass
                         else:
                             raise ValueError(f"Unsupported command target: {command.target!r}")
                     log.record_action(action)

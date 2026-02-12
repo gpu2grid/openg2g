@@ -12,16 +12,16 @@ from dataclasses import dataclass
 import numpy as np
 
 from openg2g.clock import SimulationClock
-from openg2g.context import SimulationContext
 from openg2g.controller.base import Controller
-from openg2g.models.latency import LatencyFitTable
+from openg2g.datacenter.base import DatacenterBackend
+from openg2g.events import EventEmitter
+from openg2g.grid.base import GridBackend
+from openg2g.grid.opendss import OpenDSSGrid
 from openg2g.models.logistic import LogisticFitBank
 from openg2g.models.spec import ModelSpec
 from openg2g.types import (
     Command,
     ControlAction,
-    DatacenterState,
-    GridState,
 )
 
 
@@ -273,16 +273,16 @@ class PerModelPrimalX:
         return batch_next
 
 
-class OFOBatchController(Controller):
+class OFOBatchController(Controller[DatacenterBackend, OpenDSSGrid]):
     """Online Feedback Optimization controller for batch-size regulation.
 
     Reads grid voltage and datacenter state, updates voltage and latency
     duals, runs the primal batch-size optimizer, and returns new batch sizes.
+    Latency dual updates use ``dc_state.observed_itl_s_by_model``.
 
     Args:
         models: Model specifications.
         fits: Logistic fit bank with power/latency/throughput curves per model.
-        latency_table: ITL mixture parameter table for latency sampling.
         Lth_by_model: Per-model latency threshold (seconds).
         primal_cfg: Primal optimizer configuration.
         voltage_dual_cfg: Voltage dual configuration (v_min, v_max, rho_v).
@@ -300,7 +300,6 @@ class OFOBatchController(Controller):
         *,
         models: list[ModelSpec],
         fits: LogisticFitBank,
-        latency_table: LatencyFitTable,
         Lth_by_model: dict[str, float],
         primal_cfg: PrimalCfg,
         voltage_dual_cfg: VoltageDualCfg,
@@ -310,12 +309,10 @@ class OFOBatchController(Controller):
         dt_s: float = 1.0,
         estimate_H_every: int = 0,
         estimate_H_dp_kw: float = 100.0,
-        latency_rng: np.random.Generator | None = None,
     ):
         self._dt_s = float(dt_s)
         self._models = list(models)
         self._fits = fits
-        self._latency_table = latency_table
         self._Lth_by_model = dict(Lth_by_model)
         self._rho_l = float(rho_l)
         self._estimate_H_every = int(estimate_H_every)
@@ -347,9 +344,6 @@ class OFOBatchController(Controller):
             ms.model_label: np.array([1 / 3, 1 / 3, 1 / 3], dtype=float) for ms in models
         }
 
-        # Latency RNG (use DC's RNG for coupled randomness, or default)
-        self._latency_rng = latency_rng if latency_rng is not None else np.random.default_rng(42)
-
     @property
     def dt_s(self) -> float:
         return self._dt_s
@@ -368,40 +362,33 @@ class OFOBatchController(Controller):
         """Update per-model phase share vectors (from datacenter placement)."""
         self._phase_share_by_model.update(phase_share_by_model)
 
-    def required_features(self) -> set[str]:
-        return {"voltage", "sensitivity"}
-
     def step(
         self,
         clock: SimulationClock,
-        dc_state: DatacenterState | None,
-        grid_state: GridState | None,
-        context: SimulationContext,
+        datacenter: DatacenterBackend,
+        grid: GridBackend,
+        events: EventEmitter,
     ) -> ControlAction:
-        if context.voltage is None or context.sensitivity is None:
-            raise RuntimeError(
-                "OFOBatchController requires both 'voltage' and 'sensitivity' context features."
-            )
+        del clock, events
 
         if self._voltage_dual is None:
-            self._voltage_dual = FullNetworkVoltageDual(
-                len(context.voltage.v_index), self._voltage_dual_cfg
-            )
+            self._voltage_dual = FullNetworkVoltageDual(len(grid.v_index), self._voltage_dual_cfg)
 
         # 1. Re-estimate H if needed
         if self._H is None or (
             self._estimate_H_every > 0 and self._ctrl_step_count % self._estimate_H_every == 0
         ):
-            self._H, self._v0 = context.sensitivity.estimate_H(self._estimate_H_dp_kw)
+            self._H, self._v0 = grid.estimate_H(self._estimate_H_dp_kw)
 
         # 2. Update voltage duals from grid state
-        if grid_state is not None:
-            v_hat = context.voltage.voltages_vector()
+        if grid.state is not None:
+            v_hat = grid.voltages_vector()
             self._voltage_dual.update(v_hat)
 
         eta_vec = self._voltage_dual.eta()
 
-        # 3. Sample latency and update latency duals
+        # 3. Read observed latency from datacenter and update latency duals
+        dc_state = datacenter.state
         if dc_state is not None:
             missing_replicas = [
                 ms.model_label
@@ -414,20 +401,22 @@ class OFOBatchController(Controller):
                     "OFOBatchController requires active_replicas_by_model for all models. "
                     f"Missing: {miss}."
                 )
+            missing_itl = [
+                ms.model_label
+                for ms in self._models
+                if ms.model_label not in dc_state.observed_itl_s_by_model
+            ]
+            if missing_itl:
+                miss = ", ".join(sorted(missing_itl))
+                raise RuntimeError(
+                    "OFOBatchController requires observed_itl_s_by_model for all models. "
+                    f"Missing: {miss}."
+                )
             for ms in self._models:
                 label = ms.model_label
-                batch = dc_state.batch_size_by_model.get(label, 128)
                 n_rep = max(int(dc_state.active_replicas_by_model.get(label, 0)), 0)
-
-                if n_rep > 0:
-                    l_hat = self._latency_table.sample_avg_itl_s(
-                        model_label=label,
-                        batch_size=batch,
-                        n_replicas=n_rep,
-                        rng=self._latency_rng,
-                        exact_threshold=30,
-                    )
-                else:
+                l_hat = float(dc_state.observed_itl_s_by_model.get(label, float("nan")))
+                if n_rep <= 0:
                     l_hat = float("nan")
 
                 Lth = float(self._Lth_by_model.get(label, 0.1))

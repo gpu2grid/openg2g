@@ -84,6 +84,7 @@ def main() -> None:
     cache.build_templates(T=600.0, dt=dt_dc)
 
     training_overlay = TrainingOverlayCache(training_csv, target_peak_W_per_gpu=400.0)
+    latency_table = LatencyFitTable(str(latency_csv))
 
     print("Initializing OfflineDatacenter...")
     dc = OfflineDatacenter(
@@ -102,6 +103,9 @@ def main() -> None:
         training_t_add_start=1000.0,
         training_t_add_end=2000.0,
         training_n_train_gpus=300 * gpus_per_server,
+        latency_table=latency_table,
+        latency_exact_threshold=30,
+        latency_seed=0,
     )
 
     print("Loading logistic fits...")
@@ -112,8 +116,6 @@ def main() -> None:
         }
     )
     fits.load_all()
-
-    latency_table = LatencyFitTable(str(latency_csv))
 
     print("Initializing OpenDSSGrid...")
     grid = OpenDSSGrid(
@@ -134,7 +136,6 @@ def main() -> None:
     ofo_ctrl = OFOBatchController(
         models=models,
         fits=fits,
-        latency_table=latency_table,
         Lth_by_model={
             "Llama-3.1-405B": 0.12,
             "Llama-3.1-70B": 0.10,
@@ -160,7 +161,6 @@ def main() -> None:
         dt_s=dt_ctrl,
         estimate_H_every=3600,
         estimate_H_dp_kw=100.0,
-        latency_rng=dc.rng,
     )
 
     print("Running simulation...")

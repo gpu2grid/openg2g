@@ -14,6 +14,20 @@ from openg2g.models.spec import ModelSpec
 from openg2g.types import Command, OfflineDatacenterState
 
 
+class _FakeLatencyTable:
+    def sample_avg_itl_s(
+        self,
+        *,
+        model_label: str,
+        batch_size: int,
+        n_replicas: int,
+        rng: np.random.Generator,
+        exact_threshold: int = 30,
+    ) -> float:
+        _ = (model_label, batch_size, n_replicas, rng, exact_threshold)
+        return 0.123
+
+
 def _make_simple_cache(dt: float = 0.1, T: float = 100.0) -> TraceByBatchCache:
     """Create a minimal TraceByBatchCache with synthetic data."""
     # Synthetic trace: 10 seconds, linear ramp from 100W to 200W
@@ -157,3 +171,25 @@ def test_build_periodic_template_shape():
     expected_steps = int(np.ceil(50.0 / 0.1)) + 1
     assert tpl.shape[0] == expected_steps
     assert np.all(tpl >= 0)
+
+
+def test_offline_datacenter_emits_observed_itl_when_latency_table_is_set():
+    cache = _make_simple_cache()
+    model = ModelSpec(model_label="TestModel", replicas=10, gpus_per_replica=1)
+    dc = OfflineDatacenter(
+        trace_cache=cache,
+        models=[model],
+        dt=0.1,
+        batch_init=128,
+        gpus_per_server=8,
+        seed=0,
+        chunk_steps=10,
+        ramp_t_start=9999,
+        ramp_t_end=9999,
+        ramp_floor=1.0,
+        latency_table=_FakeLatencyTable(),
+    )
+
+    state = dc.step(SimulationClock(tick_s=0.1))
+    assert "TestModel" in state.observed_itl_s_by_model
+    assert np.isfinite(state.observed_itl_s_by_model["TestModel"])

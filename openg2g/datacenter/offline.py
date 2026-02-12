@@ -16,6 +16,7 @@ import numpy as np
 from openg2g.clock import SimulationClock
 from openg2g.datacenter.base import DatacenterBackend
 from openg2g.datacenter.training_overlay import TrainingOverlayCache
+from openg2g.events import EventEmitter
 from openg2g.models.spec import ModelSpec
 from openg2g.types import Command, OfflineDatacenterState, ThreePhase
 from openg2g.utils import split_integer_evenly
@@ -288,6 +289,10 @@ class OfflineDatacenter(DatacenterBackend):
         training_t_add_start: Global time when training overlay starts.
         training_t_add_end: Global time when training overlay ends.
         training_n_train_gpus: Number of GPUs running training.
+        latency_table: Optional latency sampler table with
+            ``sample_avg_itl_s(model_label, batch_size, n_replicas, rng, exact_threshold)``.
+        latency_exact_threshold: Exact-sampling threshold for latency averaging.
+        latency_seed: Optional seed for latency RNG. Defaults to ``seed + 54321``.
     """
 
     def __init__(
@@ -308,6 +313,9 @@ class OfflineDatacenter(DatacenterBackend):
         training_t_add_start: float = 1000.0,
         training_t_add_end: float = 2000.0,
         training_n_train_gpus: int = 2400,
+        latency_table: Any | None = None,
+        latency_exact_threshold: int = 30,
+        latency_seed: int | None = None,
     ):
         self._dt = float(dt)
         self._cache = trace_cache
@@ -327,6 +335,8 @@ class OfflineDatacenter(DatacenterBackend):
         self._training_t_add_start = float(training_t_add_start)
         self._training_t_add_end = float(training_t_add_end)
         self._training_n_train_gpus = int(training_n_train_gpus)
+        self._latency_table = latency_table
+        self._latency_exact_threshold = int(latency_exact_threshold)
 
         # Current batch sizes
         self._batch_by_model: dict[str, int] = {ms.model_label: int(batch_init) for ms in models}
@@ -340,6 +350,11 @@ class OfflineDatacenter(DatacenterBackend):
 
         # Step counter for global time tracking
         self._global_step: int = 0
+        seed_latency = int(seed) + 54321 if latency_seed is None else int(latency_seed)
+        self._latency_rng = np.random.default_rng(seed_latency)
+        self._events: EventEmitter | None = None
+        self._state: OfflineDatacenterState | None = None
+        self._history: list[OfflineDatacenterState] = []
 
     @property
     def dt_s(self) -> float:
@@ -358,12 +373,25 @@ class OfflineDatacenter(DatacenterBackend):
         """Noise/latency RNG (seed + 12345)."""
         return self._rng
 
+    @property
+    def state(self) -> OfflineDatacenterState | None:
+        return self._state
+
+    def history(self, n: int | None = None) -> list[OfflineDatacenterState]:
+        if n is None:
+            return list(self._history)
+        if n <= 0:
+            return []
+        return list(self._history[-int(n) :])
+
     def step(self, clock: SimulationClock) -> OfflineDatacenterState:
         if self._chunk_idx >= len(self._chunk):
             self._generate_chunk(clock.time_s)
         state = self._chunk[self._chunk_idx]
         self._chunk_idx += 1
         self._global_step += 1
+        self._state = state
+        self._history.append(state)
         return state
 
     def apply_control(self, command: Command) -> None:
@@ -378,6 +406,17 @@ class OfflineDatacenter(DatacenterBackend):
             if b_int <= 0:
                 raise ValueError(f"Batch size must be positive for model {label!r}, got {b_int}.")
             self._batch_by_model[str(label)] = b_int
+        if self._events is not None:
+            self._events.emit(
+                "datacenter.batch_size.updated",
+                {
+                    "kind": command.kind,
+                    "batch_size_by_model": dict(self._batch_by_model),
+                },
+            )
+
+    def bind_event_emitter(self, emitter: EventEmitter) -> None:
+        self._events = emitter
 
     def _generate_chunk(self, t0_s: float) -> None:
         """Generate a chunk of power-trace samples starting at *t0_s*."""
@@ -487,6 +526,24 @@ class OfflineDatacenter(DatacenterBackend):
         # Build state objects
         self._chunk = []
         for i in range(n):
+            observed_itl_s_by_model: dict[str, float] = {}
+            for ms in self._models:
+                label = ms.model_label
+                n_rep = int(active_replicas_arr[label][i])
+                if self._latency_table is None or n_rep <= 0:
+                    observed_itl_s_by_model[label] = float("nan")
+                    continue
+                batch = int(self._batch_by_model.get(label, 1))
+                observed_itl_s_by_model[label] = float(
+                    self._latency_table.sample_avg_itl_s(
+                        model_label=label,
+                        batch_size=batch,
+                        n_replicas=n_rep,
+                        rng=self._latency_rng,
+                        exact_threshold=self._latency_exact_threshold,
+                    )
+                )
+
             state = OfflineDatacenterState(
                 time_s=float(time_global[i]),
                 power_w=ThreePhase(
@@ -501,7 +558,7 @@ class OfflineDatacenter(DatacenterBackend):
                     label: int(active_replicas_arr[label][i]) for label in active_replicas_arr
                 },
                 batch_size_by_model=dict(self._batch_by_model),
-                avg_itl_by_model={},
+                observed_itl_s_by_model=observed_itl_s_by_model,
             )
             self._chunk.append(state)
 
