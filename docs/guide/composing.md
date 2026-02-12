@@ -75,10 +75,13 @@ dc = OnlineDatacenter(
     gpu_indices=[0, 1, 2, 3],
     dt_s=0.1,
     batch_control_callback=my_batch_setter,
+    replica_count_provider=my_replica_counter,
 )
 ```
 
 The `batch_control_callback` is called with a `{model_label: batch_size}` dict whenever the controller changes batch sizes.
+If you plan to use OFO with an online backend, provide `replica_count_provider` so
+`active_replicas_by_model` is populated each step.
 
 ## Setting Up the Grid
 

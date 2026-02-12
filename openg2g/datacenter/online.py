@@ -42,6 +42,7 @@ class OnlineDatacenter(DatacenterBackend):
         dt_s: float = 0.1,
         phase_assignment: dict[int, int] | None = None,
         batch_control_callback: Callable[[dict[str, int]], None] | None = None,
+        replica_count_provider: Callable[[], dict[str, int]] | None = None,
         power_tolerance_s: float = 0.5,
     ):
         try:
@@ -54,6 +55,9 @@ class OnlineDatacenter(DatacenterBackend):
         self._dt = float(dt_s)
         self._gpu_indices = list(gpu_indices)
         self._batch_callback = batch_control_callback
+        # Optional hook for HIL setups (e.g., vLLM replicas) to report
+        # active replica counts per model each step.
+        self._replica_provider = replica_count_provider
         self._power_tolerance = float(power_tolerance_s)
 
         # Phase assignment: default round-robin
@@ -94,11 +98,20 @@ class OnlineDatacenter(DatacenterBackend):
         self._last_read_time = time.monotonic()
         self._step_count += 1
 
+        active_replicas: dict[str, int] = {}
+        if self._replica_provider is not None:
+            try:
+                raw = self._replica_provider()
+                active_replicas = {str(k): int(v) for k, v in raw.items()}
+            except Exception as exc:
+                logger.warning("Replica count provider failed: %s", exc)
+
         return OnlineDatacenterState(
             time_s=clock.time_s,
             power_w=ThreePhase(a=phase_power[0], b=phase_power[1], c=phase_power[2]),
             gpu_power_readings=gpu_power,
             batch_size_by_model=dict(self._batch_by_model),
+            active_replicas_by_model=active_replicas,
         )
 
     def apply_control(self, command: Command) -> None:

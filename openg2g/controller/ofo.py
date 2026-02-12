@@ -403,6 +403,17 @@ class OFOBatchController(Controller):
 
         # 3. Sample latency and update latency duals
         if dc_state is not None:
+            missing_replicas = [
+                ms.model_label
+                for ms in self._models
+                if ms.model_label not in dc_state.active_replicas_by_model
+            ]
+            if missing_replicas:
+                miss = ", ".join(sorted(missing_replicas))
+                raise RuntimeError(
+                    "OFOBatchController requires active_replicas_by_model for all models. "
+                    f"Missing: {miss}."
+                )
             for ms in self._models:
                 label = ms.model_label
                 batch = dc_state.batch_size_by_model.get(label, 128)
