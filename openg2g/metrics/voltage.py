@@ -60,36 +60,33 @@ def compute_allbus_voltage_stats(
     else:
         dt = 1.0
 
-    worst_vmin = float("inf")
-    worst_vmax = float("-inf")
-    violation_steps = 0
-    integral_violation = 0.0
+    # Collect bus-phase columns from the first snapshot (all snapshots
+    # share the same set of buses for a given OpenDSS circuit).
+    bus_names = [b for b in grid_states[0].voltages.buses() if b.lower() not in exclude]
 
-    for gs in grid_states:
-        snap_min = float("inf")
-        snap_max = float("-inf")
-        viol_sum = 0.0
-        for bus in gs.voltages.buses():
-            if bus.lower() in exclude:
-                continue
+    # Build (T, N) voltage matrix where N = num_buses * 3.
+    T = len(grid_states)
+    N = len(bus_names) * 3
+    V = np.empty((T, N), dtype=float)
+    for t, gs in enumerate(grid_states):
+        col = 0
+        for bus in bus_names:
             tp = gs.voltages[bus]
-            for v in (tp.a, tp.b, tp.c):
-                if np.isnan(v):
-                    continue
-                if v < snap_min:
-                    snap_min = v
-                if v > snap_max:
-                    snap_max = v
-                viol_sum += max(v_min - v, 0.0) + max(v - v_max, 0.0)
+            V[t, col] = tp.a
+            V[t, col + 1] = tp.b
+            V[t, col + 2] = tp.c
+            col += 3
 
-        if snap_min < worst_vmin:
-            worst_vmin = snap_min
-        if snap_max > worst_vmax:
-            worst_vmax = snap_max
+    valid = ~np.isnan(V)
+    worst_vmin = float(np.min(np.where(valid, V, np.inf)))
+    worst_vmax = float(np.max(np.where(valid, V, -np.inf)))
 
-        if viol_sum > 0.0:
-            integral_violation += viol_sum * dt
-            violation_steps += 1
+    # Per-timestep violation: sum over all bus-phase pairs
+    viol = np.where(valid, np.maximum(v_min - V, 0.0) + np.maximum(V - v_max, 0.0), 0.0)
+    viol_sum = np.sum(viol, axis=1)  # shape (T,)
+
+    violation_steps = int(np.count_nonzero(viol_sum > 0.0))
+    integral_violation = float(np.sum(viol_sum * dt))
 
     return VoltageStats(
         worst_vmin=float(worst_vmin),

@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from openg2g.clock import SimulationClock
 from openg2g.controller.base import Controller
-from openg2g.types import ControlAction, DatacenterState, GridState
+from openg2g.types import ControlAction, DatacenterControlAction, DatacenterState, GridState
 
 
 class MyController(Controller):
@@ -39,16 +39,18 @@ class MyController(Controller):
             tp = grid_state.voltages[bus]
             for v in (tp.a, tp.b, tp.c):
                 if v < self._v_threshold:
-                    return ControlAction(
+                    return DatacenterControlAction(
                         batch_size_by_model={"MyModel": 64}
                     )
 
-        return ControlAction(batch_size_by_model={"MyModel": 128})
+        return DatacenterControlAction(batch_size_by_model={"MyModel": 128})
 ```
 
 ### Controller Guidelines
 
-- `step()` must return a `ControlAction` on every call, even if empty.
+- `step()` must return a `ControlAction` (or subclass) on every call.
+- Return `ControlAction()` (base) for a no-op, `DatacenterControlAction(...)` for batch changes, or `GridControlAction(...)` for tap changes.
+- The coordinator uses `isinstance` to route each action to the correct component.
 - `dc_state` and `grid_state` may be `None` if those components haven't produced state yet.
 - Keep `step()` fast -- it runs synchronously in the simulation loop.
 - Use `clock.time_s` for time-dependent logic.
@@ -64,7 +66,7 @@ import numpy as np
 
 from openg2g.clock import SimulationClock
 from openg2g.datacenter.base import DatacenterBackend
-from openg2g.types import ControlAction, DatacenterState, ThreePhase
+from openg2g.types import DatacenterControlAction, DatacenterState, ThreePhase
 
 
 class SyntheticDatacenter(DatacenterBackend):
@@ -88,16 +90,15 @@ class SyntheticDatacenter(DatacenterBackend):
             power_w=ThreePhase(a=power_w, b=power_w, c=power_w),
         )
 
-    def apply_control(self, action: ControlAction) -> None:
-        if action.batch_size_by_model:
-            self._batch.update(action.batch_size_by_model)
+    def apply_control(self, action: DatacenterControlAction) -> None:
+        self._batch.update(action.batch_size_by_model)
 ```
 
 ### Datacenter Guidelines
 
 - `step()` is called at the rate specified by `dt_s`.
 - Return a `DatacenterState` (or subclass) with three-phase power in watts.
-- `apply_control()` receives batch size changes from controllers.
+- `apply_control()` receives a `DatacenterControlAction` with batch size changes.
 - For offline backends, consider using `OfflineDatacenterState` which includes per-model power and replica counts.
 
 ## Registering with the Coordinator
@@ -124,5 +125,5 @@ The coordinator handles all the timing, buffering, and dispatch automatically. Y
 ## Tips
 
 - **Multiple controllers**: Controllers run in order. Put tap controllers before batch controllers if tap changes should be visible to the batch optimizer within the same tick.
-- **State inspection**: Controllers receive the raw `DatacenterState`. If you need per-model information from `OfflineDatacenter`, check if the state is an `OfflineDatacenterState` instance.
+- **State inspection**: The base `DatacenterState` includes `batch_size_by_model` and `active_replicas_by_model`, so controllers can access per-model batch sizes and replica counts without knowing which backend is in use.
 - **Testing**: Write unit tests for your controller by constructing mock `DatacenterState` and `GridState` objects directly -- they are simple frozen dataclasses.

@@ -8,6 +8,7 @@ from openg2g.coordinator import Coordinator, gcd_float
 from openg2g.types import (
     BusVoltages,
     ControlAction,
+    DatacenterControlAction,
     DatacenterState,
     GridState,
     ThreePhase,
@@ -92,7 +93,7 @@ def test_coordinator_controller_order():
     )[-1]
 
     grid = _make_mock_grid(dt_s=1.0)
-    grid.step.side_effect = lambda clock, buf: (
+    grid.step.side_effect = lambda clock, buf, **kwargs: (
         call_order.append("grid"),
         GridState(
             time_s=0.0,
@@ -128,7 +129,7 @@ def test_coordinator_batch_action_applied():
     grid = _make_mock_grid(dt_s=1.0)
     ctrl = _make_mock_ctrl(dt_s=1.0)
 
-    action_with_batch = ControlAction(batch_size_by_model={"model_a": 64})
+    action_with_batch = DatacenterControlAction(batch_size_by_model={"model_a": 64})
     ctrl.step.return_value = action_with_batch
 
     coord = Coordinator(dc, grid, [ctrl], T_total_s=1.0, dc_bus="671")

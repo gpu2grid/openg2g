@@ -34,6 +34,7 @@ from openg2g.plotting import (
     plot_batch_schedule,
     plot_power_3ph,
 )
+from openg2g.types import TapPosition
 
 
 def main() -> None:
@@ -63,12 +64,8 @@ def main() -> None:
         ModelSpec(model_label="Qwen3-235B-A22B", replicas=210, gpus_per_replica=8),
     ]
 
-    tap_step = 0.00625
-    tap_map = {
-        "reg1": 1.0 + 14 * tap_step,
-        "reg2": 1.0 + 6 * tap_step,
-        "reg3": 1.0 + 15 * tap_step,
-    }
+    S = 0.00625  # standard 5/8% tap step
+    tap_schedule = TapPosition(a=1.0 + 14 * S, b=1.0 + 6 * S, c=1.0 + 15 * S).at(t=0)
 
     required_measured_gpus = {ms.model_label: ms.gpus_per_replica for ms in models}
 
@@ -123,16 +120,11 @@ def main() -> None:
         dc_bus=dc_bus,
         dc_kv_ll=4.16,
         pf_dc=0.95,
-        dt_s=1.0,
+        dt_s=dt_dc,
         dc_conn="wye",
         controls_off=True,
-        tap_schedule=[
-            (0.0, dict(tap_map)),
-            (1200.0, dict(tap_map)),
-            (3000.0, dict(tap_map)),
-        ],
+        tap_schedule=tap_schedule,
         freeze_regcontrols=True,
-        sub_step_mode="resample",
     )
 
     tap_ctrl = TapScheduleController(schedule=[], dt_s=dt_ctrl)
@@ -168,7 +160,6 @@ def main() -> None:
         estimate_H_every=3600,
         estimate_H_dp_kw=100.0,
         latency_rng=dc.rng,
-        datacenter=dc,
     )
 
     print("Running simulation...")

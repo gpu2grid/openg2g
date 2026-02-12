@@ -19,9 +19,9 @@ from openg2g.models.logistic import LogisticFitBank
 from openg2g.models.spec import ModelSpec
 from openg2g.types import (
     ControlAction,
+    DatacenterControlAction,
     DatacenterState,
     GridState,
-    OfflineDatacenterState,
 )
 
 if TYPE_CHECKING:
@@ -30,6 +30,14 @@ if TYPE_CHECKING:
 
 @dataclass
 class VoltageDualCfg:
+    """Configuration for the voltage dual variable update.
+
+    Attributes:
+        v_min: Lower voltage limit (pu).
+        v_max: Upper voltage limit (pu).
+        rho_v: Step size for the voltage dual ascent.
+    """
+
     v_min: float = 0.95
     v_max: float = 1.05
     rho_v: float = 0.5
@@ -37,6 +45,21 @@ class VoltageDualCfg:
 
 @dataclass
 class PrimalCfg:
+    r"""Configuration for the primal batch-size optimizer.
+
+    Attributes:
+        eta_primal: Primal gradient descent step size.
+        w_latency: Weight on the direct latency penalty term
+            :math:`w_L \, \partial L / \partial x`.  This is an implementation
+            extension beyond the paper's Eq. 18, which only has the dual term.
+        w_throughput: Weight on the (negative) throughput gradient.
+        w_switch: Weight on the switching cost regularizer
+            :math:`\gamma \|x - x_{\mathrm{prev}}\|^2`.
+        k_v: Scaling factor applied to the voltage gradient term.  Multiplies
+            :math:`\eta^\top H \, e_i \, \partial P / \partial x`.  Not present
+            in the paper's equations; used here as a tuning knob.
+    """
+
     eta_primal: float = 0.05
     w_latency: float = 0.0
     w_throughput: float = 0.1
@@ -229,6 +252,14 @@ class PerModelPrimalX:
             if (not np.isfinite(mu_i)) or (mu_i < 0.0):
                 mu_i = 0.0
 
+            # Gradient of the Lagrangian w.r.t. x_i = log2(batch_i).
+            # Paper Eq. 18 has:  nabla_x L = mu_i * dL/dx  (latency dual)
+            #                               + eta^T H e_i dP/dx  (voltage dual)
+            # Implementation extensions (tuning knobs not in the paper):
+            #   wL * dL/dx      — direct latency penalty (separate from dual mu_i)
+            #   -wT * dTh/dx    — throughput incentive
+            #   k_v * (...)     — scaling factor on the voltage term
+            #   wS * (x-x_prev) — switching cost regularizer
             grad = 0.0
             grad += wL * dLdx
             grad -= wT * dThdx
@@ -238,7 +269,7 @@ class PerModelPrimalX:
                 grad += wS * (x - x_prev)
 
             x_new = self._project_x(x - eta_pr * grad)
-            self.x_prev_by_model[label] = x_new
+            self.x_prev_by_model[label] = x
             self.x_by_model[label] = x_new
             batch_next[label] = self._discretize_batch(x_new)
 
@@ -285,7 +316,6 @@ class OFOBatchController(Controller):
         estimate_H_every: int = 0,
         estimate_H_dp_kw: float = 100.0,
         latency_rng: np.random.Generator | None = None,
-        datacenter: object | None = None,
     ):
         self._dt_s = float(dt_s)
         self._models = list(models)
@@ -328,9 +358,6 @@ class OFOBatchController(Controller):
         # Latency RNG (use DC's RNG for coupled randomness, or default)
         self._latency_rng = latency_rng if latency_rng is not None else np.random.default_rng(42)
 
-        # Optional datacenter reference for endpoint replicas
-        self._datacenter = datacenter
-
     @property
     def dt_s(self) -> float:
         return self._dt_s
@@ -367,20 +394,11 @@ class OFOBatchController(Controller):
         eta_vec = self._voltage_dual.eta()
 
         # 3. Sample latency and update latency duals
-        # Use endpoint replicas from datacenter when available (matches
-        # the original's use of out_dc["active_replicas_by_model"][label][-1]).
-        ep_state = getattr(self._datacenter, "endpoint_state", None) if self._datacenter else None
-
-        if isinstance(dc_state, OfflineDatacenterState):
+        if dc_state is not None:
             for ms in self._models:
                 label = ms.model_label
                 batch = dc_state.batch_size_by_model.get(label, 128)
-
-                if ep_state is not None:
-                    n_rep = ep_state.active_replicas_by_model.get(label, 0)
-                else:
-                    n_rep = dc_state.active_replicas_by_model.get(label, 0)
-                n_rep = max(int(n_rep), 0)
+                n_rep = max(int(dc_state.active_replicas_by_model.get(label, 0)), 0)
 
                 if n_rep > 0:
                     l_hat = self._latency_table.sample_avg_itl_s(
@@ -402,15 +420,12 @@ class OFOBatchController(Controller):
                 else:
                     self._mu_by_model[label] = max(self._mu_by_model[label], 0.0)
 
-        # 4. Compute replica weights (from endpoint when available)
+        # 4. Compute replica weights
         w_by_model: dict[str, float] = {}
-        if isinstance(dc_state, OfflineDatacenterState):
+        if dc_state is not None:
             for ms in self._models:
                 label = ms.model_label
-                if ep_state is not None:
-                    w_by_model[label] = float(ep_state.active_replicas_by_model.get(label, 0))
-                else:
-                    w_by_model[label] = float(dc_state.active_replicas_by_model.get(label, 0))
+                w_by_model[label] = float(dc_state.active_replicas_by_model.get(label, 0))
 
         # 5. Primal update -> next batch sizes
         assert self._H is not None
@@ -423,4 +438,4 @@ class OFOBatchController(Controller):
         )
 
         self._ctrl_step_count += 1
-        return ControlAction(batch_size_by_model=batch_next)
+        return DatacenterControlAction(batch_size_by_model=batch_next)

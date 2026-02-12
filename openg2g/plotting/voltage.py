@@ -65,7 +65,7 @@ def plot_allbus_voltages_per_phase(
         ax.set_ylabel("Voltage (pu)")
         ax.set_title(title_template.format(label=phase_label))
         ax.set_xlim(0, None)
-        ax.set_ylim(0, None)
+        ax.set_ylim(0.93, 1.11)
         fig.tight_layout()
 
         fname = filename_template.format(label=phase_label)
@@ -97,7 +97,7 @@ def plot_dc_bus_voltage(
     ax.set_ylabel("Voltage (pu)")
     ax.set_title(title)
     ax.set_xlim(0, None)
-    ax.set_ylim(0, None)
+    ax.set_ylim(0.93, 1.11)
     ax.legend()
     fig.tight_layout()
     fig.savefig(str(save_path), bbox_inches="tight")

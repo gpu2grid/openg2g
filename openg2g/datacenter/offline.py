@@ -7,6 +7,7 @@ and serves per-timestep OfflineDatacenterState objects via step().
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -16,7 +17,7 @@ from openg2g.clock import SimulationClock
 from openg2g.datacenter.base import DatacenterBackend
 from openg2g.datacenter.training_overlay import TrainingOverlayCache
 from openg2g.models.spec import ModelSpec
-from openg2g.types import ControlAction, OfflineDatacenterState, ThreePhase
+from openg2g.types import DatacenterControlAction, OfflineDatacenterState, ThreePhase
 from openg2g.utils import split_integer_evenly
 
 
@@ -155,6 +156,20 @@ class TraceByBatchCache:
                 self._templates[(int(b), str(label))] = tpl
         self._built = True
 
+    @classmethod
+    def from_traces(
+        cls,
+        traces_by_batch: dict[int, dict[str, dict[str, Any]]],
+        *,
+        T: float,
+        dt: float,
+        steady_skip_s: float = 0.0,
+    ) -> TraceByBatchCache:
+        """Create a cache and build all templates in one step."""
+        cache = cls(traces_by_batch)
+        cache.build_templates(T=T, dt=dt, steady_skip_s=steady_skip_s)
+        return cache
+
     def template(self, model_label: str, batch_size: int) -> np.ndarray:
         if not self._built:
             raise RuntimeError("Call cache.build_templates(...) first.")
@@ -208,7 +223,12 @@ def _random_restart_profile(
     rng: np.random.Generator,
     n_steps: int,
 ) -> np.ndarray:
-    """Walk through *tpl* and restart from a random index at the end."""
+    """Walk through *tpl* and restart from a random index at the end.
+
+    Fills the output in segments: each segment copies ``tpl[idx:L]``,
+    then draws a new random start index.  The RNG call sequence is
+    identical to the scalar loop it replaces.
+    """
     tpl = np.asarray(tpl, float)
     L = int(tpl.size)
     if L <= 0:
@@ -217,14 +237,31 @@ def _random_restart_profile(
         return np.full(int(n_steps), float(tpl[0]), dtype=float)
 
     out = np.empty(int(n_steps), dtype=float)
+    pos = 0
     idx = int(rng.integers(0, L))
 
-    for i in range(int(n_steps)):
-        out[i] = tpl[idx]
-        idx += 1
-        if idx >= L:
+    while pos < n_steps:
+        seg_len = min(L - idx, n_steps - pos)
+        out[pos : pos + seg_len] = tpl[idx : idx + seg_len]
+        pos += seg_len
+        if pos < n_steps:
             idx = int(rng.integers(0, L))
     return out
+
+
+@dataclass
+class ServerLayout:
+    """Per-model server layout for the offline datacenter."""
+
+    S_total: int
+    total_gpus: int
+    g: int
+    gpus_per_server_list: np.ndarray
+    phase_list: np.ndarray
+    server_order: np.ndarray
+    server_shifts: np.ndarray
+    server_amps: np.ndarray
+    noise_std_frac: float
 
 
 class OfflineDatacenter(DatacenterBackend):
@@ -295,14 +332,11 @@ class OfflineDatacenter(DatacenterBackend):
         self._batch_by_model: dict[str, int] = {ms.model_label: int(batch_init) for ms in models}
 
         # Persistent per-model layout (frozen after first build)
-        self._layout: dict[str, dict[str, Any]] = {}
+        self._layout: dict[str, ServerLayout] = {}
 
         # Chunk buffer
         self._chunk: list[OfflineDatacenterState] = []
         self._chunk_idx: int = 0
-
-        # Endpoint state (the n+1th internal step)
-        self._endpoint_state: OfflineDatacenterState | None = None
 
         # Step counter for global time tracking
         self._global_step: int = 0
@@ -324,32 +358,6 @@ class OfflineDatacenter(DatacenterBackend):
         """Noise/latency RNG (seed + 12345)."""
         return self._rng
 
-    @property
-    def endpoint_state(self) -> OfflineDatacenterState | None:
-        """The n+1th state from the current chunk."""
-        return self._endpoint_state
-
-    @property
-    def endpoint_power(self) -> ThreePhase | None:
-        """Endpoint power from the current chunk."""
-        if self._endpoint_state is not None:
-            return self._endpoint_state.power_w
-        return None
-
-    def chunk_power_trace(self) -> list[ThreePhase] | None:
-        """Return all power values from the current chunk (including endpoint).
-
-        Returns n+1 ThreePhase values covering the full interval
-        (including the endpoint).  Returns None if no chunk has been
-        generated yet.
-        """
-        if not self._chunk:
-            return None
-        trace = [s.power_w for s in self._chunk]
-        if self._endpoint_state is not None:
-            trace.append(self._endpoint_state.power_w)
-        return trace
-
     def step(self, clock: SimulationClock) -> OfflineDatacenterState:
         if self._chunk_idx >= len(self._chunk):
             self._generate_chunk(clock.time_s)
@@ -358,11 +366,10 @@ class OfflineDatacenter(DatacenterBackend):
         self._global_step += 1
         return state
 
-    def apply_control(self, action: ControlAction) -> None:
+    def apply_control(self, action: DatacenterControlAction) -> None:
         """Record new batch sizes.  Changes take effect at the next chunk."""
-        if action.batch_size_by_model:
-            for label, b in action.batch_size_by_model.items():
-                self._batch_by_model[label] = int(b)
+        for label, b in action.batch_size_by_model.items():
+            self._batch_by_model[label] = int(b)
 
     def _generate_chunk(self, t0_s: float) -> None:
         """Generate a chunk of power-trace samples starting at *t0_s*."""
@@ -370,8 +377,8 @@ class OfflineDatacenter(DatacenterBackend):
         n = self._chunk_steps
         # Generate n+1 internal steps to match the original's
         # n_steps = ceil(T/dt) + 1 convention (endpoint-inclusive).
-        # Only the first n states are served; the endpoint is stored
-        # separately for grid resampling and controller access.
+        # Only the first n states are served; the extra step preserves
+        # the original RNG call sequence.
         n_internal = n + 1
         time_global = np.arange(n_internal, dtype=float) * dt + t0_s
 
@@ -395,14 +402,14 @@ class OfflineDatacenter(DatacenterBackend):
                 active_gpus_arr[label] = np.zeros(n_internal, dtype=int)
                 continue
 
-            L = self._get_or_build_layout(ms, n_internal)
-            S_total = int(L["S_total"])
-            gpus_per_server_list = L["gpus_per_server_list"]
-            phase_list = L["phase_list"]
-            server_order = L["server_order"]
-            server_shifts = L["server_shifts"]
-            server_amps = L["server_amps"]
-            noise_std_frac = float(L["noise_std_frac"])
+            layout = self._get_or_build_layout(ms, n_internal)
+            S_total = layout.S_total
+            gpus_per_server_list = layout.gpus_per_server_list
+            phase_list = layout.phase_list
+            server_order = layout.server_order
+            server_shifts = layout.server_shifts
+            server_amps = layout.server_amps
+            noise_std_frac = layout.noise_std_frac
 
             base_per_gpu = self._cache.template(label, batch)[:n_internal]
 
@@ -490,30 +497,9 @@ class OfflineDatacenter(DatacenterBackend):
             )
             self._chunk.append(state)
 
-        # Store the endpoint state (the n+1th internal step).
-        if n_internal > n:
-            self._endpoint_state = OfflineDatacenterState(
-                time_s=float(time_global[n]),
-                power_w=ThreePhase(
-                    a=float(P_phase[0, n]),
-                    b=float(P_phase[1, n]),
-                    c=float(P_phase[2, n]),
-                ),
-                power_by_model_w={
-                    label: float(power_by_model[label][n]) for label in power_by_model
-                },
-                active_replicas_by_model={
-                    label: int(active_replicas_arr[label][n]) for label in active_replicas_arr
-                },
-                batch_size_by_model=dict(self._batch_by_model),
-                avg_itl_by_model={},
-            )
-        else:
-            self._endpoint_state = None
-
         self._chunk_idx = 0
 
-    def _get_or_build_layout(self, ms: ModelSpec, n_steps: int) -> dict[str, Any]:
+    def _get_or_build_layout(self, ms: ModelSpec, n_steps: int) -> ServerLayout:
         """Get or build a frozen per-model server layout."""
         label = ms.model_label
         R = int(ms.replicas)
@@ -522,9 +508,9 @@ class OfflineDatacenter(DatacenterBackend):
         S_total = int(math.ceil(total_gpus / self._gpus_per_server))
 
         if label in self._layout:
-            L = self._layout[label]
-            if int(L["S_total"]) == S_total and int(L["total_gpus"]) == total_gpus:
-                return L
+            existing = self._layout[label]
+            if existing.S_total == S_total and existing.total_gpus == total_gpus:
+                return existing
 
         gpus_per_server_list = np.full(S_total, self._gpus_per_server, dtype=int)
         tail = total_gpus - (S_total - 1) * self._gpus_per_server
@@ -552,16 +538,16 @@ class OfflineDatacenter(DatacenterBackend):
         server_shifts = self._layout_rng.integers(low=0, high=max(n_steps, 1), size=S_total)
         server_amps = self._layout_rng.uniform(float(amp_lo), float(amp_hi), size=S_total)
 
-        L = {
-            "S_total": S_total,
-            "total_gpus": total_gpus,
-            "g": g,
-            "gpus_per_server_list": gpus_per_server_list,
-            "phase_list": phase_list,
-            "server_order": server_order,
-            "server_shifts": server_shifts,
-            "server_amps": server_amps,
-            "noise_std_frac": noise_std_frac,
-        }
-        self._layout[label] = L
-        return L
+        layout = ServerLayout(
+            S_total=S_total,
+            total_gpus=total_gpus,
+            g=g,
+            gpus_per_server_list=gpus_per_server_list,
+            phase_list=phase_list,
+            server_order=server_order,
+            server_shifts=server_shifts,
+            server_amps=server_amps,
+            noise_std_frac=noise_std_frac,
+        )
+        self._layout[label] = layout
+        return layout

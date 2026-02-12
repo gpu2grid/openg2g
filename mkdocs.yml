@@ -51,6 +51,7 @@ nav:
     - Installation: getting-started/installation.md
     - Running a Simulation: getting-started/running.md
   - Guide:
+    - Concepts and Background: guide/concepts.md
     - Architecture: guide/architecture.md
     - Composing Components: guide/composing.md
     - Custom Components: guide/custom-components.md

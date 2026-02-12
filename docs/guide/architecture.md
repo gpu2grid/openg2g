@@ -104,10 +104,12 @@ All state objects are frozen dataclasses defined in `openg2g.types`:
 | Type | Fields | Source |
 |---|---|---|
 | `ThreePhase` | `a`, `b`, `c` | Everywhere |
-| `DatacenterState` | `time_s`, `power_w` | `DatacenterBackend.step()` |
-| `OfflineDatacenterState` | + `power_by_model_w`, `active_replicas_by_model`, `batch_size_by_model` | `OfflineDatacenter.step()` |
+| `DatacenterState` | `time_s`, `power_w`, `batch_size_by_model`, `active_replicas_by_model` | `DatacenterBackend.step()` |
+| `OfflineDatacenterState` | + `power_by_model_w`, `avg_itl_by_model` | `OfflineDatacenter.step()` |
 | `GridState` | `time_s`, `voltages: BusVoltages` | `OpenDSSGrid.step()` |
-| `ControlAction` | `batch_size_by_model`, `tap_changes` | `Controller.step()` |
+| `ControlAction` | _(base, no-op)_ | `Controller.step()` |
+| `DatacenterControlAction` | `batch_size_by_model` | OFO controller |
+| `GridControlAction` | `tap_changes` | Tap schedule controller |
 
 ## SimulationLog
 

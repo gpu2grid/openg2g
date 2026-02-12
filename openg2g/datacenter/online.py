@@ -11,7 +11,7 @@ from collections.abc import Callable
 
 from openg2g.clock import SimulationClock
 from openg2g.datacenter.base import DatacenterBackend
-from openg2g.types import ControlAction, OnlineDatacenterState, ThreePhase
+from openg2g.types import DatacenterControlAction, OnlineDatacenterState, ThreePhase
 
 logger = logging.getLogger(__name__)
 
@@ -101,12 +101,11 @@ class OnlineDatacenter(DatacenterBackend):
             batch_size_by_model=dict(self._batch_by_model),
         )
 
-    def apply_control(self, action: ControlAction) -> None:
+    def apply_control(self, action: DatacenterControlAction) -> None:
         """Apply batch size changes via the control callback."""
-        if action.batch_size_by_model:
-            self._batch_by_model.update({k: int(v) for k, v in action.batch_size_by_model.items()})
-            if self._batch_callback is not None:
-                try:
-                    self._batch_callback(dict(self._batch_by_model))
-                except Exception as exc:
-                    logger.error("Batch control callback failed: %s", exc)
+        self._batch_by_model.update({k: int(v) for k, v in action.batch_size_by_model.items()})
+        if self._batch_callback is not None:
+            try:
+                self._batch_callback(dict(self._batch_by_model))
+            except Exception as exc:
+                logger.error("Batch control callback failed: %s", exc)

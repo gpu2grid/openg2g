@@ -4,15 +4,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-import numpy as np
-
 from openg2g.clock import SimulationClock
 from openg2g.controller.base import Controller
 from openg2g.datacenter.base import DatacenterBackend
 from openg2g.grid.opendss import OpenDSSGrid
 from openg2g.types import (
     ControlAction,
+    DatacenterControlAction,
     DatacenterState,
+    GridControlAction,
     GridState,
     ThreePhase,
 )
@@ -28,13 +28,30 @@ def gcd_float(a: float, b: float, tol: float = 1e-9) -> float:
 
 @dataclass
 class SimulationLog:
-    """Accumulated simulation data from a coordinator run."""
+    """Accumulated simulation data from a coordinator run.
 
+    All fields below are populated by the ``Coordinator.run()`` loop.
+
+    State history (one entry per component step):
+        dc_states: Every ``DatacenterState`` produced by the datacenter.
+        grid_states: Every ``GridState`` produced by the grid.
+        actions: Every ``ControlAction`` emitted by controllers.
+
+    Per-grid-step time series (aligned with ``grid_states``):
+        time_s: Simulation time at each grid step (seconds).
+        Va, Vb, Vc: DC-bus voltage per phase at each grid step (pu).
+        kW_A, kW_B, kW_C: DC load power per phase at each grid step (kW).
+
+    Controller logs (populated only when controllers emit batch changes):
+        batch_log_by_model: Per-model batch size history.
+    """
+
+    # -- State history --
     dc_states: list[DatacenterState] = field(default_factory=list)
     grid_states: list[GridState] = field(default_factory=list)
     actions: list[ControlAction] = field(default_factory=list)
 
-    # Per-timestep arrays for easy access
+    # -- Per-grid-step time series --
     time_s: list[float] = field(default_factory=list)
     Va: list[float] = field(default_factory=list)
     Vb: list[float] = field(default_factory=list)
@@ -43,14 +60,8 @@ class SimulationLog:
     kW_B: list[float] = field(default_factory=list)
     kW_C: list[float] = field(default_factory=list)
 
-    # Per-model batch log
+    # -- Controller logs --
     batch_log_by_model: dict[str, list[int]] = field(default_factory=dict)
-    # Voltage vector at each grid step
-    v_vec_list: list[np.ndarray] = field(default_factory=list)
-    # All-bus voltage snapshots
-    Vabc_all_list: list[dict[str, ThreePhase]] = field(default_factory=list)
-    # Eta norm
-    eta_norm: list[float] = field(default_factory=list)
 
     def record_dc(self, state: DatacenterState) -> None:
         self.dc_states.append(state)
@@ -126,6 +137,7 @@ class Coordinator:
         dc_state: DatacenterState | None = None
         grid_state: GridState | None = None
         dc_buffer: list[ThreePhase] = []
+        interval_start_power: ThreePhase | None = None
         log = SimulationLog()
 
         n_ticks = int(round(self.T_total_s / self.clock.tick_s))
@@ -139,20 +151,15 @@ class Coordinator:
 
             # 2. Grid step (if due) — pass full sub-trace since last grid step
             if self.clock.is_due(self.grid.dt_s) and dc_buffer:
-                # In resample mode, use the DC's chunk power trace (which
-                # includes the endpoint sample) for correct np.interp
-                # resampling.  In other modes, use the accumulated dc_buffer.
-                grid_buffer: list[ThreePhase] = list(dc_buffer)
-                if self.grid.sub_step_mode == "resample":
-                    _get_trace = getattr(self.datacenter, "chunk_power_trace", None)
-                    if callable(_get_trace):
-                        result = _get_trace()
-                        if isinstance(result, list) and result:
-                            grid_buffer = result
-                grid_state = self.grid.step(self.clock, grid_buffer)
+                grid_state = self.grid.step(
+                    self.clock,
+                    list(dc_buffer),
+                    interval_start_w=interval_start_power,
+                )
                 # Record the last power sample for kW logging
                 last_power = dc_buffer[-1]
                 log.record_power(last_power)
+                interval_start_power = last_power
                 dc_buffer.clear()
                 log.record_grid(grid_state, dc_bus=self.dc_bus)
 
@@ -160,10 +167,10 @@ class Coordinator:
             for ctrl in self.controllers:
                 if self.clock.is_due(ctrl.dt_s):
                     action = ctrl.step(self.clock, dc_state, grid_state)
-                    if action.batch_size_by_model:
+                    if isinstance(action, DatacenterControlAction):
                         self.datacenter.apply_control(action)
                         log.record_batch(action.batch_size_by_model)
-                    if action.tap_changes:
+                    elif isinstance(action, GridControlAction):
                         self.grid.apply_control(action)
                     log.record_action(action)
 

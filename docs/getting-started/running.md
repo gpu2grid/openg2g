@@ -1,8 +1,10 @@
 # Running a Simulation
 
-OpenG2G ships with two example simulations in the `examples/` directory:
+OpenG2G ships with example simulations in the `examples/` directory:
 
-- `run_baseline.py` -- uncontrolled baseline (no OFO, capacitor banks active)
+- `run_baseline.py` -- uncontrolled baseline (no OFO, capacitor banks active), with two modes:
+    - `--mode no-tap` (default) -- fixed tap positions ("No control, no tap")
+    - `--mode tap-change` -- scheduled tap changes at t=1500s and t=3300s ("Tap change only")
 - `run_ofo.py` -- OFO closed-loop control with batch size optimization
 
 ## Data Requirements
@@ -16,11 +18,14 @@ Place these directories in the project root before running.
 
 ## Baseline Simulation
 
-The baseline runs the datacenter at a fixed batch size with OpenDSS capacitor bank controls active:
+The baseline runs the datacenter at a fixed batch size with OpenDSS capacitor bank controls active. Two modes correspond to two baselines in the paper:
 
 ```bash
-uv run python examples/run_baseline.py
+uv run python examples/run_baseline.py                   # "No control, no tap" (default)
+uv run python examples/run_baseline.py --mode tap-change  # "Tap change only"
 ```
+
+In `tap-change` mode, regulator taps on phases A and C change at t=1500s and t=3300s.
 
 Key parameters (defined at the top of the script):
 
@@ -31,7 +36,7 @@ Key parameters (defined at the top of the script):
 | `BATCH_INIT` | 128 | Fixed batch size for all models |
 | `T_TOTAL_S` | 3600s | Simulation duration |
 
-Outputs are saved to `outputs/baseline/`:
+Outputs are saved to `outputs/baseline_no-tap/` or `outputs/baseline_tap-change/`:
 
 - `power_profiles.png` -- three-phase DC power over time
 - `voltage_trajectories_phase_{A,B,C}.png` -- all-bus voltage trajectories
@@ -71,7 +76,7 @@ Both simulations print voltage violation statistics:
   voltage_violation_time = 1006.5 s
   worst_vmin             = 0.934839
   worst_vmax             = 1.050770
-  integral_violation     = 31.2408 pu-s
+  integral_violation     = 31.2408 pu·s
 ```
 
 - **violation_time**: total time any bus-phase voltage is outside [0.95, 1.05] pu

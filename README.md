@@ -8,7 +8,7 @@ OpenG2G provides the building blocks for studying how GPU-level controls (batch 
 
 - **Multi-rate simulation** -- datacenter, grid, and controller components run at independent rates, coordinated by a shared clock.
 - **Pluggable architecture** -- swap datacenter backends (trace-based or live GPU) and controllers (OFO, tap scheduling, or your own) via simple abstract interfaces.
-- **OpenDSS integration** -- power flow analysis on standard IEEE test feeders with tap scheduling and voltage monitoring.
+- **OpenDSS integration** -- power flow analysis on standard IEEE test feeders with tap scheduling (`TapPosition`/`TapSchedule` fluent API) and voltage monitoring.
 - **Online Feedback Optimization** -- primal-dual batch size control balancing voltage regulation, inference latency, and throughput.
 - **Live GPU support** -- `OnlineDatacenter` backend reads real-time GPU power via [Zeus](https://github.com/ml-energy/zeus) for hardware-in-the-loop experiments.
 
@@ -60,7 +60,11 @@ coord = Coordinator(
 log = coord.run()
 ```
 
-See [`examples/`](examples/) for complete baseline and OFO simulation scripts.
+See [`examples/`](examples/) for complete simulation scripts:
+
+- `run_baseline.py --mode no-tap` -- fixed taps, no OFO ("No control, no tap")
+- `run_baseline.py --mode tap-change` -- scheduled tap changes, no OFO ("Tap change only")
+- `run_ofo.py` -- OFO closed-loop batch size control
 
 ## Architecture
 

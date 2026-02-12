@@ -92,6 +92,13 @@ class LogisticFitBank:
                 raise ValueError(f"{p}: missing metrics {missing}. Need power/latency/throughput.")
             self._fits[str(model)] = d
 
+    @classmethod
+    def from_csvs(cls, *, csv_by_model: Mapping[str, str | Path]) -> LogisticFitBank:
+        """Create a fit bank and load all CSVs in one step."""
+        bank = cls(csv_by_model=csv_by_model)
+        bank.load_all()
+        return bank
+
     def params(self, model_label: str, metric: str) -> LogisticParams:
         """Retrieve fit parameters for a given model and metric."""
         m = str(metric).strip().lower()

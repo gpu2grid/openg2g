@@ -12,7 +12,13 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from openg2g.clock import SimulationClock
-from openg2g.types import BusVoltages, ControlAction, GridState, ThreePhase
+from openg2g.types import (
+    BusVoltages,
+    GridControlAction,
+    GridState,
+    TapSchedule,
+    ThreePhase,
+)
 
 if TYPE_CHECKING:
     import opendssdirect as dss
@@ -24,6 +30,7 @@ else:
 
 _PHASES = (1, 2, 3)
 _PHASE_NAME = {1: "A", 2: "B", 3: "C"}
+_PHASE_REG_NAMES = ("reg1", "reg2", "reg3")  # A, B, C
 
 
 def _require_dss() -> None:
@@ -46,16 +53,15 @@ class OpenDSSGrid:
         dt_s: Grid simulation timestep (seconds).
         dc_conn: Connection type for DC loads (default ``"wye"``).
         controls_off: If True, disable OpenDSS voltage regulators / controls.
-        tap_schedule: List of ``(time_s, {regcontrol_name: tap_pu})`` tuples
-            for scheduled tap changes, sorted by time.
+        tap_schedule: Pre-planned regulator tap settings as a
+            :class:`~openg2g.types.TapSchedule`, built via the fluent API::
+
+                S = 0.00625  # standard 5/8% tap step
+                TapPosition(a=1.0 + 14 * S, b=1.0 + 6 * S, c=1.0 + 15 * S).at(t=0)
+
+            Each :class:`TapPosition` field is a per-unit tap ratio.
         freeze_regcontrols: If True, disable regcontrols after setting taps.
         exclude_buses: Buses to exclude from voltage indexing (e.g., source bus).
-        sub_step_mode: How to handle multiple DC sub-samples per grid step:
-            ``"all"`` runs one DSS solve per sub-sample (default, exact);
-            ``"last"`` only solves for the final sub-sample (faster);
-            ``"resample"`` resamples DC power onto ``n_dss + 1`` evenly-spaced
-            grid points via ``np.interp`` and runs that many DSS solves
-            (matches the original OFO script's ``resample_to_uniform_grid``).
     """
 
     def __init__(
@@ -69,10 +75,9 @@ class OpenDSSGrid:
         dt_s: float = 1.0,
         dc_conn: str = "wye",
         controls_off: bool = True,
-        tap_schedule: list[tuple[float, dict[str, float]]] | None = None,
+        tap_schedule: TapSchedule | None = None,
         freeze_regcontrols: bool = True,
         exclude_buses: tuple[str, ...] = ("rg60",),
-        sub_step_mode: str = "all",
     ):
         _require_dss()
 
@@ -86,7 +91,9 @@ class OpenDSSGrid:
         self._controls_off = bool(controls_off)
         self._freeze_regcontrols = bool(freeze_regcontrols)
 
-        self._tap_schedule = sorted(list(tap_schedule or []), key=lambda x: float(x[0]))
+        self._tap_schedule: list[tuple[float, dict[str, float]]] = [
+            (t, {"reg1": pos.a, "reg2": pos.b, "reg3": pos.c}) for t, pos in (tap_schedule or ())
+        ]
         self._tap_idx = 0
         self._reg_map: dict[str, tuple[str, int]] | None = None
 
@@ -94,12 +101,6 @@ class OpenDSSGrid:
         self.all_buses: list[str] = []
         self.buses_with_phase: dict[int, list[str]] = {}
         self.v_index: list[tuple[str, int]] = []
-
-        if sub_step_mode not in ("all", "last", "resample"):
-            raise ValueError(
-                f"sub_step_mode must be 'all', 'last', or 'resample', got {sub_step_mode!r}"
-            )
-        self._sub_step_mode = str(sub_step_mode)
 
         self._exclude_buses = tuple(str(b) for b in exclude_buses)
         self._init_dss()
@@ -110,37 +111,48 @@ class OpenDSSGrid:
     def dt_s(self) -> float:
         return self._dt_s
 
-    @property
-    def sub_step_mode(self) -> str:
-        return self._sub_step_mode
-
     def step(
         self,
         clock: SimulationClock,
         load_trace_w: list[ThreePhase],
+        *,
+        interval_start_w: ThreePhase | None = None,
     ) -> GridState:
-        """Advance one grid period, running one DSS solve per sub-step.
+        """Advance one grid period and return the resulting voltage state.
+
+        If multiple DC samples are provided (i.e., ``dt_grid > dt_dc``),
+        they are resampled to two DSS grid points via ``np.interp`` to
+        avoid unnecessary solves.  When a single sample is provided
+        (``dt_grid == dt_dc``), it is solved directly.
 
         Args:
             clock: Current simulation clock.
             load_trace_w: List of ``ThreePhase`` power samples (Watts)
-                accumulated since the last grid step. One DSS solve is run
-                per sample.
+                accumulated since the last grid step.
+            interval_start_w: Optional power at the start of the interval
+                (saved from the previous grid step).  When the buffer
+                contains multiple samples, it is prepended so that the
+                resampled trace covers the full grid period including
+                the starting boundary.
 
         Returns:
-            GridState with voltages from the final solve.
+            GridState with voltages from the solve.
         """
+        self.apply_taps_if_needed(clock.time_s)
+
         pf = max(min(self._pf_dc, 0.999999), 1e-6)
         tanphi = math.tan(math.acos(pf))
 
-        if self._sub_step_mode == "resample":
-            samples = self._resample_dc_to_dss(load_trace_w)
-        elif self._sub_step_mode == "all":
-            samples = load_trace_w
+        resampled = len(load_trace_w) > 1
+        if resampled:
+            trace = list(load_trace_w)
+            if interval_start_w is not None:
+                trace.insert(0, interval_start_w)
+            samples = self._resample_dc_to_dss(trace)
         else:
-            samples = load_trace_w[-1:]
+            samples = load_trace_w
 
-        first_solve_voltages = None
+        first_solve_voltages: BusVoltages | None = None
         for power in samples:
             kW_A = power.a / 1e3
             kW_B = power.b / 1e3
@@ -158,11 +170,10 @@ class OpenDSSGrid:
 
             self._solve()
 
-            # In resample mode, capture voltages after the first DSS solve
-            # for logging.  The original script uses "drop_last" to record
-            # the start-of-interval voltage while the controller reads the
-            # end-of-interval voltage directly from the grid's DSS state.
-            if self._sub_step_mode == "resample" and first_solve_voltages is None:
+            # When resampling, capture voltages after the first DSS solve
+            # for the GridState.  The controller reads the last solve's
+            # voltage directly from the grid's DSS state.
+            if resampled and first_solve_voltages is None:
                 first_solve_voltages = self._snapshot_bus_voltages()
 
         if first_solve_voltages is not None:
@@ -171,10 +182,9 @@ class OpenDSSGrid:
             voltages = self._snapshot_bus_voltages()
         return GridState(time_s=clock.time_s, voltages=voltages)
 
-    def apply_control(self, action: ControlAction) -> None:
+    def apply_control(self, action: GridControlAction) -> None:
         """Apply tap changes from a control action."""
-        if action.tap_changes:
-            self._set_reg_taps(action.tap_changes)
+        self._set_reg_taps(action.tap_changes)
 
     def apply_taps_if_needed(self, t_s: float) -> int:
         """Apply scheduled tap changes up to time *t_s*."""
@@ -257,8 +267,7 @@ class OpenDSSGrid:
         ``n_dss = floor(dt_s / dt_s) = 1``.
 
         Args:
-            load_trace_w: DC power samples (Watts) covering the grid period,
-                including the endpoint.
+            load_trace_w: DC power samples (Watts) covering the grid period.
 
         Returns:
             Resampled ThreePhase samples at DSS grid points.

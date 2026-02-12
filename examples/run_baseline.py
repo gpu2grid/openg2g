@@ -2,10 +2,15 @@
 
 Reproduces the results of baseline_wo_control.py using the modular library
 components: OfflineDatacenter + OpenDSSGrid + TapScheduleController + Coordinator.
+
+Two modes correspond to two baselines in the paper:
+  no-tap       "No control, no tap" — tap positions are fixed throughout.
+  tap-change   "Tap change only" — regulator taps change at t=1500s and t=3300s.
 """
 
 from __future__ import annotations
 
+import argparse
 from pathlib import Path
 
 import numpy as np
@@ -22,14 +27,30 @@ from openg2g.grid.opendss import OpenDSSGrid
 from openg2g.metrics.voltage import compute_allbus_voltage_stats
 from openg2g.models.spec import ModelSpec
 from openg2g.plotting import plot_allbus_voltages_per_phase, plot_power_3ph
+from openg2g.types import TapPosition
+
+S = 0.00625  # standard 5/8% tap step
+
+INITIAL_TAPS = TapPosition(a=1.0 + 14 * S, b=1.0 + 6 * S, c=1.0 + 15 * S)
+
+TAP_SCHEDULES = {
+    "no-tap": INITIAL_TAPS.at(t=0),
+    "tap-change": (
+        TapPosition(a=1.0 + 14 * S, b=1.0 + 6 * S, c=1.0 + 15 * S).at(t=0)
+        | TapPosition(a=1.0 + 16 * S, b=1.0 + 6 * S, c=1.0 + 17 * S).at(t=25 * 60)
+        | TapPosition(a=1.0 + 10 * S, b=1.0 + 6 * S, c=1.0 + 10 * S).at(t=55 * 60)
+    ),
+}
 
 
-def main() -> None:
+def main(mode: str = "no-tap") -> None:
+    tap_schedule = TAP_SCHEDULES[mode]
+
     project_dir = Path(__file__).resolve().parent.parent
     trace_dir = project_dir / "power_csvs_updated"
     case_dir = project_dir / "OpenDss_Test" / "13Bus"
     training_csv = trace_dir / "synthetic_training_trace.csv"
-    save_dir = project_dir / "outputs" / "baseline"
+    save_dir = project_dir / "outputs" / f"baseline_{mode}"
     save_dir.mkdir(parents=True, exist_ok=True)
 
     v_min = 0.95
@@ -46,13 +67,6 @@ def main() -> None:
         ModelSpec(model_label="Qwen3-30B-A3B", replicas=480, gpus_per_replica=2),
         ModelSpec(model_label="Qwen3-235B-A22B", replicas=210, gpus_per_replica=8),
     ]
-
-    tap_step = 0.00625
-    tap_map = {
-        "reg1": 1.0 + 14 * tap_step,
-        "reg2": 1.0 + 6 * tap_step,
-        "reg3": 1.0 + 15 * tap_step,
-    }
 
     required_measured_gpus = {ms.model_label: ms.gpus_per_replica for ms in models}
 
@@ -99,18 +113,13 @@ def main() -> None:
         dt_s=0.1,
         dc_conn="wye",
         controls_off=False,
-        tap_schedule=[
-            (0.0, dict(tap_map)),
-            (1500.0, dict(tap_map)),
-            (3300.0, dict(tap_map)),
-        ],
+        tap_schedule=tap_schedule,
         freeze_regcontrols=True,
-        sub_step_mode="all",
     )
 
     ctrl = TapScheduleController(schedule=[], dt_s=1.0)
 
-    print("Running simulation...")
+    print(f"Running simulation (mode={mode})...")
     coord = Coordinator(
         datacenter=dc,
         grid=grid,
@@ -162,4 +171,12 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="Baseline simulation (no OFO control)")
+    parser.add_argument(
+        "--mode",
+        choices=["no-tap", "tap-change"],
+        default="no-tap",
+        help="Baseline variant: 'no-tap' (fixed taps) or 'tap-change' (scheduled tap changes)",
+    )
+    args = parser.parse_args()
+    main(mode=args.mode)

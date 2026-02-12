@@ -28,6 +28,7 @@ Controllers produce `ControlAction` objects (batch size changes, tap adjustments
 
 ## Guide
 
+- [Concepts and Background](guide/concepts.md) -- why datacenter-grid coordination matters
 - [Architecture](guide/architecture.md) -- how components fit together
 - [Composing Components](guide/composing.md) -- assembling a simulation from parts
 - [Custom Components](guide/custom-components.md) -- implementing your own datacenter or controller

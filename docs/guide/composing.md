@@ -82,8 +82,23 @@ The `batch_control_callback` is called with a `{model_label: batch_size}` dict w
 
 ## Setting Up the Grid
 
+Tap schedules are built using `TapPosition` (per-unit tap ratios per phase) and the `|` operator:
+
 ```python
 from openg2g.grid.opendss import OpenDSSGrid
+from openg2g.types import TapPosition
+
+S = 0.00625  # standard 5/8% tap step
+
+# Fixed taps (single position at t=0)
+tap_schedule = TapPosition(a=1.0 + 14 * S, b=1.0 + 6 * S, c=1.0 + 15 * S).at(t=0)
+
+# Or scheduled changes at multiple times
+tap_schedule = (
+    TapPosition(a=1.0 + 14 * S, b=1.0 + 6 * S, c=1.0 + 15 * S).at(t=0)
+    | TapPosition(a=1.0 + 16 * S, b=1.0 + 6 * S, c=1.0 + 17 * S).at(t=25 * 60)
+    | TapPosition(a=1.0 + 10 * S, b=1.0 + 6 * S, c=1.0 + 10 * S).at(t=55 * 60)
+)
 
 grid = OpenDSSGrid(
     case_dir="OpenDss_Test/13Bus",
@@ -94,19 +109,12 @@ grid = OpenDSSGrid(
     dt_s=0.1,
     dc_conn="wye",
     controls_off=False,       # True for OFO (SolveNoControl)
-    sub_step_mode="all",      # "all", "resample", or "last"
-    tap_schedule=[(0.0, {"reg1": 1.0875, "reg2": 1.0375, "reg3": 1.09375})],
+    tap_schedule=tap_schedule,
     freeze_regcontrols=True,
 )
 ```
 
-### Sub-step Modes
-
-The `sub_step_mode` controls how the grid processes the DC power buffer:
-
-- **`"all"`** -- one DSS solve per DC sample. Use for baseline simulations where `dt_dss == dt_dc`.
-- **`"resample"`** -- interpolates DC samples onto 2 DSS time points via `np.interp`. Use for OFO where `dt_dss > dt_dc`.
-- **`"last"`** -- only the last DC sample is solved. Fastest but least accurate.
+The grid auto-detects its sub-step behavior based on how many DC power samples it receives per step. When `dt_grid == dt_dc` (e.g., both 0.1s), it receives one sample and runs one DSS solve. When `dt_grid > dt_dc` (e.g., grid at 1.0s, DC at 0.1s), it resamples the accumulated DC buffer to 2 DSS grid points via `np.interp`.
 
 ## Stacking Controllers
 
@@ -117,7 +125,7 @@ from openg2g.controller.tap_schedule import TapScheduleController
 from openg2g.controller.ofo import OFOBatchController
 
 controllers = [
-    TapScheduleController(schedule=tap_schedule, dt_s=1.0),
+    TapScheduleController(schedule=[], dt_s=1.0),  # taps handled by grid schedule
     OFOBatchController(models=models, fits=fits, ...),
 ]
 
@@ -129,7 +137,7 @@ coord = Coordinator(
 )
 ```
 
-Actions from all controllers are applied before the next tick.
+Tap changes are typically configured via the `tap_schedule` parameter on `OpenDSSGrid` (using the `TapPosition` fluent API) rather than through `TapScheduleController`. Actions from all controllers are applied before the next tick.
 
 ## Live Mode
 
