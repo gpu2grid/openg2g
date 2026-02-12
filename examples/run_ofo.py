@@ -135,7 +135,6 @@ def main() -> None:
         models=models,
         fits=fits,
         latency_table=latency_table,
-        grid=grid,
         Lth_by_model={
             "Llama-3.1-405B": 0.12,
             "Llama-3.1-70B": 0.10,
