@@ -5,8 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from openg2g.clock import SimulationClock
-from openg2g.controller.base import Controller
 from openg2g.context import SimulationContext, validate_required_features
+from openg2g.controller.base import Controller
 from openg2g.datacenter.base import DatacenterBackend
 from openg2g.grid.opendss import OpenDSSGrid
 from openg2g.types import (

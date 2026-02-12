@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 from openg2g.clock import SimulationClock
-from openg2g.controller.base import Controller
 from openg2g.context import SimulationContext
+from openg2g.controller.base import Controller
 from openg2g.types import Command, ControlAction, DatacenterState, GridState
 
 

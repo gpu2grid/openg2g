@@ -39,4 +39,3 @@ def validate_required_features(
             f"Controller {controller_name!r} requires missing feature(s): {names}. "
             "Check controller requirements and coordinator context wiring."
         )
-

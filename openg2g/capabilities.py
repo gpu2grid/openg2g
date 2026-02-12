@@ -14,9 +14,11 @@ class VoltageSnapshotFeature(Protocol):
     @property
     def v_index(self) -> list[tuple[str, int]]:
         """Fixed (bus, phase) ordering used by ``voltages_vector``."""
+        ...
 
     def voltages_vector(self) -> np.ndarray:
         """Return voltage magnitudes in ``v_index`` order."""
+        ...
 
 
 @runtime_checkable
@@ -25,4 +27,4 @@ class SensitivityFeature(Protocol):
 
     def estimate_H(self, dp_kw: float = 100.0) -> tuple[np.ndarray, np.ndarray]:
         """Estimate ``H = dv/dp`` and return ``(H, v0)``."""
-
+        ...

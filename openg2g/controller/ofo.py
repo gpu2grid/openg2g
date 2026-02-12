@@ -12,8 +12,8 @@ from dataclasses import dataclass
 import numpy as np
 
 from openg2g.clock import SimulationClock
-from openg2g.controller.base import Controller
 from openg2g.context import SimulationContext
+from openg2g.controller.base import Controller
 from openg2g.models.latency import LatencyFitTable
 from openg2g.models.logistic import LogisticFitBank
 from openg2g.models.spec import ModelSpec
