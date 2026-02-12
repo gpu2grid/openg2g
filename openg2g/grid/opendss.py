@@ -14,7 +14,7 @@ import numpy as np
 from openg2g.clock import SimulationClock
 from openg2g.types import (
     BusVoltages,
-    GridControlAction,
+    Command,
     GridState,
     TapSchedule,
     ThreePhase,
@@ -186,9 +186,15 @@ class OpenDSSGrid:
             voltages = self._snapshot_bus_voltages()
         return GridState(time_s=clock.time_s, voltages=voltages)
 
-    def apply_control(self, action: GridControlAction) -> None:
-        """Apply tap changes from a control action."""
-        self._set_reg_taps(action.tap_changes)
+    def apply_control(self, command: Command) -> None:
+        """Apply one command to the OpenDSS grid backend."""
+        if command.kind != "set_taps":
+            raise ValueError(f"OpenDSSGrid does not support command kind={command.kind!r}")
+        tap_changes = command.payload.get("tap_changes", {})
+        if not isinstance(tap_changes, dict):
+            raise ValueError("set_taps requires payload['tap_changes'] as a dict.")
+        tap_map = {str(k): float(v) for k, v in tap_changes.items()}
+        self._set_reg_taps(tap_map)
 
     def apply_taps_if_needed(self, t_s: float) -> int:
         """Apply scheduled tap changes up to time *t_s*."""

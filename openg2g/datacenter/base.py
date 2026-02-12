@@ -5,7 +5,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 
 from openg2g.clock import SimulationClock
-from openg2g.types import DatacenterControlAction, DatacenterState
+from openg2g.types import Command, DatacenterState
 
 
 class DatacenterBackend(ABC):
@@ -21,5 +21,5 @@ class DatacenterBackend(ABC):
         """Advance one native timestep. Return state for this step."""
 
     @abstractmethod
-    def apply_control(self, action: DatacenterControlAction) -> None:
-        """Apply control action. Takes effect on next step() call."""
+    def apply_control(self, command: Command) -> None:
+        """Apply one command. Takes effect on next step() call."""

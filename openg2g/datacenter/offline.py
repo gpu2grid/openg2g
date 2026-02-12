@@ -17,7 +17,7 @@ from openg2g.clock import SimulationClock
 from openg2g.datacenter.base import DatacenterBackend
 from openg2g.datacenter.training_overlay import TrainingOverlayCache
 from openg2g.models.spec import ModelSpec
-from openg2g.types import DatacenterControlAction, OfflineDatacenterState, ThreePhase
+from openg2g.types import Command, OfflineDatacenterState, ThreePhase
 from openg2g.utils import split_integer_evenly
 
 
@@ -366,10 +366,18 @@ class OfflineDatacenter(DatacenterBackend):
         self._global_step += 1
         return state
 
-    def apply_control(self, action: DatacenterControlAction) -> None:
-        """Record new batch sizes.  Changes take effect at the next chunk."""
-        for label, b in action.batch_size_by_model.items():
-            self._batch_by_model[label] = int(b)
+    def apply_control(self, command: Command) -> None:
+        """Record new batch sizes. Changes take effect at the next chunk."""
+        if command.kind != "set_batch_size":
+            raise ValueError(f"OfflineDatacenter does not support command kind={command.kind!r}")
+        batch_map = command.payload.get("batch_size_by_model", {})
+        if not isinstance(batch_map, dict):
+            raise ValueError("set_batch_size requires payload['batch_size_by_model'] as a dict.")
+        for label, b in batch_map.items():
+            b_int = int(b)
+            if b_int <= 0:
+                raise ValueError(f"Batch size must be positive for model {label!r}, got {b_int}.")
+            self._batch_by_model[str(label)] = b_int
 
     def _generate_chunk(self, t0_s: float) -> None:
         """Generate a chunk of power-trace samples starting at *t0_s*."""
