@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from dataclasses import dataclass, field
+from typing import Any, Literal
 
 
 @dataclass(frozen=True)
@@ -79,26 +80,22 @@ class GridState:
 
 @dataclass(frozen=True)
 class ControlAction:
-    """Base control action (no-op).
+    """Collection of control commands emitted by a controller.
 
-    Subclass ``DatacenterControlAction`` for batch size changes or
-    ``GridControlAction`` for tap position changes.  The coordinator
-    uses ``isinstance`` to route each action to the correct component.
+    Use an empty ``commands`` list for a no-op action.
     """
 
-
-@dataclass(frozen=True)
-class DatacenterControlAction(ControlAction):
-    """Control action targeting the datacenter (batch size changes)."""
-
-    batch_size_by_model: dict[str, int] = field(default_factory=dict)
+    commands: list[Command] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
-class GridControlAction(ControlAction):
-    """Control action targeting the grid (tap position changes)."""
+class Command:
+    """Single command envelope routed by target and kind."""
 
-    tap_changes: dict[str, float] = field(default_factory=dict)
+    target: Literal["datacenter", "grid", "custom"]
+    kind: str
+    payload: dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
