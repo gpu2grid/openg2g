@@ -7,8 +7,8 @@ from unittest.mock import MagicMock
 from openg2g.coordinator import Coordinator, gcd_float
 from openg2g.types import (
     BusVoltages,
+    Command,
     ControlAction,
-    DatacenterControlAction,
     DatacenterState,
     GridState,
     ThreePhase,
@@ -46,7 +46,8 @@ def _make_mock_grid(dt_s: float = 1.0):
 def _make_mock_ctrl(dt_s: float = 1.0):
     ctrl = MagicMock()
     ctrl.dt_s = dt_s
-    ctrl.step.return_value = ControlAction()
+    ctrl.step.return_value = ControlAction(commands=[])
+    ctrl.required_features.return_value = set()
     return ctrl
 
 
@@ -102,15 +103,15 @@ def test_coordinator_controller_order():
     )[-1]
 
     ctrl1 = _make_mock_ctrl(dt_s=1.0)
-    ctrl1.step.side_effect = lambda clock, dc_s, grid_s: (
+    ctrl1.step.side_effect = lambda clock, dc_s, grid_s, context: (
         call_order.append("ctrl1"),
-        ControlAction(),
+        ControlAction(commands=[]),
     )[-1]
 
     ctrl2 = _make_mock_ctrl(dt_s=1.0)
-    ctrl2.step.side_effect = lambda clock, dc_s, grid_s: (
+    ctrl2.step.side_effect = lambda clock, dc_s, grid_s, context: (
         call_order.append("ctrl2"),
-        ControlAction(),
+        ControlAction(commands=[]),
     )[-1]
 
     coord = Coordinator(dc, grid, [ctrl1, ctrl2], T_total_s=1.0, dc_bus="671")
@@ -129,10 +130,18 @@ def test_coordinator_batch_action_applied():
     grid = _make_mock_grid(dt_s=1.0)
     ctrl = _make_mock_ctrl(dt_s=1.0)
 
-    action_with_batch = DatacenterControlAction(batch_size_by_model={"model_a": 64})
+    action_with_batch = ControlAction(
+        commands=[
+            Command(
+                target="datacenter",
+                kind="set_batch_size",
+                payload={"batch_size_by_model": {"model_a": 64}},
+            )
+        ]
+    )
     ctrl.step.return_value = action_with_batch
 
     coord = Coordinator(dc, grid, [ctrl], T_total_s=1.0, dc_bus="671")
     coord.run()
 
-    dc.apply_control.assert_called_with(action_with_batch)
+    dc.apply_control.assert_called_with(action_with_batch.commands[0])

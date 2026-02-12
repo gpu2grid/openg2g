@@ -11,7 +11,7 @@ from openg2g.datacenter.offline import (
     build_periodic_per_gpu_template,
 )
 from openg2g.models.spec import ModelSpec
-from openg2g.types import DatacenterControlAction, OfflineDatacenterState
+from openg2g.types import Command, OfflineDatacenterState
 
 
 def _make_simple_cache(dt: float = 0.1, T: float = 100.0) -> TraceByBatchCache:
@@ -121,7 +121,13 @@ def test_batch_change_takes_effect_at_chunk_boundary():
         clock.advance()
 
     # Change batch size — recorded but deferred
-    dc.apply_control(DatacenterControlAction(batch_size_by_model={"TestModel": 64}))
+    dc.apply_control(
+        Command(
+            target="datacenter",
+            kind="set_batch_size",
+            payload={"batch_size_by_model": {"TestModel": 64}},
+        )
+    )
     assert dc.batch_by_model["TestModel"] == 64
 
     # Remaining steps in the current chunk still report old batch
