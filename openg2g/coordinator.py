@@ -6,13 +6,13 @@ from dataclasses import dataclass, field
 
 from openg2g.clock import SimulationClock
 from openg2g.controller.base import Controller
+from openg2g.context import SimulationContext, validate_required_features
 from openg2g.datacenter.base import DatacenterBackend
 from openg2g.grid.opendss import OpenDSSGrid
 from openg2g.types import (
+    Command,
     ControlAction,
-    DatacenterControlAction,
     DatacenterState,
-    GridControlAction,
     GridState,
     ThreePhase,
 )
@@ -50,6 +50,7 @@ class SimulationLog:
     dc_states: list[DatacenterState] = field(default_factory=list)
     grid_states: list[GridState] = field(default_factory=list)
     actions: list[ControlAction] = field(default_factory=list)
+    commands: list[Command] = field(default_factory=list)
 
     # -- Per-grid-step time series --
     time_s: list[float] = field(default_factory=list)
@@ -81,6 +82,7 @@ class SimulationLog:
 
     def record_action(self, action: ControlAction) -> None:
         self.actions.append(action)
+        self.commands.extend(action.commands)
 
     def record_power(self, power_w: ThreePhase) -> None:
         self.kW_A.append(power_w.a / 1e3)
@@ -123,6 +125,7 @@ class Coordinator:
         self.controllers = list(controllers)
         self.T_total_s = float(T_total_s)
         self.dc_bus = str(dc_bus)
+        self.context = self._build_context()
 
         # Compute tick as GCD of all component periods
         periods = [datacenter.dt_s, grid.dt_s] + [c.dt_s for c in controllers]
@@ -132,8 +135,22 @@ class Coordinator:
 
         self.clock = SimulationClock(tick_s=tick, live=live)
 
+    def _build_context(self) -> SimulationContext:
+        return SimulationContext(
+            voltage=self.grid if hasattr(self.grid, "voltages_vector") else None,
+            sensitivity=self.grid if hasattr(self.grid, "estimate_H") else None,
+            raw={"grid": self.grid, "datacenter": self.datacenter},
+        )
+
     def run(self) -> SimulationLog:
         """Run the full simulation and return the log."""
+        for ctrl in self.controllers:
+            validate_required_features(
+                controller_name=ctrl.__class__.__name__,
+                required=ctrl.required_features(),
+                context=self.context,
+            )
+
         dc_state: DatacenterState | None = None
         grid_state: GridState | None = None
         dc_buffer: list[ThreePhase] = []
@@ -166,12 +183,20 @@ class Coordinator:
             # 3. Controllers (if due) — in order, actions applied immediately
             for ctrl in self.controllers:
                 if self.clock.is_due(ctrl.dt_s):
-                    action = ctrl.step(self.clock, dc_state, grid_state)
-                    if isinstance(action, DatacenterControlAction):
-                        self.datacenter.apply_control(action)
-                        log.record_batch(action.batch_size_by_model)
-                    elif isinstance(action, GridControlAction):
-                        self.grid.apply_control(action)
+                    action = ctrl.step(self.clock, dc_state, grid_state, self.context)
+                    for command in action.commands:
+                        if command.target == "datacenter":
+                            self.datacenter.apply_control(command)
+                            if command.kind == "set_batch_size":
+                                batch_map = command.payload.get("batch_size_by_model", {})
+                                if isinstance(batch_map, dict):
+                                    log.record_batch(batch_map)
+                        elif command.target == "grid":
+                            self.grid.apply_control(command)
+                        elif command.target == "custom":
+                            pass
+                        else:
+                            raise ValueError(f"Unsupported command target: {command.target!r}")
                     log.record_action(action)
 
             self.clock.advance()
