@@ -13,7 +13,7 @@ from typing import Any
 import numpy as np
 
 from openg2g.clock import SimulationClock
-from openg2g.datacenter.base import DatacenterBackend
+from openg2g.datacenter.base import LLMBatchSizeControlledDatacenter
 from openg2g.datacenter.training_overlay import TrainingOverlayCache
 from openg2g.events import EventEmitter
 from openg2g.models.latency import ITLMixture2Params
@@ -271,7 +271,7 @@ class ServerLayout:
     noise_std_frac: float
 
 
-class OfflineDatacenter(DatacenterBackend):
+class OfflineDatacenter(LLMBatchSizeControlledDatacenter):
     """Trace-based datacenter simulation with step-by-step interface.
 
     Generates power-trace chunks and serves one sample per ``step()`` call.

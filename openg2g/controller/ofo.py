@@ -13,9 +13,8 @@ import numpy as np
 
 from openg2g.clock import SimulationClock
 from openg2g.controller.base import Controller
-from openg2g.datacenter.base import DatacenterBackend
+from openg2g.datacenter.base import LLMBatchSizeControlledDatacenter
 from openg2g.events import EventEmitter
-from openg2g.grid.base import GridBackend
 from openg2g.grid.opendss import OpenDSSGrid
 from openg2g.models.logistic import LogisticFit
 from openg2g.models.spec import ModelSpec
@@ -273,7 +272,7 @@ class PerModelPrimalX:
         return batch_next
 
 
-class OFOBatchController(Controller[DatacenterBackend, OpenDSSGrid]):
+class OFOBatchController(Controller[LLMBatchSizeControlledDatacenter, OpenDSSGrid]):
     """Online Feedback Optimization controller for batch-size regulation.
 
     Reads grid voltage and datacenter state, updates voltage and latency
@@ -365,11 +364,10 @@ class OFOBatchController(Controller[DatacenterBackend, OpenDSSGrid]):
     def step(
         self,
         clock: SimulationClock,
-        datacenter: DatacenterBackend,
-        grid: GridBackend,
+        datacenter: LLMBatchSizeControlledDatacenter,
+        grid: OpenDSSGrid,
         events: EventEmitter,
     ) -> ControlAction:
-        del clock, events
 
         if self._voltage_dual is None:
             self._voltage_dual = FullNetworkVoltageDual(len(grid.v_index), self._voltage_dual_cfg)

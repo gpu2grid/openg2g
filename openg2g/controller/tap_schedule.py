@@ -7,11 +7,10 @@ from openg2g.controller.base import Controller
 from openg2g.datacenter.base import DatacenterBackend
 from openg2g.events import EventEmitter
 from openg2g.grid.base import GridBackend
-from openg2g.grid.opendss import OpenDSSGrid
 from openg2g.types import Command, ControlAction
 
 
-class TapScheduleController(Controller[DatacenterBackend, OpenDSSGrid]):
+class TapScheduleController(Controller[DatacenterBackend, GridBackend]):
     """Applies pre-defined tap changes at scheduled times.
 
     Args:
@@ -41,7 +40,7 @@ class TapScheduleController(Controller[DatacenterBackend, OpenDSSGrid]):
         grid: GridBackend,
         events: EventEmitter,
     ) -> ControlAction:
-        del datacenter, grid, events
+
         t_now = clock.time_s
         tap_changes: dict[str, float] = {}
 

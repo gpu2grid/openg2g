@@ -6,15 +6,15 @@ import numpy as np
 
 from openg2g.clock import SimulationClock
 from openg2g.controller.ofo import OFOBatchController, PrimalCfg, VoltageDualCfg
-from openg2g.datacenter.base import DatacenterBackend
+from openg2g.datacenter.base import LLMBatchSizeControlledDatacenter
 from openg2g.events import EventEmitter, SimEvent
-from openg2g.grid.base import GridBackend
+from openg2g.grid.opendss import OpenDSSGrid
 from openg2g.models.logistic import load_logistic_fits
 from openg2g.models.spec import ModelSpec
 from openg2g.types import BusVoltages, Command, DatacenterState, GridState, ThreePhase
 
 
-class _GridStub(GridBackend):
+class _GridStub(OpenDSSGrid):
     def __init__(self):
         self._v_index = [("671", 0), ("671", 1), ("671", 2)]
         self._state: GridState | None = None
@@ -43,7 +43,6 @@ class _GridStub(GridBackend):
         return np.array([0.94, 0.96, 1.01], dtype=float)
 
     def estimate_H(self, dp_kw: float = 100.0) -> tuple[np.ndarray, np.ndarray]:
-        _ = dp_kw
         H = np.eye(3, dtype=float)
         v0 = np.array([1.0, 1.0, 1.0], dtype=float)
         return H, v0
@@ -55,7 +54,7 @@ class _GridStub(GridBackend):
         *,
         interval_start_w: ThreePhase | None = None,
     ) -> GridState:
-        del load_trace_w, interval_start_w
+
         self._state = GridState(
             time_s=clock.time_s,
             voltages=BusVoltages({"671": ThreePhase(a=0.94, b=0.96, c=1.01)}),
@@ -67,10 +66,10 @@ class _GridStub(GridBackend):
         self._state = state
 
     def apply_control(self, command: Command) -> None:
-        del command
+        pass
 
 
-class _DCStub(DatacenterBackend):
+class _DCStub(LLMBatchSizeControlledDatacenter):
     def __init__(self):
         self._state: DatacenterState | None = None
 
@@ -83,11 +82,11 @@ class _DCStub(DatacenterBackend):
         return self._state
 
     def history(self, n: int | None = None) -> list[DatacenterState]:
-        del n
+
         return [] if self._state is None else [self._state]
 
     def step(self, clock: SimulationClock) -> DatacenterState:
-        del clock
+
         if self._state is None:
             self._state = DatacenterState(
                 time_s=0.0,
@@ -102,7 +101,7 @@ class _DCStub(DatacenterBackend):
         self._state = state
 
     def apply_control(self, command: Command) -> None:
-        del command
+        pass
 
 
 class _EventSink:

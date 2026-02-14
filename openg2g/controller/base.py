@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import inspect
 from abc import ABC, abstractmethod
 from typing import Generic, TypeVar, Union, get_args, get_origin
 
@@ -104,30 +103,6 @@ class Controller(Generic[DCBackendT, GridBackendT], ABC):
         dc = " | ".join(t.__name__ for t in cls.compatible_datacenter_types())
         grid = " | ".join(t.__name__ for t in cls.compatible_grid_types())
         return f"Controller[{dc}, {grid}]"
-
-    @classmethod
-    def compatibility_snippet(cls) -> str:
-        try:
-            source = inspect.getsource(cls)
-        except OSError:
-            return f"class {cls.__name__}({cls.compatibility_signature()}):\n"
-        class_line = ""
-        for line in source.splitlines():
-            if line.lstrip().startswith("class "):
-                class_line = line.strip()
-                break
-        if not class_line:
-            return f"class {cls.__name__}({cls.compatibility_signature()}):\n"
-        marker = "Controller["
-        idx = class_line.find(marker)
-        if idx < 0:
-            return class_line + "\n"
-        start = class_line.find("[", idx)
-        end = class_line.find("]", start)
-        if start < 0 or end < start:
-            return class_line + "\n"
-        underline = " " * start + "^" * (end - start + 1)
-        return f"{class_line}\n{underline}\n"
 
     @property
     @abstractmethod

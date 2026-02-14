@@ -157,6 +157,8 @@ class Coordinator:
 
     def _validate_controller_compatibility(self) -> None:
         for ctrl in self.controllers:
+            sig = ctrl.__class__.compatibility_signature()
+
             dc_types = ctrl.compatible_datacenter_types()
             try:
                 dc_ok = isinstance(self.datacenter, dc_types)
@@ -166,14 +168,8 @@ class Coordinator:
                 expected = " | ".join(t.__name__ for t in dc_types)
                 got = type(self.datacenter).__name__
                 raise TypeError(
-                    "Controller/datacenter type mismatch.\n"
-                    f"controller: {ctrl.__class__.__name__}\n"
-                    f"expected datacenter type(s): {expected}\n"
-                    f"got datacenter type: {got}\n\n"
-                    "Controller class definition (generic specialization):\n"
-                    f"{ctrl.__class__.compatibility_snippet()}"
-                    "                              generic part above defines compatibility.\n"
-                    f"Expected generic form: {ctrl.__class__.compatibility_signature()}"
+                    f"{ctrl.__class__.__name__} ({sig}) requires datacenter "
+                    f"type {expected}, got {got}."
                 )
 
             grid_types = ctrl.compatible_grid_types()
@@ -185,14 +181,7 @@ class Coordinator:
                 expected = " | ".join(t.__name__ for t in grid_types)
                 got = type(self.grid).__name__
                 raise TypeError(
-                    "Controller/grid type mismatch.\n"
-                    f"controller: {ctrl.__class__.__name__}\n"
-                    f"expected grid type(s): {expected}\n"
-                    f"got grid type: {got}\n\n"
-                    "Controller class definition (generic specialization):\n"
-                    f"{ctrl.__class__.compatibility_snippet()}"
-                    "                              generic part above defines compatibility.\n"
-                    f"Expected generic form: {ctrl.__class__.compatibility_signature()}"
+                    f"{ctrl.__class__.__name__} ({sig}) requires grid type {expected}, got {got}."
                 )
 
     def run(self) -> SimulationLog:
@@ -200,10 +189,8 @@ class Coordinator:
         log = SimulationLog()
         controller_events = EventEmitter(self.clock, log, "controller")
 
-        if hasattr(self.datacenter, "bind_event_emitter"):
-            self.datacenter.bind_event_emitter(EventEmitter(self.clock, log, "datacenter"))
-        if hasattr(self.grid, "bind_event_emitter"):
-            self.grid.bind_event_emitter(EventEmitter(self.clock, log, "grid"))
+        self.datacenter.bind_event_emitter(EventEmitter(self.clock, log, "datacenter"))
+        self.grid.bind_event_emitter(EventEmitter(self.clock, log, "grid"))
 
         self._validate_controller_compatibility()
 

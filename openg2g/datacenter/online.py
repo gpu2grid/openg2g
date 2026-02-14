@@ -10,14 +10,14 @@ import time
 from collections.abc import Callable
 
 from openg2g.clock import SimulationClock
-from openg2g.datacenter.base import DatacenterBackend
+from openg2g.datacenter.base import LLMBatchSizeControlledDatacenter
 from openg2g.events import EventEmitter
 from openg2g.types import Command, OnlineDatacenterState, ThreePhase
 
 logger = logging.getLogger(__name__)
 
 
-class OnlineDatacenter(DatacenterBackend):
+class OnlineDatacenter(LLMBatchSizeControlledDatacenter):
     """Live GPU power measurement backend using Zeus.
 
     Polls GPU power at the configured rate and aggregates per-phase power

@@ -1116,6 +1116,10 @@ requires-dist = [
 ]
 provides-extras = ["hf"]
 
+[package.metadata.requires-dev]
+dev = [{ name = "pytest", specifier = ">=8" }]
+test = [{ name = "pytest", specifier = ">=8" }]
+
 [[package]]
 name = "nodeenv"
 version = "1.10.0"

@@ -56,6 +56,5 @@ class GridBackend(ABC):
     def estimate_H(self, dp_kw: float = 100.0) -> tuple[np.ndarray, np.ndarray]:
         """Estimate ``H = dv/dp`` and return ``(H, v0)``."""
 
-    def bind_event_emitter(self, emitter: EventEmitter) -> None:
+    def bind_event_emitter(self, emitter: EventEmitter) -> None:  # noqa: B027
         """Attach a clock-bound emitter for backend-originated events."""
-        del emitter

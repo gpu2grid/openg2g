@@ -35,6 +35,15 @@ class DatacenterBackend(ABC):
     def apply_control(self, command: Command) -> None:
         """Apply one command. Takes effect on next step() call."""
 
-    def bind_event_emitter(self, emitter: EventEmitter) -> None:
+    def bind_event_emitter(self, emitter: EventEmitter) -> None:  # noqa: B027
         """Attach a clock-bound emitter for backend-originated events."""
-        del emitter
+
+
+class LLMBatchSizeControlledDatacenter(DatacenterBackend):
+    """Datacenter that serves LLM inference and supports batch-size control.
+
+    Marker layer between ``DatacenterBackend`` and concrete implementations.
+    Controllers that issue ``set_batch_size`` commands or read
+    ``active_replicas_by_model`` / ``observed_itl_s_by_model`` from state
+    should bind their generic to this class.
+    """

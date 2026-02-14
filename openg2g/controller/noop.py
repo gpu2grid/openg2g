@@ -7,11 +7,10 @@ from openg2g.controller.base import Controller
 from openg2g.datacenter.base import DatacenterBackend
 from openg2g.events import EventEmitter
 from openg2g.grid.base import GridBackend
-from openg2g.grid.opendss import OpenDSSGrid
 from openg2g.types import ControlAction
 
 
-class NoopController(Controller[DatacenterBackend, OpenDSSGrid]):
+class NoopController(Controller[DatacenterBackend, GridBackend]):
     """Controller that always returns an empty action."""
 
     def __init__(self, dt_s: float = 1.0):
@@ -28,5 +27,4 @@ class NoopController(Controller[DatacenterBackend, OpenDSSGrid]):
         grid: GridBackend,
         events: EventEmitter,
     ) -> ControlAction:
-        del clock, datacenter, grid, events
         return ControlAction(commands=[])

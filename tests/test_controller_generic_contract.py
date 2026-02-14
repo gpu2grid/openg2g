@@ -31,14 +31,14 @@ class _DC(DatacenterBackend):
         return None
 
     def history(self, n: int | None = None):
-        del n
+
         return []
 
     def step(self, clock: SimulationClock) -> DatacenterState:
         return DatacenterState(time_s=clock.time_s, power_w=ThreePhase(a=1.0, b=1.0, c=1.0))
 
     def apply_control(self, command: Command) -> None:
-        del command
+        pass
 
 
 class _Grid(GridBackend):
@@ -51,7 +51,7 @@ class _Grid(GridBackend):
         return None
 
     def history(self, n: int | None = None):
-        del n
+
         return []
 
     @property
@@ -65,14 +65,14 @@ class _Grid(GridBackend):
         *,
         interval_start_w: ThreePhase | None = None,
     ) -> GridState:
-        del load_trace_w, interval_start_w
+
         return GridState(
             time_s=clock.time_s,
             voltages=BusVoltages({"671": ThreePhase(1.0, 1.0, 1.0)}),
         )
 
     def apply_control(self, command: Command) -> None:
-        del command
+        pass
 
     def voltages_vector(self):
         import numpy as np
@@ -82,7 +82,6 @@ class _Grid(GridBackend):
     def estimate_H(self, dp_kw: float = 100.0):
         import numpy as np
 
-        del dp_kw
         return np.zeros((1, 3), dtype=float), np.array([1.0], dtype=float)
 
 
@@ -100,10 +99,7 @@ def test_controller_requires_explicit_generic_parameters():
 
 
 def test_controller_rejects_reversed_generic_order():
-    reversed_base = Controller[
-        cast(Any, OpenDSSGrid),
-        cast(Any, DatacenterBackend),
-    ]
+    reversed_base = Controller.__class_getitem__((OpenDSSGrid, DatacenterBackend))  # type: ignore[attr-defined]
     with pytest.raises(TypeError, match="is not a subclass of DatacenterBackend"):
         types.new_class(
             "_BadReversed",
@@ -123,10 +119,7 @@ def test_controller_rejects_random_classes_in_generics():
     class _Random:
         pass
 
-    random_base = Controller[
-        cast(Any, _Random),
-        cast(Any, OpenDSSGrid),
-    ]
+    random_base = Controller.__class_getitem__((_Random, OpenDSSGrid))  # type: ignore[attr-defined]
     with pytest.raises(TypeError, match="is not a subclass of DatacenterBackend"):
         types.new_class(
             "_BadRandom",
@@ -146,10 +139,7 @@ def test_controller_rejects_non_abc_subclass_for_grid_generic():
     class _NotGrid:
         pass
 
-    bad_grid_base = Controller[
-        cast(Any, _DC),
-        cast(Any, _NotGrid),
-    ]
+    bad_grid_base = Controller.__class_getitem__((_DC, _NotGrid))  # type: ignore[attr-defined]
     with pytest.raises(TypeError, match="is not a subclass of GridBackend"):
         types.new_class(
             "_BadGrid",
@@ -178,7 +168,7 @@ def test_controller_inherits_compatibility_from_typed_parent():
             grid: _Grid,
             events: EventEmitter,
         ) -> ControlAction:
-            del clock, datacenter, grid, events
+
             return ControlAction(commands=[])
 
     class _Child(_BaseTyped):
