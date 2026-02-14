@@ -74,20 +74,21 @@ Simulation data (power traces, latency fits, logistic fits) can be built from ra
 
 The build script reads raw benchmark results and produces the trace CSVs, latency fit parameters, and logistic fit parameters that the simulation consumes. Model selection is controlled by a JSON config file ([`data/openg2g_models.json`](data/openg2g_models.json)).
 
+Generated artifacts go into `data/generated/` (gitignored). Source files (`data/*.py`, `data/openg2g_models.json`) are versioned.
+
 ```bash
 uv run python data/build_mlenergy_data.py \
   --root /path/to/benchmark_root \
   --config data/openg2g_models.json \
   --llm-config-dir /path/to/benchmark_root/llm/configs \
-  --out-dir data
+  --out-dir data/generated
 ```
 
 ### 2. Generate a synthetic training power trace
 
 ```bash
 uv run python data/generate_training_trace.py \
-  --out-csv data/synthetic_training_trace.csv \
-  --seed 2
+  --out-csv data/generated/synthetic_training_trace.csv --seed 2
 ```
 
 ### 3. Run simulations
@@ -95,18 +96,18 @@ uv run python data/generate_training_trace.py \
 ```bash
 # Baseline: fixed taps
 uv run python examples/run_baseline.py --mode no-tap \
-  --data-dir data \
-  --training-trace data/synthetic_training_trace.csv
+  --data-dir data/generated \
+  --training-trace data/generated/synthetic_training_trace.csv
 
 # Baseline: scheduled tap changes
 uv run python examples/run_baseline.py --mode tap-change \
-  --data-dir data \
-  --training-trace data/synthetic_training_trace.csv
+  --data-dir data/generated \
+  --training-trace data/generated/synthetic_training_trace.csv
 
 # OFO closed-loop control
 uv run python examples/run_ofo.py \
-  --data-dir data \
-  --training-trace data/synthetic_training_trace.csv
+  --data-dir data/generated \
+  --training-trace data/generated/synthetic_training_trace.csv
 ```
 
 Without `--data-dir`, the simulation drivers default to the legacy `power_csvs_updated/` directory.
