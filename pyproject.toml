@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "openg2g"
 version = "0.0.1"
-description = "GPU-to-Grid (G2G) framework for distribution-level voltage regulation via GPU batch size control"
+description = "A GPU-to-Grid simulation library for datacenter-grid cooperation."
 requires-python = ">=3.10"
 license = "Apache-2.0"
 dependencies = [
@@ -13,7 +13,11 @@ dependencies = [
     "pandas",
     "matplotlib",
     "zeus",
+    "mlenergy-data",
 ]
+
+[tool.uv.sources]
+mlenergy-data = { path = "mlenergy-data", editable = true }
 
 [project.optional-dependencies]
 grid = ["opendssdirect.py"]
@@ -48,8 +52,8 @@ select = [
     "RUF",    # ruff-specific
 ]
 ignore = [
-    "SIM108",  # ternary operator — prefer explicit if/else for readability
-    "RUF046",  # unnecessary int() cast — defensive casting is intentional
+    "SIM108",  # ternary operator; prefer explicit if/else for readability
+    "RUF046",  # unnecessary int() cast; defensive casting is intentional
 ]
 
 [tool.ruff.lint.isort]
@@ -58,16 +62,15 @@ known-first-party = ["openg2g"]
 [tool.pyright]
 pythonVersion = "3.10"
 typeCheckingMode = "strict"
-extraPaths = ["mlenergy-data-toolkit"]
+venvPath = "."
+venv = ".venv"
+extraPaths = ["mlenergy-data"]
 reportMissingTypeStubs = false
-# numpy/pandas/mock stubs have incomplete types; these fire on every
-# .reshape(), DataFrame row access, and MagicMock call.
 reportUnknownMemberType = false
 reportUnknownVariableType = false
 reportUnknownArgumentType = false
 reportUnknownLambdaType = false
 reportUnknownParameterType = false
-# Mathematical code uses uppercase variable names (H, M, S, etc.)
 reportConstantRedefinition = false
 
 [tool.pytest.ini_options]

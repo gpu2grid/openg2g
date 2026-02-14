@@ -153,7 +153,9 @@ class OnlineDatacenter(DatacenterBackend):
         """Apply batch size command via the control callback."""
         if command.kind != "set_batch_size":
             raise ValueError(f"OnlineDatacenter does not support command kind={command.kind!r}")
-        batch_map = command.payload.get("batch_size_by_model", {})
+        if "batch_size_by_model" not in command.payload:
+            raise ValueError("set_batch_size requires payload['batch_size_by_model'].")
+        batch_map = command.payload["batch_size_by_model"]
         if not isinstance(batch_map, dict):
             raise ValueError("set_batch_size requires payload['batch_size_by_model'] as a dict.")
         self._batch_by_model.update({str(k): int(v) for k, v in batch_map.items()})

@@ -7,6 +7,7 @@ OFOBatchController] + Coordinator.
 
 from __future__ import annotations
 
+import argparse
 from pathlib import Path
 
 import numpy as np
@@ -26,8 +27,8 @@ from openg2g.datacenter.offline import (
 from openg2g.datacenter.training_overlay import TrainingOverlayCache
 from openg2g.grid.opendss import OpenDSSGrid
 from openg2g.metrics.voltage import compute_allbus_voltage_stats
-from openg2g.models.latency import LatencyFitTable
-from openg2g.models.logistic import LogisticFitBank
+from openg2g.models.latency import load_latency_fits
+from openg2g.models.logistic import load_logistic_fits, load_logistic_fits_merged
 from openg2g.models.spec import ModelSpec
 from openg2g.plotting import (
     plot_allbus_voltages_per_phase,
@@ -37,12 +38,9 @@ from openg2g.plotting import (
 from openg2g.types import TapPosition
 
 
-def main() -> None:
+def main(args: argparse.Namespace) -> None:
     project_dir = Path(__file__).resolve().parent.parent
-    trace_dir = project_dir / "power_csvs_updated"
     case_dir = project_dir / "OpenDss_Test" / "13Bus"
-    latency_csv = trace_dir / "ALL_MODELS_latency_fit_parameters_ALL.csv"
-    training_csv = trace_dir / "synthetic_training_trace.csv"
     save_dir = project_dir / "outputs" / "ofo"
     save_dir.mkdir(parents=True, exist_ok=True)
 
@@ -64,12 +62,28 @@ def main() -> None:
         ModelSpec(model_label="Qwen3-235B-A22B", replicas=210, gpus_per_replica=8),
     ]
 
+    required_measured_gpus = {ms.model_label: ms.gpus_per_replica for ms in models}
+
     TAP_STEP = 0.00625  # standard 5/8% tap step
     tap_schedule = TapPosition(
         a=1.0 + 14 * TAP_STEP, b=1.0 + 6 * TAP_STEP, c=1.0 + 15 * TAP_STEP
     ).at(t=0)
 
-    required_measured_gpus = {ms.model_label: ms.gpus_per_replica for ms in models}
+    data_dir = Path(args.data_dir) if args.data_dir else None
+    if data_dir is not None:
+        trace_dir = data_dir / "traces"
+    else:
+        trace_dir = project_dir / "power_csvs_updated"
+
+    if args.training_trace:
+        training_csv = Path(args.training_trace)
+    elif data_dir is not None:
+        raise SystemExit(
+            "Error: --training-trace is required when using --data-dir "
+            "(training trace is not part of the build output)"
+        )
+    else:
+        training_csv = project_dir / "power_csvs_updated" / "synthetic_training_trace.csv"
 
     print("Loading power traces...")
     traces_by_batch = load_traces_by_batch_from_dir(
@@ -84,7 +98,12 @@ def main() -> None:
     cache.build_templates(T=600.0, dt=dt_dc)
 
     training_overlay = TrainingOverlayCache(training_csv, target_peak_W_per_gpu=400.0)
-    latency_table = LatencyFitTable(str(latency_csv))
+
+    print("Loading latency fits...")
+    if data_dir is not None:
+        latency_fits = load_latency_fits(data_dir / "latency_fits.csv")
+    else:
+        latency_fits = load_latency_fits(trace_dir / "ALL_MODELS_latency_fit_parameters_ALL.csv")
 
     print("Initializing OfflineDatacenter...")
     dc = OfflineDatacenter(
@@ -103,19 +122,21 @@ def main() -> None:
         training_t_add_start=1000.0,
         training_t_add_end=2000.0,
         training_n_train_gpus=300 * gpus_per_server,
-        latency_table=latency_table,
+        latency_fits=latency_fits,
         latency_exact_threshold=30,
         latency_seed=0,
     )
 
     print("Loading logistic fits...")
-    fits = LogisticFitBank(
-        csv_by_model={
-            label: trace_dir / f"{label}_logistic_fit_parameters_combined.csv"
-            for label in required_measured_gpus
-        }
-    )
-    fits.load_all()
+    if data_dir is not None:
+        fits = load_logistic_fits_merged(data_dir / "logistic_fits.csv")
+    else:
+        fits = load_logistic_fits(
+            {
+                label: trace_dir / f"{label}_logistic_fit_parameters_combined.csv"
+                for label in required_measured_gpus
+            }
+        )
 
     print("Initializing OpenDSSGrid...")
     grid = OpenDSSGrid(
@@ -234,4 +255,18 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="OFO closed-loop simulation")
+    parser.add_argument(
+        "--data-dir",
+        default=None,
+        help="Toolkit-generated data directory (contains traces/, latency_fits.csv, "
+        "logistic_fits.csv). Defaults to power_csvs_updated/ for legacy mode.",
+    )
+    parser.add_argument(
+        "--training-trace",
+        default=None,
+        help="Path to synthetic training trace CSV. Required when using "
+        "--data-dir; defaults to power_csvs_updated/synthetic_training_trace.csv.",
+    )
+    args = parser.parse_args()
+    main(args)

@@ -103,9 +103,18 @@ class SimulationLog:
         """Event sink entrypoint for component-originated events."""
         self.events.append(event)
         if event.topic == "datacenter.batch_size.updated":
-            batch_map = event.data.get("batch_size_by_model", {})
-            if isinstance(batch_map, dict):
-                self.record_batch({str(k): int(v) for k, v in batch_map.items()})
+            if "batch_size_by_model" not in event.data:
+                raise ValueError(
+                    "Event datacenter.batch_size.updated missing required "
+                    "data['batch_size_by_model']."
+                )
+            batch_map = event.data["batch_size_by_model"]
+            if not isinstance(batch_map, dict):
+                raise ValueError(
+                    "Event datacenter.batch_size.updated requires "
+                    "data['batch_size_by_model'] as dict."
+                )
+            self.record_batch({str(k): int(v) for k, v in batch_map.items()})
 
 
 class Coordinator:
@@ -210,7 +219,7 @@ class Coordinator:
                 dc_buffer.append(dc_state.power_w)
                 log.record_dc(dc_state)
 
-            # 2. Grid step (if due) — pass full sub-trace since last grid step
+            # 2. Grid step (if due). Pass full sub-trace since last grid step.
             if self.clock.is_due(self.grid.dt_s) and dc_buffer:
                 grid_state = self.grid.step(
                     self.clock,
@@ -224,7 +233,7 @@ class Coordinator:
                 dc_buffer.clear()
                 log.record_grid(grid_state, dc_bus=self.dc_bus)
 
-            # 3. Controllers (if due) — in order, actions applied immediately
+            # 3. Controllers (if due). In order, actions applied immediately.
             for ctrl in self.controllers:
                 if self.clock.is_due(ctrl.dt_s):
                     action = ctrl.step(self.clock, self.datacenter, self.grid, controller_events)

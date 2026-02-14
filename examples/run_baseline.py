@@ -4,8 +4,8 @@ Reproduces the results of baseline_wo_control.py using the modular library
 components: OfflineDatacenter + OpenDSSGrid + TapScheduleController + Coordinator.
 
 Two modes correspond to two baselines in the paper:
-  no-tap       "No control, no tap" — tap positions are fixed throughout.
-  tap-change   "Tap change only" — regulator taps change at t=1500s and t=3300s.
+  no-tap       "No control, no tap": tap positions are fixed throughout.
+  tap-change   "Tap change only": regulator taps change at t=1500s and t=3300s.
 """
 
 from __future__ import annotations
@@ -47,15 +47,29 @@ TAP_SCHEDULES = {
 }
 
 
-def main(mode: str = "no-tap") -> None:
+def main(args: argparse.Namespace) -> None:
+    mode = args.mode
     tap_schedule = TAP_SCHEDULES[mode]
 
     project_dir = Path(__file__).resolve().parent.parent
-    trace_dir = project_dir / "power_csvs_updated"
     case_dir = project_dir / "OpenDss_Test" / "13Bus"
-    training_csv = trace_dir / "synthetic_training_trace.csv"
     save_dir = project_dir / "outputs" / f"baseline_{mode}"
     save_dir.mkdir(parents=True, exist_ok=True)
+
+    if args.data_dir:
+        trace_dir = Path(args.data_dir) / "traces"
+    else:
+        trace_dir = project_dir / "power_csvs_updated"
+
+    if args.training_trace:
+        training_csv = Path(args.training_trace)
+    elif args.data_dir:
+        raise SystemExit(
+            "Error: --training-trace is required when using --data-dir "
+            "(training trace is not part of the build output)"
+        )
+    else:
+        training_csv = project_dir / "power_csvs_updated" / "synthetic_training_trace.csv"
 
     v_min = 0.95
     v_max = 1.05
@@ -182,5 +196,17 @@ if __name__ == "__main__":
         default="no-tap",
         help="Baseline variant: 'no-tap' (fixed taps) or 'tap-change' (scheduled tap changes)",
     )
+    parser.add_argument(
+        "--data-dir",
+        default=None,
+        help="Toolkit-generated data directory (contains traces/). "
+        "Defaults to power_csvs_updated/ for legacy mode.",
+    )
+    parser.add_argument(
+        "--training-trace",
+        default=None,
+        help="Path to synthetic training trace CSV. Required when using "
+        "--data-dir; defaults to power_csvs_updated/synthetic_training_trace.csv.",
+    )
     args = parser.parse_args()
-    main(mode=args.mode)
+    main(args)

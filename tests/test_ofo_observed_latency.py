@@ -9,7 +9,7 @@ from openg2g.controller.ofo import OFOBatchController, PrimalCfg, VoltageDualCfg
 from openg2g.datacenter.base import DatacenterBackend
 from openg2g.events import EventEmitter, SimEvent
 from openg2g.grid.base import GridBackend
-from openg2g.models.logistic import LogisticFitBank
+from openg2g.models.logistic import load_logistic_fits
 from openg2g.models.spec import ModelSpec
 from openg2g.types import BusVoltages, Command, DatacenterState, GridState, ThreePhase
 
@@ -123,7 +123,7 @@ def _build_controller(tmp_path: Path) -> OFOBatchController:
     model = ModelSpec(model_label="M1", replicas=10, gpus_per_replica=1)
     fit_csv = tmp_path / "m1_fit.csv"
     _write_fit_csv(fit_csv)
-    fits = LogisticFitBank.from_csvs(csv_by_model={"M1": fit_csv})
+    fits = load_logistic_fits({"M1": fit_csv})
     return OFOBatchController(
         models=[model],
         fits=fits,

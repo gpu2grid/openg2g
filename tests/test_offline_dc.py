@@ -10,22 +10,9 @@ from openg2g.datacenter.offline import (
     TraceByBatchCache,
     build_periodic_per_gpu_template,
 )
+from openg2g.models.latency import ITLMixture2Params
 from openg2g.models.spec import ModelSpec
 from openg2g.types import Command, OfflineDatacenterState
-
-
-class _FakeLatencyTable:
-    def sample_avg_itl_s(
-        self,
-        *,
-        model_label: str,
-        batch_size: int,
-        n_replicas: int,
-        rng: np.random.Generator,
-        exact_threshold: int = 30,
-    ) -> float:
-        _ = (model_label, batch_size, n_replicas, rng, exact_threshold)
-        return 0.123
 
 
 def _make_simple_cache(dt: float = 0.1, T: float = 100.0) -> TraceByBatchCache:
@@ -134,7 +121,7 @@ def test_batch_change_takes_effect_at_chunk_boundary():
         dc.step(clock)
         clock.advance()
 
-    # Change batch size — recorded but deferred
+    # Change batch size, recorded but deferred
     dc.apply_control(
         Command(
             target="datacenter",
@@ -154,7 +141,7 @@ def test_batch_change_takes_effect_at_chunk_boundary():
         dc.step(clock)
         clock.advance()
 
-    # Next step triggers new chunk — now uses batch=64
+    # Next step triggers new chunk and now uses batch=64
     state = dc.step(clock)
     assert state.batch_size_by_model["TestModel"] == 64
 
@@ -173,9 +160,19 @@ def test_build_periodic_template_shape():
     assert np.all(tpl >= 0)
 
 
-def test_offline_datacenter_emits_observed_itl_when_latency_table_is_set():
+def test_offline_datacenter_emits_observed_itl_when_latency_fits_is_set():
     cache = _make_simple_cache()
     model = ModelSpec(model_label="TestModel", replicas=10, gpus_per_replica=1)
+    fake_params = ITLMixture2Params(
+        loc=0.01,
+        pi_steady=0.8,
+        sigma_steady=0.1,
+        scale_steady=0.05,
+        pi_stall=0.2,
+        sigma_stall=0.2,
+        scale_stall=0.1,
+    )
+    latency_fits = {"TestModel": {128: fake_params}}
     dc = OfflineDatacenter(
         trace_cache=cache,
         models=[model],
@@ -187,7 +184,7 @@ def test_offline_datacenter_emits_observed_itl_when_latency_table_is_set():
         ramp_t_start=9999,
         ramp_t_end=9999,
         ramp_floor=1.0,
-        latency_table=_FakeLatencyTable(),
+        latency_fits=latency_fits,
     )
 
     state = dc.step(SimulationClock(tick_s=0.1))

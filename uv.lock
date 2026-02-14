@@ -1095,6 +1095,28 @@ wheels = [
 ]
 
 [[package]]
+name = "mlenergy-data"
+version = "0.1.0"
+source = { editable = "mlenergy-data" }
+dependencies = [
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "numpy", version = "2.4.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+    { name = "pandas", version = "2.3.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "pandas", version = "3.0.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+    { name = "pyyaml" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "datasets", marker = "extra == 'hf'" },
+    { name = "huggingface-hub", marker = "extra == 'hf'" },
+    { name = "numpy" },
+    { name = "pandas" },
+    { name = "pyyaml" },
+]
+provides-extras = ["hf"]
+
+[[package]]
 name = "nodeenv"
 version = "1.10.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1282,6 +1304,7 @@ version = "0.0.1"
 source = { editable = "." }
 dependencies = [
     { name = "matplotlib" },
+    { name = "mlenergy-data" },
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "numpy", version = "2.4.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "pandas", version = "2.3.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
@@ -1318,6 +1341,7 @@ test = [
 [package.metadata]
 requires-dist = [
     { name = "matplotlib" },
+    { name = "mlenergy-data", editable = "mlenergy-data" },
     { name = "numpy" },
     { name = "opendssdirect-py", marker = "extra == 'grid'" },
     { name = "pandas" },

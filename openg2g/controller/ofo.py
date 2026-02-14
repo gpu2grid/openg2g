@@ -17,7 +17,7 @@ from openg2g.datacenter.base import DatacenterBackend
 from openg2g.events import EventEmitter
 from openg2g.grid.base import GridBackend
 from openg2g.grid.opendss import OpenDSSGrid
-from openg2g.models.logistic import LogisticFitBank
+from openg2g.models.logistic import LogisticFit
 from openg2g.models.spec import ModelSpec
 from openg2g.types import (
     Command,
@@ -118,7 +118,7 @@ class PerModelPrimalX:
         *,
         models: list[ModelSpec],
         batch_set: list[int],
-        fits: LogisticFitBank,
+        fits: dict[str, LogisticFit],
         cfg: PrimalCfg,
     ):
         self.models = list(models)
@@ -143,7 +143,7 @@ class PerModelPrimalX:
         for ms in self.models:
             label = ms.model_label
             try:
-                th_max = float(self.fits.params(label, "throughput").eval(b_max))
+                th_max = float(self.fits[label].throughput.eval(b_max))
             except Exception:
                 th_max = float("nan")
             if (not np.isfinite(th_max)) or (th_max <= 0.0):
@@ -226,9 +226,9 @@ class PerModelPrimalX:
             He = H @ e
             g_voltage = float(eta_vec @ He)
 
-            p_fit = self.fits.params(label, "power")
-            l_fit = self.fits.params(label, "latency")
-            th_fit = self.fits.params(label, "throughput")
+            p_fit = self.fits[label].power
+            l_fit = self.fits[label].latency
+            th_fit = self.fits[label].throughput
 
             dPdx_1 = float(p_fit.deriv_wrt_x(x))
             dLdx_1 = float(l_fit.deriv_wrt_x(x))
@@ -253,10 +253,10 @@ class PerModelPrimalX:
             # Paper Eq. 18 has:  nabla_x L = mu_i * dL/dx  (latency dual)
             #                               + eta^T H e_i dP/dx  (voltage dual)
             # Implementation extensions (tuning knobs not in the paper):
-            #   wL * dL/dx      — direct latency penalty (separate from dual mu_i)
-            #   -wT * dTh/dx    — throughput incentive
-            #   k_v * (...)     — scaling factor on the voltage term
-            #   wS * (x-x_prev) — switching cost regularizer
+            #   wL * dL/dx      : direct latency penalty (separate from dual mu_i)
+            #   -wT * dTh/dx    : throughput incentive
+            #   k_v * (...)     : scaling factor on the voltage term
+            #   wS * (x-x_prev) : switching cost regularizer
             grad = 0.0
             grad += wL * dLdx
             grad -= wT * dThdx
@@ -282,7 +282,7 @@ class OFOBatchController(Controller[DatacenterBackend, OpenDSSGrid]):
 
     Args:
         models: Model specifications.
-        fits: Logistic fit bank with power/latency/throughput curves per model.
+        fits: Per-model logistic fits for power/latency/throughput curves.
         Lth_by_model: Per-model latency threshold (seconds).
         primal_cfg: Primal optimizer configuration.
         voltage_dual_cfg: Voltage dual configuration (v_min, v_max, rho_v).
@@ -299,7 +299,7 @@ class OFOBatchController(Controller[DatacenterBackend, OpenDSSGrid]):
         self,
         *,
         models: list[ModelSpec],
-        fits: LogisticFitBank,
+        fits: dict[str, LogisticFit],
         Lth_by_model: dict[str, float],
         primal_cfg: PrimalCfg,
         voltage_dual_cfg: VoltageDualCfg,

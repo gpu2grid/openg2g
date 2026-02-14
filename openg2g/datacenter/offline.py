@@ -1,7 +1,6 @@
 """Offline (trace-based) datacenter backend.
 
-Refactored from DCSimCached in final_ofo_test.py.  Loads power-trace CSVs
-and serves per-timestep OfflineDatacenterState objects via step().
+Loads power-trace CSVs and serves per-timestep OfflineDatacenterState objects via step().
 """
 
 from __future__ import annotations
@@ -17,6 +16,7 @@ from openg2g.clock import SimulationClock
 from openg2g.datacenter.base import DatacenterBackend
 from openg2g.datacenter.training_overlay import TrainingOverlayCache
 from openg2g.events import EventEmitter
+from openg2g.models.latency import ITLMixture2Params
 from openg2g.models.spec import ModelSpec
 from openg2g.types import Command, OfflineDatacenterState, ThreePhase
 from openg2g.utils import split_integer_evenly
@@ -145,13 +145,19 @@ class TraceByBatchCache:
         self._templates.clear()
         for b, per_model in self.traces_by_batch.items():
             for label, tr in per_model.items():
+                if "measured_gpus" not in tr:
+                    raise KeyError(
+                        f"Missing required trace field 'measured_gpus' for model={label}"
+                    )
+                if "is_total" not in tr:
+                    raise KeyError(f"Missing required trace field 'is_total' for model={label}")
                 tpl = build_periodic_per_gpu_template(
                     trace_t=np.asarray(tr["t"], float),
                     trace_p_total=np.asarray(tr["p"], float),
-                    measured_gpus=int(tr.get("measured_gpus", 1)),
+                    measured_gpus=int(tr["measured_gpus"]),
                     dt=float(dt),
                     T=float(T),
-                    is_total=bool(tr.get("is_total", True)),
+                    is_total=bool(tr["is_total"]),
                     steady_skip_s=float(steady_skip_s),
                 )
                 self._templates[(int(b), str(label))] = tpl
@@ -268,9 +274,8 @@ class ServerLayout:
 class OfflineDatacenter(DatacenterBackend):
     """Trace-based datacenter simulation with step-by-step interface.
 
-    Internally generates power-trace chunks using the same logic as DCSimCached.
-    ``step()`` serves one sample per call from the chunk buffer.  When the buffer
-    is depleted or batch sizes change, a new chunk is generated.
+    Generates power-trace chunks and serves one sample per ``step()`` call.
+    When the chunk buffer is depleted or batch sizes change, a new chunk is generated.
 
     Args:
         trace_cache: Pre-built ``TraceByBatchCache`` with templates for all
@@ -289,8 +294,8 @@ class OfflineDatacenter(DatacenterBackend):
         training_t_add_start: Global time when training overlay starts.
         training_t_add_end: Global time when training overlay ends.
         training_n_train_gpus: Number of GPUs running training.
-        latency_table: Optional latency sampler table with
-            ``sample_avg_itl_s(model_label, batch_size, n_replicas, rng, exact_threshold)``.
+        latency_fits: Optional per-model latency fits:
+            ``model_label -> batch_size -> ITLMixture2Params``.
         latency_exact_threshold: Exact-sampling threshold for latency averaging.
         latency_seed: Optional seed for latency RNG. Defaults to ``seed + 54321``.
     """
@@ -313,7 +318,7 @@ class OfflineDatacenter(DatacenterBackend):
         training_t_add_start: float = 1000.0,
         training_t_add_end: float = 2000.0,
         training_n_train_gpus: int = 2400,
-        latency_table: Any | None = None,
+        latency_fits: dict[str, dict[int, ITLMixture2Params]] | None = None,
         latency_exact_threshold: int = 30,
         latency_seed: int | None = None,
     ):
@@ -335,7 +340,7 @@ class OfflineDatacenter(DatacenterBackend):
         self._training_t_add_start = float(training_t_add_start)
         self._training_t_add_end = float(training_t_add_end)
         self._training_n_train_gpus = int(training_n_train_gpus)
-        self._latency_table = latency_table
+        self._latency_fits = latency_fits
         self._latency_exact_threshold = int(latency_exact_threshold)
 
         # Current batch sizes
@@ -398,7 +403,9 @@ class OfflineDatacenter(DatacenterBackend):
         """Record new batch sizes. Changes take effect at the next chunk."""
         if command.kind != "set_batch_size":
             raise ValueError(f"OfflineDatacenter does not support command kind={command.kind!r}")
-        batch_map = command.payload.get("batch_size_by_model", {})
+        if "batch_size_by_model" not in command.payload:
+            raise ValueError("set_batch_size requires payload['batch_size_by_model'].")
+        batch_map = command.payload["batch_size_by_model"]
         if not isinstance(batch_map, dict):
             raise ValueError("set_batch_size requires payload['batch_size_by_model'] as a dict.")
         for label, b in batch_map.items():
@@ -422,10 +429,7 @@ class OfflineDatacenter(DatacenterBackend):
         """Generate a chunk of power-trace samples starting at *t0_s*."""
         dt = self._dt
         n = self._chunk_steps
-        # Generate n+1 internal steps to match the original's
-        # n_steps = ceil(T/dt) + 1 convention (endpoint-inclusive).
-        # Only the first n states are served; the extra step preserves
-        # the original RNG call sequence.
+        # Generate n+1 internal steps (endpoint-inclusive), serving the first n.
         n_internal = n + 1
         time_global = np.arange(n_internal, dtype=float) * dt + t0_s
 
@@ -441,7 +445,9 @@ class OfflineDatacenter(DatacenterBackend):
             label = ms.model_label
             R = int(ms.replicas)
             g = int(ms.gpus_per_replica)
-            batch = int(self._batch_by_model.get(label, 128))
+            if label not in self._batch_by_model:
+                raise KeyError(f"Missing required batch size for model {label!r}")
+            batch = int(self._batch_by_model[label])
 
             if R <= 0:
                 power_by_model[label] = np.zeros(n_internal, dtype=float)
@@ -530,18 +536,25 @@ class OfflineDatacenter(DatacenterBackend):
             for ms in self._models:
                 label = ms.model_label
                 n_rep = int(active_replicas_arr[label][i])
-                if self._latency_table is None or n_rep <= 0:
+                if self._latency_fits is None or n_rep <= 0:
                     observed_itl_s_by_model[label] = float("nan")
                     continue
-                batch = int(self._batch_by_model.get(label, 1))
-                observed_itl_s_by_model[label] = float(
-                    self._latency_table.sample_avg_itl_s(
-                        model_label=label,
-                        batch_size=batch,
-                        n_replicas=n_rep,
-                        rng=self._latency_rng,
-                        exact_threshold=self._latency_exact_threshold,
+                if label not in self._batch_by_model:
+                    raise KeyError(f"Missing required batch size for model {label!r}")
+                batch = int(self._batch_by_model[label])
+                model_fits = self._latency_fits.get(label)
+                if model_fits is None:
+                    raise KeyError(f"No latency fits for model={label!r}")
+                params = model_fits.get(batch)
+                if params is None:
+                    raise KeyError(
+                        f"No latency fits for model={label!r}, batch={batch}. "
+                        f"Available={sorted(model_fits.keys())}"
                     )
+                observed_itl_s_by_model[label] = params.sample_avg(
+                    n_replicas=n_rep,
+                    rng=self._latency_rng,
+                    exact_threshold=self._latency_exact_threshold,
                 )
 
             state = OfflineDatacenterState(
@@ -597,8 +610,12 @@ class OfflineDatacenter(DatacenterBackend):
         if tr0 is None:
             raise KeyError(f"Model {label!r} not found in cache.traces_by_batch.")
 
-        amp_lo, amp_hi = tr0.get("amp_jitter", (1.0, 1.0))
-        noise_std_frac = float(tr0.get("noise_std_frac", 0.0))
+        if "amp_jitter" not in tr0:
+            raise KeyError(f"Missing required trace field 'amp_jitter' for model {label!r}")
+        if "noise_std_frac" not in tr0:
+            raise KeyError(f"Missing required trace field 'noise_std_frac' for model {label!r}")
+        amp_lo, amp_hi = tr0["amp_jitter"]
+        noise_std_frac = float(tr0["noise_std_frac"])
 
         server_shifts = self._layout_rng.integers(low=0, high=max(n_steps, 1), size=S_total)
         server_amps = self._layout_rng.uniform(float(amp_lo), float(amp_hi), size=S_total)

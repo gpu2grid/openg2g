@@ -19,7 +19,7 @@ def plot_allbus_voltages_per_phase(
     v_min: float = 0.95,
     v_max: float = 1.05,
     filename_template: str = "all_bus_voltages_phase_{label}.png",
-    title_template: str = "All-Bus Voltages — Phase {label}",
+    title_template: str = "All-Bus Voltages, Phase {label}",
     figsize: tuple[float, float] = (12, 4),
     linewidth: float = 0.3,
     alpha: float = 0.7,

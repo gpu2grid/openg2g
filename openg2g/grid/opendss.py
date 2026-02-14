@@ -213,7 +213,9 @@ class OpenDSSGrid(GridBackend):
         """Apply one command to the OpenDSS grid backend."""
         if command.kind != "set_taps":
             raise ValueError(f"OpenDSSGrid does not support command kind={command.kind!r}")
-        tap_changes = command.payload.get("tap_changes", {})
+        if "tap_changes" not in command.payload:
+            raise ValueError("set_taps requires payload['tap_changes'].")
+        tap_changes = command.payload["tap_changes"]
         if not isinstance(tap_changes, dict):
             raise ValueError("set_taps requires payload['tap_changes'] as a dict.")
         tap_map = {str(k): float(v) for k, v in tap_changes.items()}
