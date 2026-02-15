@@ -46,13 +46,13 @@ class PrimalCfg:
     Attributes:
         eta_primal: Primal gradient descent step size.
         w_latency: Weight on the direct latency penalty term
-            ``w_L * dL/dx``.  This is an implementation extension beyond
+            `w_L * dL/dx`.  This is an implementation extension beyond
             the paper's Eq. 18, which only has the dual term.
         w_throughput: Weight on the (negative) throughput gradient.
         w_switch: Weight on the switching cost regularizer
-            ``gamma * ||x - x_prev||^2``.
+            `gamma * ||x - x_prev||^2`.
         k_v: Scaling factor applied to the voltage gradient term.  Multiplies
-            ``eta^T H e_i dP/dx``.  Not present in the paper's equations;
+            `eta^T H e_i dP/dx`.  Not present in the paper's equations;
             used here as a tuning knob.
     """
 
@@ -67,7 +67,7 @@ class FullNetworkVoltageDual:
     """Full-network duals for voltage box constraints.
 
     Maintains per-bus dual variables for under- and overvoltage and updates
-    them via projected gradient ascent::
+    them via projected gradient ascent:
 
         lam_low  <- [lam_low  + rho_v * (v_min - v_hat)]+
         lam_high <- [lam_high + rho_v * (v_hat - v_max)]+
@@ -86,10 +86,10 @@ class FullNetworkVoltageDual:
         """Update duals given observed voltage vector.
 
         Args:
-            v_hat: Observed voltage magnitudes (pu), shape ``(M3,)``.
+            v_hat: Observed voltage magnitudes (pu), shape `(M3,)`.
 
         Raises:
-            ValueError: If ``v_hat`` length does not match the dual dimension.
+            ValueError: If `v_hat` length does not match the dual dimension.
         """
         v_hat = np.asarray(v_hat, float).reshape(-1)
         if v_hat.shape[0] != self.lam_low.shape[0]:
@@ -103,7 +103,7 @@ class FullNetworkVoltageDual:
         self.lam_high = np.maximum(self.lam_high + rho * (v_hat - vmax), 0.0)
 
     def eta(self) -> np.ndarray:
-        """Return the voltage dual difference ``lam_high - lam_low``."""
+        """Return the voltage dual difference `lam_high - lam_low`."""
         return self.lam_high - self.lam_low
 
 
@@ -121,7 +121,7 @@ def phase_share_from_placement(placement: dict[str, int]) -> np.ndarray:
 class PerModelPrimalX:
     """Primal batch-size optimizer operating in log2 space.
 
-    Maintains continuous state ``x_i = log2(batch_i)`` per model and applies
+    Maintains continuous state `x_i = log2(batch_i)` per model and applies
     a gradient descent step using voltage duals, latency duals, and fitted
     power/latency/throughput curves.
 
@@ -207,10 +207,10 @@ class PerModelPrimalX:
 
         Args:
             eta_vec: Voltage dual difference vector
-                (lambda_high - lambda_low), shape ``(M3,)``.
-            H: Voltage sensitivity matrix, shape ``(M3, 3)``.
+                (lambda_high - lambda_low), shape `(M3,)`.
+            H: Voltage sensitivity matrix, shape `(M3, 3)`.
             phase_share_by_model: Per-model normalized phase share vectors,
-                shape ``(3,)`` each.
+                shape `(3,)` each.
             mu_by_model: Per-model latency dual variables.
             w_by_model: Per-model replica weights (active replicas count).
 
@@ -300,7 +300,7 @@ class OFOBatchController(Controller[LLMBatchSizeControlledDatacenter, OpenDSSGri
 
     Reads grid voltage and datacenter state, updates voltage and latency
     duals, runs the primal batch-size optimizer, and returns new batch sizes.
-    Latency dual updates use ``dc_state.observed_itl_s_by_model``.
+    Latency dual updates use `dc_state.observed_itl_s_by_model`.
 
     Args:
         models: Model specifications.
@@ -391,7 +391,7 @@ class OFOBatchController(Controller[LLMBatchSizeControlledDatacenter, OpenDSSGri
     ) -> OFOBatchController:
         """Create an OFO controller from an LLMInferenceWorkload.
 
-        Derives ``batch_set``, ``batch_init``, and ``Lth_by_model`` from
+        Derives `batch_set`, `batch_init`, and `Lth_by_model` from
         the workload's model specs.
 
         Args:

@@ -33,12 +33,12 @@ def gcd_float(a: float, b: float, tol: float = 1e-9) -> float:
 class SimulationLog:
     """Accumulated simulation data from a coordinator run.
 
-    All fields are populated by the ``Coordinator.run()`` loop.
+    All fields are populated by the `Coordinator.run()` loop.
 
     Attributes:
-        dc_states: Every ``DatacenterState`` produced by the datacenter.
-        grid_states: Every ``GridState`` produced by the grid.
-        actions: Every ``ControlAction`` emitted by controllers.
+        dc_states: Every `DatacenterState` produced by the datacenter.
+        grid_states: Every `GridState` produced by the grid.
+        actions: Every `ControlAction` emitted by controllers.
         commands: Flattened list of all commands from all actions.
         time_s: Simulation time at each grid step (seconds).
         Va: DC-bus voltage phase A at each grid step (pu).

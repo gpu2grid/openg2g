@@ -20,18 +20,18 @@ Requires Python 3.10+.
 pip install openg2g
 ```
 
-For grid simulation (OpenDSS):
+For grid simulation with OpenDSS:
 
 ```bash
-pip install "openg2g[grid]"
+pip install "openg2g[opendss]"
 ```
 
 ### Development
 
 ```bash
-git clone https://github.com/your-org/openg2g.git
+git clone https://github.com/TODO/openg2g.git
 cd openg2g
-uv sync  # installs all dev dependencies
+uv sync
 ```
 
 ## Quick Start
@@ -66,7 +66,7 @@ See [`examples/`](examples/) for complete simulation scripts:
 - `run_baseline.py --mode tap-change` -- scheduled tap changes, no OFO ("Tap change only")
 - `run_ofo.py` -- OFO closed-loop batch size control
 
-## Data Pipeline
+## Running Example Simulations
 
 Simulation data (power traces, latency fits, logistic fits) can be built from raw ML.ENERGY benchmark data using the [`mlenergy-data`](mlenergy-data/) library.
 
@@ -136,7 +136,7 @@ Current controller contract:
 
 ## Documentation
 
-Full documentation is available at the [documentation site](https://your-org.github.io/openg2g/), including:
+Full documentation is available at the [documentation site](https://TODO.github.io/openg2g/), including:
 
 - Installation and setup guide
 - Running simulations
@@ -153,7 +153,3 @@ If you use OpenG2G in your research, please cite:
   year      = {2026},
 }
 ```
-
-## License
-
-Apache 2.0

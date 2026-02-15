@@ -10,14 +10,14 @@ class LLMInferenceModelSpec:
     """Specification for one LLM model served in the datacenter.
 
     Attributes:
-        model_label: Human-readable model identifier (e.g. ``"Llama-3.1-70B"``).
+        model_label: Human-readable model identifier (e.g. `"Llama-3.1-70B"`).
         num_replicas: Total number of replicas of this model across the datacenter.
         gpus_per_replica: GPUs allocated to each replica (determines model
             parallelism and per-replica power draw).
         feasible_batch_sizes: Allowed batch sizes for OFO control.  Baseline
             mode only uses the first (or only) entry.
         initial_batch_size: Initial batch size.  Defaults to the maximum of
-            ``feasible_batch_sizes``.
+            `feasible_batch_sizes`.
         itl_deadline_s: Per-model inter-token latency deadline for the OFO
             latency dual (seconds).  Ignored in baseline mode.
     """
@@ -87,7 +87,7 @@ class LLMInferenceWorkload:
         """Per-model ITL deadlines (seconds).
 
         Raises:
-            ValueError: If any model has ``itl_deadline_s = None``.
+            ValueError: If any model has `itl_deadline_s = None`.
         """
         result: dict[str, float] = {}
         for m in self.models:

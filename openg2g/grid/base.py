@@ -23,16 +23,16 @@ class GridBackend(ABC):
     @property
     @abstractmethod
     def state(self) -> GridState | None:
-        """Latest emitted state, or ``None`` before the first step."""
+        """Latest emitted state, or `None` before the first step."""
 
     @abstractmethod
     def history(self, n: int | None = None) -> Sequence[GridState]:
-        """Return emitted state history (all, or latest ``n``)."""
+        """Return emitted state history (all, or latest `n`)."""
 
     @property
     @abstractmethod
     def v_index(self) -> list[tuple[str, int]]:
-        """Fixed (bus, phase) ordering used by ``voltages_vector``."""
+        """Fixed (bus, phase) ordering used by `voltages_vector`."""
 
     @abstractmethod
     def step(
@@ -50,11 +50,11 @@ class GridBackend(ABC):
 
     @abstractmethod
     def voltages_vector(self) -> np.ndarray:
-        """Return voltage magnitudes in ``v_index`` order."""
+        """Return voltage magnitudes in `v_index` order."""
 
     @abstractmethod
     def estimate_H(self, dp_kw: float = 100.0) -> tuple[np.ndarray, np.ndarray]:
-        """Estimate ``H = dv/dp`` and return ``(H, v0)``."""
+        """Estimate `H = dv/dp` and return `(H, v0)`."""
 
     def bind_event_emitter(self, emitter: EventEmitter) -> None:  # noqa: B027
         """Attach a clock-bound emitter for backend-originated events."""

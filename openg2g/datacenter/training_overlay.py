@@ -11,7 +11,7 @@ class TrainingOverlayCache:
     """Loads a 1-GPU training trace and provides periodic overlay on any time grid.
 
     Args:
-        train_csv: Path to CSV with columns ``t_s`` and ``power_W``
+        train_csv: Path to CSV with columns `t_s` and `power_W`
             (1-GPU power trace).
         target_peak_W_per_gpu: The trace is rescaled so its peak equals this
             value.

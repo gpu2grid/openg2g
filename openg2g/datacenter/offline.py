@@ -85,7 +85,7 @@ def load_traces_by_batch_from_dir(
 ) -> dict[int, dict[str, dict[str, Any]]]:
     """Load per-(batch, model) power-trace CSVs into memory.
 
-    Returns ``traces_by_batch[batch][model_label] -> {t, p, measured_gpus, ...}``.
+    Returns `traces_by_batch[batch][model_label] -> {t, p, measured_gpus, ...}`.
     """
     import pandas as pd
 
@@ -241,7 +241,7 @@ def _random_restart_profile(
 ) -> np.ndarray:
     """Walk through *tpl* and restart from a random index at the end.
 
-    Fills the output in segments: each segment copies ``tpl[idx:L]``,
+    Fills the output in segments: each segment copies `tpl[idx:L]`,
     then draws a new random start index.  The RNG call sequence is
     identical to the scalar loop it replaces.
     """
@@ -283,13 +283,13 @@ class ServerLayout:
 class OfflineDatacenter(LLMBatchSizeControlledDatacenter):
     """Trace-based datacenter simulation with step-by-step interface.
 
-    Generates power-trace chunks and serves one sample per ``step()`` call.
+    Generates power-trace chunks and serves one sample per `step()` call.
     When the chunk buffer is depleted or batch sizes change, a new chunk is generated.
 
     Args:
-        trace_cache: Pre-built ``TraceByBatchCache`` with templates for all
+        trace_cache: Pre-built `TraceByBatchCache` with templates for all
             (batch, model) pairs.
-        models: List of ``ModelSpec`` describing the served models.
+        models: List of `ModelSpec` describing the served models.
         dt: Simulation timestep (seconds).
         batch_init: Initial batch size for all models.
         gpus_per_server: Number of GPUs per physical server rack.
@@ -299,14 +299,14 @@ class OfflineDatacenter(LLMBatchSizeControlledDatacenter):
         ramp_t_end: Server shutoff ramp end time (global time).
         ramp_floor: Fraction of servers remaining after ramp.
         base_kW_per_phase: Constant base load per phase (kW).
-        training_overlay: Optional ``TrainingOverlayCache`` for training workload.
+        training_overlay: Optional `TrainingOverlayCache` for training workload.
         training_t_add_start: Global time when training overlay starts.
         training_t_add_end: Global time when training overlay ends.
         training_n_train_gpus: Number of GPUs running training.
         latency_fits: Optional per-model latency fits:
-            ``model_label -> batch_size -> ITLMixtureModel``.
+            `model_label -> batch_size -> ITLMixtureModel`.
         latency_exact_threshold: Exact-sampling threshold for latency averaging.
-        latency_seed: Optional seed for latency RNG. Defaults to ``seed + 54321``.
+        latency_seed: Optional seed for latency RNG. Defaults to `seed + 54321`.
     """
 
     def __init__(

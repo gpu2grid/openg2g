@@ -1,6 +1,6 @@
 """Online (live GPU) datacenter backend using Zeus power monitoring.
 
-Requires ``pip install zeus`` for GPU power measurement.
+Requires `pip install zeus` for GPU power measurement.
 """
 
 from __future__ import annotations
@@ -29,7 +29,7 @@ class OnlineDatacenter(LLMBatchSizeControlledDatacenter):
         phase_assignment: Mapping from GPU index to phase (0=A, 1=B, 2=C).
             GPUs not in this mapping are assigned round-robin.
         batch_control_callback: Callable invoked with
-            ``{model_label: batch_size}`` when ``apply_control`` receives new
+            `{model_label: batch_size}` when `apply_control` receives new
             batch sizes.  Typically sends an HTTP request to the inference
             server.
         replica_count_provider: Optional provider for active replica counts by

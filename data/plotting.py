@@ -28,6 +28,7 @@ def plot_power_trajectories(
     num_gpus_by_model: dict[str, int],
     *,
     batch_sizes: list[int] | None = None,
+    xlim_s: tuple[float, float] | None = None,
     rolling_window: int = 10,
     figsize: tuple[float, float] = (7.1, 3.0),
     dpi: int = 300,
@@ -44,6 +45,7 @@ def plot_power_trajectories(
         model_labels: Models to plot (one subplot each).
         num_gpus_by_model: Number of GPUs for each model label.
         batch_sizes: If given, only plot these batch sizes. Otherwise plot all found.
+        xlim_s: If given, (x_lo, x_hi) in seconds to clip the x-axis view.
         rolling_window: Rolling average window for smoothing.
         figsize: Figure size per subplot (width shared, height per subplot).
         dpi: Figure DPI.
@@ -114,15 +116,19 @@ def plot_power_trajectories(
             fontsize=10,
         )
         ax.set_ylabel("Power (kW)", fontsize=9)
-        ax.legend(
-            fontsize=7,
-            ncol=len(batches_found),
-            loc="upper center",
-            bbox_to_anchor=(0.5, -0.02),
-            frameon=True,
-        )
+        if row == 0:
+            ax.legend(
+                fontsize=7,
+                ncol=len(batches_found),
+                loc="lower center",
+                frameon=True,
+                framealpha=0.9,
+            )
         ax.grid(True, alpha=0.3)
-        ax.set_xlim(left=0)
+        if xlim_s is not None:
+            ax.set_xlim(xlim_s[0], xlim_s[1])
+        else:
+            ax.set_xlim(left=0)
         ax.set_ylim(bottom=0)
 
     axes[-1, 0].set_xlabel("Time (seconds)", fontsize=9)

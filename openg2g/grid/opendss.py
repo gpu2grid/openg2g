@@ -1,6 +1,6 @@
 """OpenDSS-based grid simulator.
 
-Requires ``pip install opendssdirect.py`` (optional dependency).
+Requires `pip install opendssdirect.py` (optional dependency).
 """
 
 from __future__ import annotations
@@ -53,10 +53,10 @@ class OpenDSSGrid(GridBackend):
         dc_kv_ll: Line-to-line voltage (kV) at the DC bus.
         pf_dc: Power factor of the datacenter loads.
         dt_s: Grid simulation timestep (seconds).
-        dc_conn: Connection type for DC loads (default ``"wye"``).
+        dc_conn: Connection type for DC loads (default `"wye"`).
         controls_off: If True, disable OpenDSS voltage regulators / controls.
         tap_schedule: Pre-planned regulator tap settings as a
-            ``TapSchedule``, built via the fluent API::
+            `TapSchedule`, built via the fluent API:
 
                 TAP_STEP = 0.00625  # standard 5/8% tap step
                 TapPosition(
@@ -65,7 +65,7 @@ class OpenDSSGrid(GridBackend):
                     c=1.0 + 15 * TAP_STEP,
                 ).at(t=0)
 
-            Each ``TapPosition`` field is a per-unit tap ratio.
+            Each `TapPosition` field is a per-unit tap ratio.
         freeze_regcontrols: If True, disable regcontrols after setting taps.
         exclude_buses: Buses to exclude from voltage indexing (e.g., source bus).
     """
@@ -144,14 +144,14 @@ class OpenDSSGrid(GridBackend):
     ) -> GridState:
         """Advance one grid period and return the resulting voltage state.
 
-        If multiple DC samples are provided (i.e., ``dt_grid > dt_dc``),
-        they are resampled to two DSS grid points via ``np.interp`` to
+        If multiple DC samples are provided (i.e., `dt_grid > dt_dc`),
+        they are resampled to two DSS grid points via `np.interp` to
         avoid unnecessary solves.  When a single sample is provided
-        (``dt_grid == dt_dc``), it is solved directly.
+        (`dt_grid == dt_dc`), it is solved directly.
 
         Args:
             clock: Current simulation clock.
-            load_trace_w: List of ``ThreePhase`` power samples (Watts)
+            load_trace_w: List of `ThreePhase` power samples (Watts)
                 accumulated since the last grid step.
             interval_start_w: Optional power at the start of the interval
                 (saved from the previous grid step).  When the buffer
@@ -305,9 +305,9 @@ class OpenDSSGrid(GridBackend):
     def _resample_dc_to_dss(self, load_trace_w: list[ThreePhase]) -> list[ThreePhase]:
         """Resample DC sub-step power onto DSS grid points via np.interp.
 
-        Matches the original ``resample_to_uniform_grid`` convention:
-        ``n_dss + 1`` evenly-spaced DSS points over the grid period, where
-        ``n_dss = floor(dt_s / dt_s) = 1``.
+        Matches the original `resample_to_uniform_grid` convention:
+        `n_dss + 1` evenly-spaced DSS points over the grid period, where
+        `n_dss = floor(dt_s / dt_s) = 1`.
 
         Args:
             load_trace_w: DC power samples (Watts) covering the grid period.
@@ -410,8 +410,8 @@ class OpenDSSGrid(GridBackend):
     def _snapshot_bus_voltages(self) -> BusVoltages:
         """Snapshot all per-bus, per-phase voltage magnitudes into BusVoltages.
 
-        Uses ``dss.Circuit.AllBusMagPu()`` for a single bulk read instead
-        of per-bus ``SetActiveBus`` calls, reducing DSS API overhead from
+        Uses `dss.Circuit.AllBusMagPu()` for a single bulk read instead
+        of per-bus `SetActiveBus` calls, reducing DSS API overhead from
         ~9N calls to 1 (where N = number of buses).
         """
         vmag = dss.Circuit.AllBusMagPu()

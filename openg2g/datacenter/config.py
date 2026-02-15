@@ -31,8 +31,8 @@ class WorkloadConfig:
 
     Attributes:
         inference: LLM inference workload specification.
-        training: Training workload window(s).  ``None`` disables training overlay.
-        server_ramps: Server ramp event(s).  ``None`` keeps all servers active.
+        training: Training workload window(s).  `None` disables training overlay.
+        server_ramps: Server ramp event(s).  `None` keeps all servers active.
     """
 
     inference: LLMInferenceWorkload

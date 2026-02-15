@@ -38,7 +38,7 @@ def compute_allbus_voltage_stats(
     """Compute voltage violation statistics across all buses and phases.
 
     For each snapshot the integral violation sums
-    ``max(v_min - v, 0) + max(v - v_max, 0)`` over every non-excluded
+    `max(v_min - v, 0) + max(v - v_max, 0)` over every non-excluded
     bus-phase pair, then integrates over time.  A snapshot counts as
     "violated" when this sum is positive.
 

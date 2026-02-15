@@ -14,7 +14,7 @@ class TapScheduleController(Controller[DatacenterBackend, GridBackend]):
     """Applies pre-defined tap changes at scheduled times.
 
     Args:
-        schedule: List of ``(time_s, {regcontrol_name: tap_pu})`` tuples,
+        schedule: List of `(time_s, {regcontrol_name: tap_pu})` tuples,
             sorted by time.
         dt_s: How often the controller checks the schedule (seconds).
     """

@@ -12,9 +12,9 @@ class SimulationClock:
     """Integer-tick clock that avoids floating-point drift.
 
     Components run at different rates (DC=0.1s, Grid=1.0s, Controller=1.0s or 60s).
-    The coordinator computes ``tick_s`` as the GCD of all component periods.
+    The coordinator computes `tick_s` as the GCD of all component periods.
 
-    In live mode (``live=True``), the clock synchronizes with wall-clock time.
+    In live mode (`live=True`), the clock synchronizes with wall-clock time.
     If computation falls behind, a warning is issued.
     """
 
@@ -33,7 +33,7 @@ class SimulationClock:
 
     @property
     def step_index(self) -> int:
-        """Global simulation tick index (alias for ``step``)."""
+        """Global simulation tick index (alias for `step`)."""
         return self._step
 
     def advance(self) -> float:

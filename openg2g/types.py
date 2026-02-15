@@ -24,7 +24,7 @@ class ThreePhase:
         return self.a + self.b + self.c
 
     def as_tuple(self) -> tuple[float, float, float]:
-        """Return ``(a, b, c)`` as a plain tuple."""
+        """Return `(a, b, c)` as a plain tuple."""
         return (self.a, self.b, self.c)
 
 
@@ -89,7 +89,7 @@ class GridState:
 class ControlAction:
     """Collection of control commands emitted by a controller.
 
-    Use an empty ``commands`` list for a no-op action.
+    Use an empty `commands` list for a no-op action.
     """
 
     commands: list[Command] = field(default_factory=list)
@@ -120,10 +120,10 @@ class TapPosition:
     """Regulator tap position per phase, as per-unit tap ratios.
 
     Each field is the tap ratio for the corresponding phase regulator.
-    Phases set to ``None`` are left unchanged when applied.  At least
+    Phases set to `None` are left unchanged when applied.  At least
     one phase must be specified.
 
-    Combine with ``at()`` and ``|`` to build a ``TapSchedule``::
+    Combine with `at()` and `|` to build a `TapSchedule`:
 
         TAP_STEP = 0.00625  # standard 5/8% tap step
         schedule = (
@@ -146,7 +146,7 @@ class TapPosition:
         return TapSchedule(((t, self),))
 
     def as_reg_dict(self) -> dict[str, float]:
-        """Return a dict mapping regulator names to tap ratios, omitting ``None`` phases."""
+        """Return a dict mapping regulator names to tap ratios, omitting `None` phases."""
         d: dict[str, float] = {}
         if self.a is not None:
             d["reg1"] = self.a
@@ -160,7 +160,7 @@ class TapPosition:
 class TapSchedule:
     """Ordered sequence of scheduled tap positions.
 
-    Build using ``TapPosition.at()`` and the ``|`` operator::
+    Build using `TapPosition.at()` and the `|` operator:
 
         TAP_STEP = 0.00625  # standard 5/8% tap step
         schedule = (
@@ -208,7 +208,7 @@ class TrainingRun:
         t_start: Global simulation time when training becomes active (seconds).
         t_end: Global simulation time when training stops (seconds).
         n_gpus: Number of GPUs running the training workload.
-        trace_csv: Path to CSV with columns ``t_s`` and ``power_W`` (1-GPU trace).
+        trace_csv: Path to CSV with columns `t_s` and `power_W` (1-GPU trace).
         target_peak_W_per_gpu: The trace is rescaled so its peak equals this value.
     """
 
@@ -233,9 +233,9 @@ class TrainingRun:
 
 
 class TrainingSchedule:
-    """Ordered collection of training windows, built with ``|``.
+    """Ordered collection of training windows, built with `|`.
 
-    Example::
+    Example:
 
         schedule = (
             TrainingRun(t_start=500, t_end=1500, n_gpus=2400, trace_csv=path_a)
@@ -274,8 +274,8 @@ class TrainingSchedule:
 class ServerRamp:
     """A single server ramp event.
 
-    Transitions the active-server fraction to ``target`` linearly over
-    ``[t_start, t_end]``.
+    Transitions the active-server fraction to `target` linearly over
+    `[t_start, t_end]`.
 
     Attributes:
         t_start: Global simulation time when the ramp begins (seconds).
@@ -302,14 +302,14 @@ class ServerRamp:
 
 
 class ServerRampSchedule:
-    """Ordered collection of server ramp events, built with ``|``.
+    """Ordered collection of server ramp events, built with `|`.
 
     Semantics: before the first ramp, fraction = 1.0.  During each
-    ``[t_start, t_end]`` window, the fraction linearly interpolates from
-    the previous level to ``target``.  Between ramps, the fraction holds
+    `[t_start, t_end]` window, the fraction linearly interpolates from
+    the previous level to `target`.  Between ramps, the fraction holds
     at the last target.
 
-    Example::
+    Example:
 
         ramps = (
             ServerRamp(t_start=2500, t_end=3000, target=0.2)

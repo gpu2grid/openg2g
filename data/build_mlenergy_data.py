@@ -270,6 +270,7 @@ def _generate_plots(
             model_labels=fig2_labels,
             num_gpus_by_model=num_gpus_by_model,
             batch_sizes=sim_batch_sizes,
+            xlim_s=(0, 60),
             save_path=plot_dir / "power_trajectories_combined.png",
         )
         logger.info("Saved power_trajectories_combined.png")
