@@ -50,7 +50,7 @@ class OnlineDatacenter(LLMBatchSizeControlledDatacenter):
         replica_count_provider: Callable[[], dict[str, int]] | None = None,
         observed_itl_provider: Callable[[], dict[str, float]] | None = None,
         power_tolerance_s: float = 0.5,
-    ):
+    ) -> None:
         try:
             from zeus.device import get_gpus
         except ImportError as exc:

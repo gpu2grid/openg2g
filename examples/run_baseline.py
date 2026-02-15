@@ -14,20 +14,26 @@ import argparse
 from pathlib import Path
 
 import numpy as np
+from plotting import (
+    extract_per_model_timeseries,
+    load_itl_fits_from_csv,
+    plot_allbus_voltages_per_phase,
+    plot_power_3ph,
+    plot_power_and_itl_2panel,
+)
 
 from openg2g.controller.tap_schedule import TapScheduleController
 from openg2g.coordinator import Coordinator
+from openg2g.datacenter.config import DatacenterConfig, WorkloadConfig
 from openg2g.datacenter.offline import (
     OfflineDatacenter,
     TraceByBatchCache,
     load_traces_by_batch_from_dir,
 )
-from openg2g.datacenter.training_overlay import TrainingOverlayCache
 from openg2g.grid.opendss import OpenDSSGrid
 from openg2g.metrics.voltage import compute_allbus_voltage_stats
-from openg2g.models.spec import ModelSpec
-from openg2g.plotting import plot_allbus_voltages_per_phase, plot_power_3ph
-from openg2g.types import TapPosition
+from openg2g.models.spec import LLMInferenceModelSpec, LLMInferenceWorkload
+from openg2g.types import ServerRamp, TapPosition, TrainingRun
 
 TAP_STEP = 0.00625  # standard 5/8% tap step
 
@@ -46,19 +52,41 @@ TAP_SCHEDULES = {
     ),
 }
 
+MODELS = (
+    LLMInferenceModelSpec(
+        "Llama-3.1-8B", num_replicas=720, gpus_per_replica=1, initial_batch_size=128
+    ),
+    LLMInferenceModelSpec(
+        "Llama-3.1-70B", num_replicas=180, gpus_per_replica=4, initial_batch_size=128
+    ),
+    LLMInferenceModelSpec(
+        "Llama-3.1-405B", num_replicas=90, gpus_per_replica=8, initial_batch_size=128
+    ),
+    LLMInferenceModelSpec(
+        "Qwen3-30B-A3B", num_replicas=480, gpus_per_replica=2, initial_batch_size=128
+    ),
+    LLMInferenceModelSpec(
+        "Qwen3-235B-A22B", num_replicas=210, gpus_per_replica=8, initial_batch_size=128
+    ),
+)
+
+INFERENCE = LLMInferenceWorkload(models=MODELS)
+
 
 def main(args: argparse.Namespace) -> None:
     mode = args.mode
     tap_schedule = TAP_SCHEDULES[mode]
 
     project_dir = Path(__file__).resolve().parent.parent
-    case_dir = project_dir / "OpenDss_Test" / "13Bus"
+    case_dir = Path(__file__).resolve().parent / "ieee13"
     save_dir = project_dir / "outputs" / f"baseline_{mode}"
     save_dir.mkdir(parents=True, exist_ok=True)
 
     if args.data_dir:
-        trace_dir = Path(args.data_dir) / "traces"
+        data_dir = Path(args.data_dir)
+        trace_dir = data_dir / "traces"
     else:
+        data_dir = None
         trace_dir = project_dir / "power_csvs_updated"
 
     if args.training_trace:
@@ -78,21 +106,11 @@ def main(args: argparse.Namespace) -> None:
     dt_dc = 0.1
     t_total_s = 3600.0
 
-    models = [
-        ModelSpec(model_label="Llama-3.1-8B", replicas=720, gpus_per_replica=1),
-        ModelSpec(model_label="Llama-3.1-70B", replicas=180, gpus_per_replica=4),
-        ModelSpec(model_label="Llama-3.1-405B", replicas=90, gpus_per_replica=8),
-        ModelSpec(model_label="Qwen3-30B-A3B", replicas=480, gpus_per_replica=2),
-        ModelSpec(model_label="Qwen3-235B-A22B", replicas=210, gpus_per_replica=8),
-    ]
-
-    required_measured_gpus = {ms.model_label: ms.gpus_per_replica for ms in models}
-
     print("Loading power traces...")
     traces_by_batch = load_traces_by_batch_from_dir(
         base_dir=trace_dir,
         batch_set=[128],
-        required_measured_gpus=required_measured_gpus,
+        required_measured_gpus=INFERENCE.required_measured_gpus,
         amp_jitter_default=(0.98, 1.02),
         noise_std_frac_default=0.005,
     )
@@ -100,25 +118,36 @@ def main(args: argparse.Namespace) -> None:
     cache = TraceByBatchCache(traces_by_batch)
     cache.build_templates(T=t_total_s, dt=dt_dc)
 
-    training_overlay = TrainingOverlayCache(training_csv, target_peak_W_per_gpu=400.0)
+    print("Loading latency fits...")
+    if data_dir is not None:
+        itl_fits = load_itl_fits_from_csv(data_dir / "latency_fits.csv")
+    else:
+        itl_fits = load_itl_fits_from_csv(trace_dir / "ALL_MODELS_latency_fit_parameters_ALL.csv")
+
+    dc_config = DatacenterConfig(gpus_per_server=gpus_per_server, base_kW_per_phase=500.0)
+    workload = WorkloadConfig(
+        inference=INFERENCE,
+        training=TrainingRun(
+            t_start=1000.0,
+            t_end=2000.0,
+            n_gpus=300 * gpus_per_server,
+            trace_csv=training_csv,
+            target_peak_W_per_gpu=400.0,
+        ),
+        server_ramps=ServerRamp(t_start=2500.0, t_end=3000.0, target=0.2),
+    )
 
     print("Initializing OfflineDatacenter...")
-    dc = OfflineDatacenter(
+    dc = OfflineDatacenter.from_config(
+        dc_config,
+        workload,
         trace_cache=cache,
-        models=models,
         dt=dt_dc,
-        batch_init=128,
-        gpus_per_server=gpus_per_server,
         seed=0,
         chunk_steps=int(t_total_s / dt_dc),
-        ramp_t_start=2500.0,
-        ramp_t_end=3000.0,
-        ramp_floor=0.2,
-        base_kW_per_phase=500.0,
-        training_overlay=training_overlay,
-        training_t_add_start=1000.0,
-        training_t_add_end=2000.0,
-        training_n_train_gpus=300 * gpus_per_server,
+        latency_fits=itl_fits,
+        latency_exact_threshold=30,
+        latency_seed=0,
     )
 
     print("Initializing OpenDSSGrid...")
@@ -160,6 +189,30 @@ def main(args: argparse.Namespace) -> None:
     kW_B = np.array(log.kW_B)
     kW_C = np.array(log.kW_C)
 
+    per_model = extract_per_model_timeseries(log.dc_states)
+
+    # Fig. 5: 2-panel power + ITL
+    plot_power_and_itl_2panel(
+        time_s,
+        kW_A,
+        kW_B,
+        kW_C,
+        avg_itl_by_model=per_model.itl_s,
+        itl_time_s=per_model.time_s,
+        save_path=save_dir / "power_latency_subfigs.png",
+    )
+
+    # Fig. 6: All-bus voltages with bus colormap
+    plot_allbus_voltages_per_phase(
+        log.grid_states,
+        time_s,
+        save_dir=save_dir,
+        v_min=v_min,
+        v_max=v_max,
+        title_template="Voltage trajectories without GPU flexibility (Phase {label})",
+    )
+
+    # Standalone power plot (backward-compatible)
     plot_power_3ph(
         time_s,
         kW_A,
@@ -167,15 +220,6 @@ def main(args: argparse.Namespace) -> None:
         kW_C,
         save_path=save_dir / "power_profiles.png",
         title="DC Power by Phase",
-    )
-    plot_allbus_voltages_per_phase(
-        log.grid_states,
-        time_s,
-        save_dir=save_dir,
-        v_min=v_min,
-        v_max=v_max,
-        filename_template="voltage_trajectories_phase_{label}.png",
-        title_template="Voltage Trajectories — Phase {label}",
     )
 
     with open(save_dir / "console_output.txt", "w") as f:

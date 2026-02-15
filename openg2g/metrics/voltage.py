@@ -11,7 +11,16 @@ from openg2g.types import GridState
 
 @dataclass
 class VoltageStats:
-    """Summary voltage statistics over a simulation run."""
+    """Summary voltage statistics over a simulation run.
+
+    Attributes:
+        worst_vmin: Lowest voltage observed across all buses and phases (pu).
+        worst_vmax: Highest voltage observed across all buses and phases (pu).
+        violation_time_s: Total time with at least one bus-phase violating
+            voltage bounds (seconds).
+        integral_violation_pu_s: Integrated voltage violation magnitude
+            across all bus-phase pairs (pu * s).
+    """
 
     worst_vmin: float
     worst_vmax: float

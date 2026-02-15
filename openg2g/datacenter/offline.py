@@ -15,10 +15,19 @@ from mlenergy_data.modeling import ITLMixtureModel
 
 from openg2g.clock import SimulationClock
 from openg2g.datacenter.base import LLMBatchSizeControlledDatacenter
+from openg2g.datacenter.config import DatacenterConfig, WorkloadConfig
 from openg2g.datacenter.training_overlay import TrainingOverlayCache
 from openg2g.events import EventEmitter
-from openg2g.models.spec import ModelSpec
-from openg2g.types import Command, OfflineDatacenterState, ThreePhase
+from openg2g.models.spec import LLMInferenceModelSpec, ModelSpec
+from openg2g.types import (
+    Command,
+    OfflineDatacenterState,
+    ServerRamp,
+    ServerRampSchedule,
+    ThreePhase,
+    TrainingRun,
+    TrainingSchedule,
+)
 from openg2g.utils import split_integer_evenly
 
 
@@ -136,7 +145,7 @@ def load_traces_by_batch_from_dir(
 class TraceByBatchCache:
     """Pre-built per-GPU templates keyed by (batch, model_label)."""
 
-    def __init__(self, traces_by_batch: dict[int, dict[str, dict[str, Any]]]):
+    def __init__(self, traces_by_batch: dict[int, dict[str, dict[str, Any]]]) -> None:
         self.traces_by_batch = {int(b): v for b, v in traces_by_batch.items()}
         self._templates: dict[tuple[int, str], np.ndarray] = {}
         self._built = False
@@ -321,7 +330,7 @@ class OfflineDatacenter(LLMBatchSizeControlledDatacenter):
         latency_fits: dict[str, dict[int, ITLMixtureModel]] | None = None,
         latency_exact_threshold: int = 30,
         latency_seed: int | None = None,
-    ):
+    ) -> None:
         self._dt = float(dt)
         self._cache = trace_cache
         self._models = list(models)
@@ -342,6 +351,10 @@ class OfflineDatacenter(LLMBatchSizeControlledDatacenter):
         self._training_n_train_gpus = int(training_n_train_gpus)
         self._latency_fits = latency_fits
         self._latency_exact_threshold = int(latency_exact_threshold)
+
+        # Multi-training and multi-ramp support (set by from_config)
+        self._training_overlays: list[tuple[TrainingOverlayCache, TrainingRun]] = []
+        self._ramp_schedule: ServerRampSchedule | None = None
 
         # Current batch sizes
         self._batch_by_model: dict[str, int] = {ms.model_label: int(batch_init) for ms in models}
@@ -425,6 +438,120 @@ class OfflineDatacenter(LLMBatchSizeControlledDatacenter):
     def bind_event_emitter(self, emitter: EventEmitter) -> None:
         self._events = emitter
 
+    @classmethod
+    def from_config(
+        cls,
+        datacenter: DatacenterConfig,
+        workload: WorkloadConfig,
+        *,
+        trace_cache: TraceByBatchCache,
+        dt: float,
+        seed: int = 0,
+        chunk_steps: int = 600,
+        latency_fits: dict[str, dict[int, ITLMixtureModel]] | None = None,
+        latency_seed: int | None = None,
+        latency_exact_threshold: int = 30,
+    ) -> OfflineDatacenter:
+        """Create an OfflineDatacenter from config objects.
+
+        Args:
+            datacenter: Facility configuration (GPUs per server, base load).
+            workload: Workload configuration (inference models, training, ramps).
+            trace_cache: Pre-built trace cache.
+            dt: Simulation timestep (seconds).
+            seed: Random seed for layout generation and noise.
+            chunk_steps: Number of timesteps to pre-generate per chunk.
+            latency_fits: Optional per-model latency fits.
+            latency_seed: Optional seed for latency RNG.
+            latency_exact_threshold: Exact-sampling threshold for latency averaging.
+        """
+        inference = workload.inference
+        models = list(inference.models)
+        batch_init_by_model = inference.initial_batch_size_by_model
+
+        # Resolve training config
+        training_runs: list[TrainingRun] = []
+        if isinstance(workload.training, TrainingRun):
+            training_runs = [workload.training]
+        elif isinstance(workload.training, TrainingSchedule):
+            training_runs = list(workload.training)
+
+        # Resolve ramp config
+        ramp_schedule: ServerRampSchedule | None = None
+        if isinstance(workload.server_ramps, ServerRamp):
+            ramp_schedule = ServerRampSchedule(entries=(workload.server_ramps,))
+        elif isinstance(workload.server_ramps, ServerRampSchedule):
+            ramp_schedule = workload.server_ramps
+
+        # Use the first training run's params for the legacy fields, or defaults
+        if training_runs:
+            first_tr = training_runs[0]
+            training_overlay = TrainingOverlayCache(
+                first_tr.trace_csv,
+                target_peak_W_per_gpu=first_tr.target_peak_W_per_gpu,
+            )
+            t_add_start = first_tr.t_start
+            t_add_end = first_tr.t_end
+            n_train_gpus = first_tr.n_gpus
+        else:
+            training_overlay = None
+            t_add_start = 0.0
+            t_add_end = 0.0
+            n_train_gpus = 0
+
+        # Use the first ramp's params for legacy fields, or defaults
+        if ramp_schedule and len(ramp_schedule) > 0:
+            first_ramp = next(iter(ramp_schedule))
+            ramp_t_start = first_ramp.t_start
+            ramp_t_end = first_ramp.t_end
+            ramp_floor = first_ramp.target
+        else:
+            ramp_t_start = float("inf")
+            ramp_t_end = float("inf")
+            ramp_floor = 1.0
+
+        # Build a dummy batch_init for the legacy constructor (overridden below)
+        first_batch = next(iter(batch_init_by_model.values()), 128)
+
+        instance = cls(
+            trace_cache=trace_cache,
+            models=models,
+            dt=dt,
+            batch_init=first_batch,
+            gpus_per_server=datacenter.gpus_per_server,
+            seed=seed,
+            chunk_steps=chunk_steps,
+            ramp_t_start=ramp_t_start,
+            ramp_t_end=ramp_t_end,
+            ramp_floor=ramp_floor,
+            base_kW_per_phase=datacenter.base_kW_per_phase,
+            training_overlay=training_overlay,
+            training_t_add_start=t_add_start,
+            training_t_add_end=t_add_end,
+            training_n_train_gpus=n_train_gpus,
+            latency_fits=latency_fits,
+            latency_exact_threshold=latency_exact_threshold,
+            latency_seed=latency_seed,
+        )
+
+        # Override per-model initial batch sizes
+        instance._batch_by_model = dict(batch_init_by_model)
+
+        # Set up multi-training overlays
+        instance._training_overlays = []
+        for tr in training_runs:
+            overlay = TrainingOverlayCache(
+                tr.trace_csv,
+                target_peak_W_per_gpu=tr.target_peak_W_per_gpu,
+            )
+            instance._training_overlays.append((overlay, tr))
+
+        # Set up multi-ramp schedule
+        if ramp_schedule and len(ramp_schedule) > 1:
+            instance._ramp_schedule = ramp_schedule
+
+        return instance
+
     def _generate_chunk(self, t0_s: float) -> None:
         """Generate a chunk of power-trace samples starting at *t0_s*."""
         dt = self._dt
@@ -443,7 +570,7 @@ class OfflineDatacenter(LLMBatchSizeControlledDatacenter):
 
         for ms in self._models:
             label = ms.model_label
-            R = int(ms.replicas)
+            R = int(ms.num_replicas)
             g = int(ms.gpus_per_replica)
             if label not in self._batch_by_model:
                 raise KeyError(f"Missing required batch size for model {label!r}")
@@ -486,13 +613,18 @@ class OfflineDatacenter(LLMBatchSizeControlledDatacenter):
                 prefix_phase[:, kk, :] = prefix_phase[:, kk - 1, :]
                 prefix_phase[ph, kk, :] += server_power[s_idx]
 
-            S_active = _servers_active_over_time(
-                time_global,
-                servers0=S_total,
-                t_start=self._ramp_t_start,
-                t_end=self._ramp_t_end,
-                floor=self._ramp_floor,
-            )
+            if self._ramp_schedule is not None:
+                frac = self._ramp_schedule.fraction_at(time_global)
+                S_active_f = np.rint(frac * S_total).astype(int)
+                S_active = np.clip(S_active_f, 0, S_total)
+            else:
+                S_active = _servers_active_over_time(
+                    time_global,
+                    servers0=S_total,
+                    t_start=self._ramp_t_start,
+                    t_end=self._ramp_t_end,
+                    floor=self._ramp_floor,
+                )
 
             P_model_phase = np.zeros((3, n_internal), dtype=float)
             for i in range(n_internal):
@@ -518,7 +650,18 @@ class OfflineDatacenter(LLMBatchSizeControlledDatacenter):
             active_replicas_arr[label] = ag // g
 
         # Training overlay
-        if self._training_overlay is not None:
+        if self._training_overlays:
+            for overlay, tr in self._training_overlays:
+                P_training = overlay.eval_total_on_grid(
+                    time_global,
+                    t_add_start=tr.t_start,
+                    t_add_end=tr.t_end,
+                    n_train_gpus=tr.n_gpus,
+                )
+                P_phase[0] += P_training / 3.0
+                P_phase[1] += P_training / 3.0
+                P_phase[2] += P_training / 3.0
+        elif self._training_overlay is not None:
             P_training = self._training_overlay.eval_total_on_grid(
                 time_global,
                 t_add_start=self._training_t_add_start,
@@ -577,10 +720,10 @@ class OfflineDatacenter(LLMBatchSizeControlledDatacenter):
 
         self._chunk_idx = 0
 
-    def _get_or_build_layout(self, ms: ModelSpec, n_steps: int) -> ServerLayout:
+    def _get_or_build_layout(self, ms: LLMInferenceModelSpec, n_steps: int) -> ServerLayout:
         """Get or build a frozen per-model server layout."""
         label = ms.model_label
-        R = int(ms.replicas)
+        R = int(ms.num_replicas)
         g = int(ms.gpus_per_replica)
         total_gpus = R * g
         S_total = int(math.ceil(total_gpus / self._gpus_per_server))

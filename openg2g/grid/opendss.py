@@ -56,7 +56,7 @@ class OpenDSSGrid(GridBackend):
         dc_conn: Connection type for DC loads (default ``"wye"``).
         controls_off: If True, disable OpenDSS voltage regulators / controls.
         tap_schedule: Pre-planned regulator tap settings as a
-            :class:`~openg2g.types.TapSchedule`, built via the fluent API::
+            ``TapSchedule``, built via the fluent API::
 
                 TAP_STEP = 0.00625  # standard 5/8% tap step
                 TapPosition(
@@ -65,7 +65,7 @@ class OpenDSSGrid(GridBackend):
                     c=1.0 + 15 * TAP_STEP,
                 ).at(t=0)
 
-            Each :class:`TapPosition` field is a per-unit tap ratio.
+            Each ``TapPosition`` field is a per-unit tap ratio.
         freeze_regcontrols: If True, disable regcontrols after setting taps.
         exclude_buses: Buses to exclude from voltage indexing (e.g., source bus).
     """
@@ -84,7 +84,7 @@ class OpenDSSGrid(GridBackend):
         tap_schedule: TapSchedule | None = None,
         freeze_regcontrols: bool = True,
         exclude_buses: tuple[str, ...] = ("rg60",),
-    ):
+    ) -> None:
         _require_dss()
 
         self._case_dir = str(Path(case_dir).resolve())
@@ -98,7 +98,7 @@ class OpenDSSGrid(GridBackend):
         self._freeze_regcontrols = bool(freeze_regcontrols)
 
         self._tap_schedule: list[tuple[float, dict[str, float]]] = [
-            (t, {"reg1": pos.a, "reg2": pos.b, "reg3": pos.c}) for t, pos in (tap_schedule or ())
+            (t, pos.as_reg_dict()) for t, pos in (tap_schedule or ())
         ]
         self._tap_idx = 0
         self._reg_map: dict[str, tuple[str, int]] | None = None
@@ -336,8 +336,8 @@ class OpenDSSGrid(GridBackend):
 
     def _init_dss(self) -> None:
         dss.Basic.ClearAll()
-        dss.Text.Command(f'cd "{self._case_dir}"')
-        dss.Text.Command(f'Redirect "{self._master}"')
+        master_path = str(Path(self._case_dir) / self._master)
+        dss.Text.Command(f'Compile "{master_path}"')
 
         self._reg_map = self._cache_regcontrol_map()
 

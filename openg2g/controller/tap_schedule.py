@@ -24,7 +24,7 @@ class TapScheduleController(Controller[DatacenterBackend, GridBackend]):
         *,
         schedule: list[tuple[float, dict[str, float]]],
         dt_s: float = 1.0,
-    ):
+    ) -> None:
         self._dt_s = float(dt_s)
         self._schedule = sorted(list(schedule), key=lambda x: float(x[0]))
         self._idx = 0

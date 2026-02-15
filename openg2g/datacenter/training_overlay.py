@@ -17,7 +17,7 @@ class TrainingOverlayCache:
             value.
     """
 
-    def __init__(self, train_csv: Path, *, target_peak_W_per_gpu: float):
+    def __init__(self, train_csv: Path, *, target_peak_W_per_gpu: float) -> None:
         import pandas as pd
 
         df = pd.read_csv(train_csv)

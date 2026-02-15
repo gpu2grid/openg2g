@@ -13,7 +13,7 @@ from openg2g.types import ControlAction
 class NoopController(Controller[DatacenterBackend, GridBackend]):
     """Controller that always returns an empty action."""
 
-    def __init__(self, dt_s: float = 1.0):
+    def __init__(self, dt_s: float = 1.0) -> None:
         self._dt_s = float(dt_s)
 
     @property

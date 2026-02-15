@@ -41,7 +41,7 @@ def _make_simple_cache(dt: float = 0.1, T: float = 100.0) -> TraceByBatchCache:
 
 def test_step_returns_offline_state():
     cache = _make_simple_cache()
-    model = ModelSpec(model_label="TestModel", replicas=10, gpus_per_replica=1)
+    model = ModelSpec(model_label="TestModel", num_replicas=10, gpus_per_replica=1)
     dc = OfflineDatacenter(
         trace_cache=cache,
         models=[model],
@@ -70,7 +70,7 @@ def test_step_returns_offline_state():
 def test_step_produces_correct_number_of_states():
     """Stepping through a chunk should produce chunk_steps states."""
     cache = _make_simple_cache()
-    model = ModelSpec(model_label="TestModel", replicas=10, gpus_per_replica=1)
+    model = ModelSpec(model_label="TestModel", num_replicas=10, gpus_per_replica=1)
     dc = OfflineDatacenter(
         trace_cache=cache,
         models=[model],
@@ -100,7 +100,7 @@ def test_step_produces_correct_number_of_states():
 def test_batch_change_takes_effect_at_chunk_boundary():
     """Batch change is recorded immediately but applied at the next chunk."""
     cache = _make_simple_cache()
-    model = ModelSpec(model_label="TestModel", replicas=10, gpus_per_replica=1)
+    model = ModelSpec(model_label="TestModel", num_replicas=10, gpus_per_replica=1)
     dc = OfflineDatacenter(
         trace_cache=cache,
         models=[model],
@@ -162,7 +162,7 @@ def test_build_periodic_template_shape():
 
 def test_offline_datacenter_emits_observed_itl_when_latency_fits_is_set():
     cache = _make_simple_cache()
-    model = ModelSpec(model_label="TestModel", replicas=10, gpus_per_replica=1)
+    model = ModelSpec(model_label="TestModel", num_replicas=10, gpus_per_replica=1)
     fake_params = ITLMixtureModel(
         loc=0.01,
         pi_steady=0.8,

@@ -9,11 +9,10 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import math
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
-
-import math
 
 import numpy as np
 import pandas as pd
@@ -114,9 +113,7 @@ def _emit_logistic_fits(
 
         x = np.log2(np.array(batches, dtype=float).clip(min=1))
         for metric_name, idx in [("power", 0), ("latency", 1), ("throughput", 2)]:
-            y = np.array(
-                [float(np.median([t[idx] for t in by_batch[b]])) for b in batches]
-            )
+            y = np.array([float(np.median([t[idx] for t in by_batch[b]])) for b in batches])
             fit = LogisticModel.fit(x, y)
             rows.append(
                 {
@@ -202,15 +199,14 @@ def _extract_itl_samples(runs: LLMRuns) -> pd.DataFrame:
 
 
 def _emit_latency_fits(
-    runs: LLMRuns,
+    itl: pd.DataFrame,
     out_dir: Path,
     *,
     max_samples: int,
     seed: int,
 ) -> pd.DataFrame:
-    itl = _extract_itl_samples(runs)
     if itl.empty:
-        raise ValueError("No ITL samples extracted")
+        raise ValueError("No ITL samples provided")
 
     rows: list[dict[str, Any]] = []
     for (model_label, num_gpus, batch), g in itl.groupby(
@@ -240,6 +236,93 @@ def _emit_latency_fits(
     return df
 
 
+def _generate_plots(
+    *,
+    out_dir: Path,
+    config: list[dict[str, Any]],
+    summary_df: pd.DataFrame,
+    logistic_fits_df: pd.DataFrame,
+    latency_fits_df: pd.DataFrame,
+    itl_samples_df: pd.DataFrame,
+    fit_exclude_batches: dict[str, set[int]],
+) -> None:
+    """Generate data characterization plots."""
+    from plotting import plot_itl_distributions, plot_logistic_fits, plot_power_trajectories
+
+    plot_dir = out_dir / "plots"
+    plot_dir.mkdir(exist_ok=True)
+
+    all_labels = [str(entry["label"]) for entry in config]
+    num_gpus_by_model = {str(entry["label"]): int(entry["num_gpus"]) for entry in config}
+    trace_dir = out_dir / "traces"
+
+    llama_labels = [lbl for lbl in all_labels if lbl.startswith("Llama")]
+    qwen_labels = [lbl for lbl in all_labels if lbl.startswith("Qwen")]
+
+    # Batch sizes used in the simulation (powers of 2 only).
+    sim_batch_sizes = [8, 16, 32, 64, 128, 256, 512]
+
+    # Fig. 2: Combined power trajectories for large models (8-GPU).
+    fig2_labels = [lbl for lbl in all_labels if num_gpus_by_model[lbl] >= 8]
+    if fig2_labels:
+        plot_power_trajectories(
+            trace_dir=trace_dir,
+            model_labels=fig2_labels,
+            num_gpus_by_model=num_gpus_by_model,
+            batch_sizes=sim_batch_sizes,
+            save_path=plot_dir / "power_trajectories_combined.png",
+        )
+        logger.info("Saved power_trajectories_combined.png")
+
+    # Per-model power trajectories (supplementary).
+    for label in all_labels:
+        plot_power_trajectories(
+            trace_dir=trace_dir,
+            model_labels=[label],
+            num_gpus_by_model=num_gpus_by_model,
+            batch_sizes=sim_batch_sizes,
+            save_path=plot_dir / f"power_trajectories_{label}.png",
+        )
+        logger.info("Saved power_trajectories_%s.png", label)
+
+    # Fig. 3: Logistic fits — Llama models overlaid
+    if llama_labels:
+        plot_logistic_fits(
+            summary_df=summary_df,
+            fits_df=logistic_fits_df,
+            model_labels=llama_labels,
+            fit_exclude_batches=fit_exclude_batches,
+            save_path=plot_dir / "logistic_fits_llama.png",
+        )
+        logger.info("Saved logistic_fits_llama.png")
+
+    # Fig. 9: Logistic fits — Qwen models overlaid
+    if qwen_labels:
+        plot_logistic_fits(
+            summary_df=summary_df,
+            fits_df=logistic_fits_df,
+            model_labels=qwen_labels,
+            fit_exclude_batches=fit_exclude_batches,
+            save_path=plot_dir / "logistic_fits_qwen.png",
+        )
+        logger.info("Saved logistic_fits_qwen.png")
+
+    # Fig. 4 / Fig. 10: ITL distributions — one per model
+    for label in all_labels:
+        if label not in itl_samples_df["model_label"].values:
+            continue
+        plot_itl_distributions(
+            latency_fits_df=latency_fits_df,
+            itl_samples_df=itl_samples_df,
+            model_label=label,
+            batch_sizes=sim_batch_sizes,
+            save_path=plot_dir / f"itl_distributions_{label}.png",
+        )
+        logger.info("Saved itl_distributions_%s.png", label)
+
+    logger.info("All plots saved to: %s", plot_dir)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Build OpenG2G simulation artifacts from raw benchmark data"
@@ -265,6 +348,12 @@ def main() -> int:
     )
     parser.add_argument("--llm-config-dir", default=None)
     parser.add_argument("--diffusion-config-dir", default=None)
+    parser.add_argument(
+        "--plot",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Generate data characterization plots (default: --plot).",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -311,7 +400,11 @@ def main() -> int:
         labeled.extend(replace(r, model_label=label) for r in subset)
         logger.info(
             "  %s: %d runs (model_id=%s, gpu=%s, num_gpus=%d, batches=%s)",
-            label, len(subset), model_id, gpu, num_gpus,
+            label,
+            len(subset),
+            model_id,
+            gpu,
+            num_gpus,
             sorted({r.max_num_seqs for r in subset}),
         )
 
@@ -329,11 +422,18 @@ def main() -> int:
         if excl:
             fit_exclude_batches[str(entry["label"])] = {int(b) for b in excl}
 
-    _emit_logistic_fits(
-        selected, out_dir, fit_exclude_batches=fit_exclude_batches,
-    )
-    _emit_latency_fits(
+    logistic_fits_df = _emit_logistic_fits(
         selected,
+        out_dir,
+        fit_exclude_batches=fit_exclude_batches,
+    )
+
+    itl_samples_df = _extract_itl_samples(selected)
+    itl_samples_df.to_parquet(out_dir / "itl_samples.parquet", index=False)
+    logger.info("Saved %d ITL samples to itl_samples.parquet", len(itl_samples_df))
+
+    latency_fits_df = _emit_latency_fits(
+        itl_samples_df,
         out_dir,
         max_samples=int(args.itl_sample_cap_per_run),
         seed=int(args.seed),
@@ -358,7 +458,20 @@ def main() -> int:
     logger.info("  traces: %s", out_dir / "traces")
     logger.info("  latency_fits: %s", out_dir / "latency_fits.csv")
     logger.info("  logistic_fits: %s", out_dir / "logistic_fits.csv")
+    logger.info("  itl_samples: %s", out_dir / "itl_samples.parquet")
     logger.info("  summary: %s", out_dir / "summary.csv")
+
+    if args.plot:
+        _generate_plots(
+            out_dir=out_dir,
+            config=config,
+            summary_df=run_summary,
+            logistic_fits_df=logistic_fits_df,
+            latency_fits_df=latency_fits_df,
+            itl_samples_df=itl_samples_df,
+            fit_exclude_batches=fit_exclude_batches,
+        )
+
     return 0
 
 

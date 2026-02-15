@@ -17,7 +17,7 @@ from openg2g.controller.base import Controller
 from openg2g.datacenter.base import LLMBatchSizeControlledDatacenter
 from openg2g.events import EventEmitter
 from openg2g.grid.opendss import OpenDSSGrid
-from openg2g.models.spec import ModelSpec
+from openg2g.models.spec import LLMInferenceWorkload, ModelSpec
 from openg2g.types import (
     Command,
     ControlAction,
@@ -41,19 +41,19 @@ class VoltageDualCfg:
 
 @dataclass
 class PrimalCfg:
-    r"""Configuration for the primal batch-size optimizer.
+    """Configuration for the primal batch-size optimizer.
 
     Attributes:
         eta_primal: Primal gradient descent step size.
         w_latency: Weight on the direct latency penalty term
-            :math:`w_L \, \partial L / \partial x`.  This is an implementation
-            extension beyond the paper's Eq. 18, which only has the dual term.
+            ``w_L * dL/dx``.  This is an implementation extension beyond
+            the paper's Eq. 18, which only has the dual term.
         w_throughput: Weight on the (negative) throughput gradient.
         w_switch: Weight on the switching cost regularizer
-            :math:`\gamma \|x - x_{\mathrm{prev}}\|^2`.
+            ``gamma * ||x - x_prev||^2``.
         k_v: Scaling factor applied to the voltage gradient term.  Multiplies
-            :math:`\eta^\top H \, e_i \, \partial P / \partial x`.  Not present
-            in the paper's equations; used here as a tuning knob.
+            ``eta^T H e_i dP/dx``.  Not present in the paper's equations;
+            used here as a tuning knob.
     """
 
     eta_primal: float = 0.05
@@ -64,19 +64,33 @@ class PrimalCfg:
 
 
 class FullNetworkVoltageDual:
-    r"""Full-network duals for voltage box constraints.
+    """Full-network duals for voltage box constraints.
 
-    .. math::
-        \lambda_\text{low}  \leftarrow [\lambda_\text{low}  + \rho_v (v_\min - \hat v)]_+
-        \lambda_\text{high} \leftarrow [\lambda_\text{high} + \rho_v (\hat v - v_\max)]_+
+    Maintains per-bus dual variables for under- and overvoltage and updates
+    them via projected gradient ascent::
+
+        lam_low  <- [lam_low  + rho_v * (v_min - v_hat)]+
+        lam_high <- [lam_high + rho_v * (v_hat - v_max)]+
+
+    Args:
+        M3: Number of bus-phase pairs in the voltage vector.
+        cfg: Voltage dual configuration (bounds and step size).
     """
 
-    def __init__(self, M3: int, cfg: VoltageDualCfg):
+    def __init__(self, M3: int, cfg: VoltageDualCfg) -> None:
         self.cfg = cfg
         self.lam_low = np.zeros(int(M3), dtype=float)
         self.lam_high = np.zeros(int(M3), dtype=float)
 
     def update(self, v_hat: np.ndarray) -> None:
+        """Update duals given observed voltage vector.
+
+        Args:
+            v_hat: Observed voltage magnitudes (pu), shape ``(M3,)``.
+
+        Raises:
+            ValueError: If ``v_hat`` length does not match the dual dimension.
+        """
         v_hat = np.asarray(v_hat, float).reshape(-1)
         if v_hat.shape[0] != self.lam_low.shape[0]:
             raise ValueError(
@@ -89,7 +103,7 @@ class FullNetworkVoltageDual:
         self.lam_high = np.maximum(self.lam_high + rho * (v_hat - vmax), 0.0)
 
     def eta(self) -> np.ndarray:
-        r"""Return :math:`\eta = \bar\lambda - \underline\lambda`."""
+        """Return the voltage dual difference ``lam_high - lam_low``."""
         return self.lam_high - self.lam_low
 
 
@@ -110,6 +124,15 @@ class PerModelPrimalX:
     Maintains continuous state ``x_i = log2(batch_i)`` per model and applies
     a gradient descent step using voltage duals, latency duals, and fitted
     power/latency/throughput curves.
+
+    Args:
+        models: Model specifications for each served model.
+        batch_set: Allowed batch sizes (union across all models).
+        power_fits: Per-model logistic fit for power vs log2(batch_size).
+        latency_fits: Per-model logistic fit for latency vs log2(batch_size).
+        throughput_fits: Per-model logistic fit for throughput vs
+            log2(batch_size).
+        cfg: Primal optimizer configuration.
     """
 
     def __init__(
@@ -121,7 +144,7 @@ class PerModelPrimalX:
         latency_fits: dict[str, LogisticModel],
         throughput_fits: dict[str, LogisticModel],
         cfg: PrimalCfg,
-    ):
+    ) -> None:
         self.models = list(models)
         self.batch_set = sorted({int(b) for b in batch_set})
         if not self.batch_set:
@@ -315,7 +338,7 @@ class OFOBatchController(Controller[LLMBatchSizeControlledDatacenter, OpenDSSGri
         dt_s: float = 1.0,
         estimate_H_every: int = 0,
         estimate_H_dp_kw: float = 100.0,
-    ):
+    ) -> None:
         self._dt_s = float(dt_s)
         self._models = list(models)
         self._Lth_by_model = dict(Lth_by_model)
@@ -350,6 +373,61 @@ class OFOBatchController(Controller[LLMBatchSizeControlledDatacenter, OpenDSSGri
         self._phase_share_by_model: dict[str, np.ndarray] = {
             ms.model_label: np.array([1 / 3, 1 / 3, 1 / 3], dtype=float) for ms in models
         }
+
+    @classmethod
+    def from_workload(
+        cls,
+        *,
+        workload: LLMInferenceWorkload,
+        power_fits: dict[str, LogisticModel],
+        latency_fits: dict[str, LogisticModel],
+        throughput_fits: dict[str, LogisticModel],
+        primal_cfg: PrimalCfg,
+        voltage_dual_cfg: VoltageDualCfg,
+        rho_l: float = 1.0,
+        dt_s: float = 1.0,
+        estimate_H_every: int = 0,
+        estimate_H_dp_kw: float = 100.0,
+    ) -> OFOBatchController:
+        """Create an OFO controller from an LLMInferenceWorkload.
+
+        Derives ``batch_set``, ``batch_init``, and ``Lth_by_model`` from
+        the workload's model specs.
+
+        Args:
+            workload: LLM inference workload specification.
+            power_fits: Per-model logistic fit for power.
+            latency_fits: Per-model logistic fit for latency.
+            throughput_fits: Per-model logistic fit for throughput.
+            primal_cfg: Primal optimizer configuration.
+            voltage_dual_cfg: Voltage dual configuration.
+            rho_l: Latency dual step size.
+            dt_s: Control interval (seconds).
+            estimate_H_every: Re-estimate H every N control steps.
+            estimate_H_dp_kw: Perturbation size for H estimation.
+        """
+        models = list(workload.models)
+        batch_set = workload.feasible_batch_sizes_union
+        Lth_by_model = workload.itl_deadline_by_model
+        batch_init_by_model = workload.initial_batch_size_by_model
+
+        instance = cls(
+            models=models,
+            power_fits=power_fits,
+            latency_fits=latency_fits,
+            throughput_fits=throughput_fits,
+            Lth_by_model=Lth_by_model,
+            primal_cfg=primal_cfg,
+            voltage_dual_cfg=voltage_dual_cfg,
+            batch_set=batch_set,
+            batch_init=max(batch_set),
+            rho_l=rho_l,
+            dt_s=dt_s,
+            estimate_H_every=estimate_H_every,
+            estimate_H_dp_kw=estimate_H_dp_kw,
+        )
+        instance._primal.init_from_batches(batch_init_by_model)
+        return instance
 
     @property
     def dt_s(self) -> float:

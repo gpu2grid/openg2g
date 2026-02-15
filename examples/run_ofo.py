@@ -12,7 +12,18 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from mlenergy_data.modeling import ITLMixtureModel, LogisticModel
+from mlenergy_data.modeling import LogisticModel
+from plotting import (
+    extract_per_model_timeseries,
+    load_itl_fits_from_csv,
+    plot_allbus_voltages_per_phase,
+    plot_batch_schedule,
+    plot_latency_samples,
+    plot_model_timeseries_4panel,
+    plot_per_model_power,
+    plot_power_3ph,
+    plot_voltage_dc_bus,
+)
 
 from openg2g.controller.ofo import (
     OFOBatchController,
@@ -21,21 +32,63 @@ from openg2g.controller.ofo import (
 )
 from openg2g.controller.tap_schedule import TapScheduleController
 from openg2g.coordinator import Coordinator
+from openg2g.datacenter.config import DatacenterConfig, WorkloadConfig
 from openg2g.datacenter.offline import (
     OfflineDatacenter,
     TraceByBatchCache,
     load_traces_by_batch_from_dir,
 )
-from openg2g.datacenter.training_overlay import TrainingOverlayCache
 from openg2g.grid.opendss import OpenDSSGrid
 from openg2g.metrics.voltage import compute_allbus_voltage_stats
-from openg2g.models.spec import ModelSpec
-from openg2g.plotting import (
-    plot_allbus_voltages_per_phase,
-    plot_batch_schedule,
-    plot_power_3ph,
+from openg2g.models.spec import LLMInferenceModelSpec, LLMInferenceWorkload
+from openg2g.types import ServerRamp, TapPosition, TrainingRun
+
+BATCH_SET = (8, 16, 32, 64, 128, 256, 512)
+
+MODELS = (
+    LLMInferenceModelSpec(
+        "Llama-3.1-8B",
+        num_replicas=720,
+        gpus_per_replica=1,
+        feasible_batch_sizes=BATCH_SET,
+        initial_batch_size=128,
+        itl_deadline_s=0.08,
+    ),
+    LLMInferenceModelSpec(
+        "Llama-3.1-70B",
+        num_replicas=180,
+        gpus_per_replica=4,
+        feasible_batch_sizes=BATCH_SET,
+        initial_batch_size=128,
+        itl_deadline_s=0.10,
+    ),
+    LLMInferenceModelSpec(
+        "Llama-3.1-405B",
+        num_replicas=90,
+        gpus_per_replica=8,
+        feasible_batch_sizes=BATCH_SET,
+        initial_batch_size=128,
+        itl_deadline_s=0.12,
+    ),
+    LLMInferenceModelSpec(
+        "Qwen3-30B-A3B",
+        num_replicas=480,
+        gpus_per_replica=2,
+        feasible_batch_sizes=BATCH_SET,
+        initial_batch_size=128,
+        itl_deadline_s=0.06,
+    ),
+    LLMInferenceModelSpec(
+        "Qwen3-235B-A22B",
+        num_replicas=210,
+        gpus_per_replica=8,
+        feasible_batch_sizes=BATCH_SET,
+        initial_batch_size=128,
+        itl_deadline_s=0.14,
+    ),
 )
-from openg2g.types import TapPosition
+
+INFERENCE = LLMInferenceWorkload(models=MODELS)
 
 
 def _load_logistic_fits_from_csvs(
@@ -75,22 +128,9 @@ def _load_logistic_fits_merged(
     return power, latency, throughput
 
 
-def _load_itl_fits_from_csv(csv_path: Path) -> dict[str, dict[int, ITLMixtureModel]]:
-    """Load ITL mixture fits from a CSV."""
-    df = pd.read_csv(csv_path)
-    result: dict[str, dict[int, ITLMixtureModel]] = {}
-    for row in df.to_dict(orient="records"):
-        model = str(row["model_label"]).strip()
-        batch = int(row["max_num_seqs"])
-        result.setdefault(model, {})[batch] = ITLMixtureModel.from_dict(row)
-    if not result:
-        raise ValueError(f"No ITL mixture rows loaded from {csv_path}")
-    return result
-
-
 def main(args: argparse.Namespace) -> None:
     project_dir = Path(__file__).resolve().parent.parent
-    case_dir = project_dir / "OpenDss_Test" / "13Bus"
+    case_dir = Path(__file__).resolve().parent / "ieee13"
     save_dir = project_dir / "outputs" / "ofo"
     save_dir.mkdir(parents=True, exist_ok=True)
 
@@ -98,21 +138,9 @@ def main(args: argparse.Namespace) -> None:
     v_max = 1.05
     dc_bus = "671"
     gpus_per_server = 8
-    batch_init = 128
-    batch_set = [8, 16, 32, 64, 128, 256, 512]
     dt_dc = 0.1
     dt_ctrl = 1.0
     t_total_s = 3600.0
-
-    models = [
-        ModelSpec(model_label="Llama-3.1-8B", replicas=720, gpus_per_replica=1),
-        ModelSpec(model_label="Llama-3.1-70B", replicas=180, gpus_per_replica=4),
-        ModelSpec(model_label="Llama-3.1-405B", replicas=90, gpus_per_replica=8),
-        ModelSpec(model_label="Qwen3-30B-A3B", replicas=480, gpus_per_replica=2),
-        ModelSpec(model_label="Qwen3-235B-A22B", replicas=210, gpus_per_replica=8),
-    ]
-
-    required_measured_gpus = {ms.model_label: ms.gpus_per_replica for ms in models}
 
     TAP_STEP = 0.00625  # standard 5/8% tap step
     tap_schedule = TapPosition(
@@ -123,7 +151,6 @@ def main(args: argparse.Namespace) -> None:
     if data_dir is not None:
         trace_dir = data_dir / "traces"
     else:
-        # Legacy path: subject to removal when power_csvs_updated/ is retired.
         trace_dir = project_dir / "power_csvs_updated"
 
     if args.training_trace:
@@ -134,14 +161,13 @@ def main(args: argparse.Namespace) -> None:
             "(training trace is not part of the build output)"
         )
     else:
-        # Legacy path: subject to removal when power_csvs_updated/ is retired.
         training_csv = project_dir / "power_csvs_updated" / "synthetic_training_trace.csv"
 
     print("Loading power traces...")
     traces_by_batch = load_traces_by_batch_from_dir(
         base_dir=trace_dir,
-        batch_set=batch_set,
-        required_measured_gpus=required_measured_gpus,
+        batch_set=list(BATCH_SET),
+        required_measured_gpus=INFERENCE.required_measured_gpus,
         amp_jitter_default=(0.98, 1.02),
         noise_std_frac_default=0.005,
     )
@@ -149,32 +175,33 @@ def main(args: argparse.Namespace) -> None:
     cache = TraceByBatchCache(traces_by_batch)
     cache.build_templates(T=600.0, dt=dt_dc)
 
-    training_overlay = TrainingOverlayCache(training_csv, target_peak_W_per_gpu=400.0)
-
     print("Loading latency fits...")
     if data_dir is not None:
-        itl_fits = _load_itl_fits_from_csv(data_dir / "latency_fits.csv")
+        itl_fits = load_itl_fits_from_csv(data_dir / "latency_fits.csv")
     else:
-        # Legacy path: subject to removal when power_csvs_updated/ is retired.
-        itl_fits = _load_itl_fits_from_csv(trace_dir / "ALL_MODELS_latency_fit_parameters_ALL.csv")
+        itl_fits = load_itl_fits_from_csv(trace_dir / "ALL_MODELS_latency_fit_parameters_ALL.csv")
+
+    dc_config = DatacenterConfig(gpus_per_server=gpus_per_server, base_kW_per_phase=500.0)
+    workload = WorkloadConfig(
+        inference=INFERENCE,
+        training=TrainingRun(
+            t_start=1000.0,
+            t_end=2000.0,
+            n_gpus=300 * gpus_per_server,
+            trace_csv=training_csv,
+            target_peak_W_per_gpu=400.0,
+        ),
+        server_ramps=ServerRamp(t_start=2500.0, t_end=3000.0, target=0.2),
+    )
 
     print("Initializing OfflineDatacenter...")
-    dc = OfflineDatacenter(
+    dc = OfflineDatacenter.from_config(
+        dc_config,
+        workload,
         trace_cache=cache,
-        models=models,
         dt=dt_dc,
-        batch_init=batch_init,
-        gpus_per_server=gpus_per_server,
         seed=0,
         chunk_steps=int(dt_ctrl / dt_dc),
-        ramp_t_start=2500.0,
-        ramp_t_end=3000.0,
-        ramp_floor=0.2,
-        base_kW_per_phase=500.0,
-        training_overlay=training_overlay,
-        training_t_add_start=1000.0,
-        training_t_add_end=2000.0,
-        training_n_train_gpus=300 * gpus_per_server,
         latency_fits=itl_fits,
         latency_exact_threshold=30,
         latency_seed=0,
@@ -186,11 +213,10 @@ def main(args: argparse.Namespace) -> None:
             data_dir / "logistic_fits.csv"
         )
     else:
-        # Legacy path: subject to removal when power_csvs_updated/ is retired.
         power_fits, latency_fits, throughput_fits = _load_logistic_fits_from_csvs(
             {
                 label: trace_dir / f"{label}_logistic_fit_parameters_combined.csv"
-                for label in required_measured_gpus
+                for label in INFERENCE.required_measured_gpus
             }
         )
 
@@ -210,18 +236,11 @@ def main(args: argparse.Namespace) -> None:
 
     tap_ctrl = TapScheduleController(schedule=[], dt_s=dt_ctrl)
 
-    ofo_ctrl = OFOBatchController(
-        models=models,
+    ofo_ctrl = OFOBatchController.from_workload(
+        workload=INFERENCE,
         power_fits=power_fits,
         latency_fits=latency_fits,
         throughput_fits=throughput_fits,
-        Lth_by_model={
-            "Llama-3.1-405B": 0.12,
-            "Llama-3.1-70B": 0.10,
-            "Llama-3.1-8B": 0.08,
-            "Qwen3-235B-A22B": 0.14,
-            "Qwen3-30B-A3B": 0.06,
-        },
         primal_cfg=PrimalCfg(
             eta_primal=0.1,
             w_latency=1.0,
@@ -234,8 +253,6 @@ def main(args: argparse.Namespace) -> None:
             v_max=v_max,
             rho_v=1.0,
         ),
-        batch_set=batch_set,
-        batch_init=batch_init,
         rho_l=1.0,
         dt_s=dt_ctrl,
         estimate_H_every=3600,
@@ -272,6 +289,29 @@ def main(args: argparse.Namespace) -> None:
     kW_B = np.array(log.kW_B)
     kW_C = np.array(log.kW_C)
 
+    per_model = extract_per_model_timeseries(log.dc_states)
+
+    # Fig. 8: 4-panel model timeseries
+    plot_model_timeseries_4panel(
+        per_model.time_s,
+        log.batch_log_by_model,
+        per_model,
+        model_labels=INFERENCE.model_labels,
+        dt_ctrl_s=dt_ctrl,
+        save_path=save_dir / "model_timeseries_4panel.png",
+    )
+
+    # Fig. 7: All-bus voltages with bus colormap
+    plot_allbus_voltages_per_phase(
+        log.grid_states,
+        time_s,
+        save_dir=save_dir,
+        v_min=v_min,
+        v_max=v_max,
+        title_template="Voltage trajectories with GPU flexibility (Phase {label})",
+    )
+
+    # Standalone plots
     plot_power_3ph(
         time_s,
         kW_A,
@@ -280,6 +320,7 @@ def main(args: argparse.Namespace) -> None:
         save_path=save_dir / "dc_power_3ph.png",
         title="DC Power by Phase (OFO)",
     )
+
     if log.batch_log_by_model:
         plot_batch_schedule(
             log.batch_log_by_model,
@@ -287,14 +328,28 @@ def main(args: argparse.Namespace) -> None:
             save_path=save_dir / "batch_schedule.png",
             title="Batch Size Schedule (OFO)",
         )
-    plot_allbus_voltages_per_phase(
-        log.grid_states,
+
+    plot_voltage_dc_bus(
         time_s,
-        save_dir=save_dir,
+        np.array(log.Va),
+        np.array(log.Vb),
+        np.array(log.Vc),
         v_min=v_min,
         v_max=v_max,
-        title_template="All-Bus Voltages — Phase {label} (OFO)",
+        save_path=save_dir / "voltage_dc_bus.png",
     )
+
+    plot_latency_samples(
+        per_model,
+        itl_deadlines=INFERENCE.itl_deadline_by_model,
+        save_path=save_dir / "latency_samples.png",
+    )
+
+    if per_model.power_w:
+        plot_per_model_power(
+            per_model,
+            save_path=save_dir / "per_model_power.png",
+        )
 
     with open(save_dir / "console_output.txt", "w") as f:
         f.write("=== Voltage Statistics (all-bus) ===\n")

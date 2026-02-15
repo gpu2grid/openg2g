@@ -186,8 +186,8 @@ from openg2g.metrics.voltage import compute_allbus_voltage_stats
 stats = compute_allbus_voltage_stats(log.grid_states, v_min=0.95, v_max=1.05)
 print(f"Violation time: {stats.violation_time_s:.1f} s")
 
-# Plotting
-from openg2g.plotting import plot_power_3ph, plot_allbus_voltages_per_phase
+# Plotting (see examples/plotting.py for reusable plot functions)
+from examples.plotting import plot_power_3ph, plot_allbus_voltages_per_phase
 import numpy as np
 
 plot_power_3ph(

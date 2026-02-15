@@ -33,29 +33,30 @@ def gcd_float(a: float, b: float, tol: float = 1e-9) -> float:
 class SimulationLog:
     """Accumulated simulation data from a coordinator run.
 
-    All fields below are populated by the ``Coordinator.run()`` loop.
+    All fields are populated by the ``Coordinator.run()`` loop.
 
-    State history (one entry per component step):
+    Attributes:
         dc_states: Every ``DatacenterState`` produced by the datacenter.
         grid_states: Every ``GridState`` produced by the grid.
         actions: Every ``ControlAction`` emitted by controllers.
-
-    Per-grid-step time series (aligned with ``grid_states``):
+        commands: Flattened list of all commands from all actions.
         time_s: Simulation time at each grid step (seconds).
-        Va, Vb, Vc: DC-bus voltage per phase at each grid step (pu).
-        kW_A, kW_B, kW_C: DC load power per phase at each grid step (kW).
-
-    Controller logs (populated only when controllers emit batch changes):
-        batch_log_by_model: Per-model batch size history.
+        Va: DC-bus voltage phase A at each grid step (pu).
+        Vb: DC-bus voltage phase B at each grid step (pu).
+        Vc: DC-bus voltage phase C at each grid step (pu).
+        kW_A: DC load power phase A at each grid step (kW).
+        kW_B: DC load power phase B at each grid step (kW).
+        kW_C: DC load power phase C at each grid step (kW).
+        batch_log_by_model: Per-model batch size history (populated only when
+            controllers emit batch changes).
+        events: Clock-stamped simulation events from all components.
     """
 
-    # -- State history --
     dc_states: list[DatacenterState] = field(default_factory=list)
     grid_states: list[GridState] = field(default_factory=list)
     actions: list[ControlAction] = field(default_factory=list)
     commands: list[Command] = field(default_factory=list)
 
-    # -- Per-grid-step time series --
     time_s: list[float] = field(default_factory=list)
     Va: list[float] = field(default_factory=list)
     Vb: list[float] = field(default_factory=list)
@@ -64,7 +65,6 @@ class SimulationLog:
     kW_B: list[float] = field(default_factory=list)
     kW_C: list[float] = field(default_factory=list)
 
-    # -- Controller logs --
     batch_log_by_model: dict[str, list[int]] = field(default_factory=dict)
     events: list[SimEvent] = field(default_factory=list)
 

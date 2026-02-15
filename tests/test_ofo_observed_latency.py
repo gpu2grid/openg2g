@@ -121,7 +121,7 @@ def _make_fits() -> tuple[
 
 
 def _build_controller() -> OFOBatchController:
-    model = ModelSpec(model_label="M1", replicas=10, gpus_per_replica=1)
+    model = ModelSpec(model_label="M1", num_replicas=10, gpus_per_replica=1)
     power_fits, latency_fits, throughput_fits = _make_fits()
     return OFOBatchController(
         models=[model],
