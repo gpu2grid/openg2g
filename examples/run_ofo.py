@@ -11,6 +11,8 @@ import argparse
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
+from mlenergy_data.modeling import ITLMixtureModel, LogisticModel
 
 from openg2g.controller.ofo import (
     OFOBatchController,
@@ -27,8 +29,6 @@ from openg2g.datacenter.offline import (
 from openg2g.datacenter.training_overlay import TrainingOverlayCache
 from openg2g.grid.opendss import OpenDSSGrid
 from openg2g.metrics.voltage import compute_allbus_voltage_stats
-from openg2g.models.latency import load_latency_fits
-from openg2g.models.logistic import load_logistic_fits, load_logistic_fits_merged
 from openg2g.models.spec import ModelSpec
 from openg2g.plotting import (
     plot_allbus_voltages_per_phase,
@@ -36,6 +36,56 @@ from openg2g.plotting import (
     plot_power_3ph,
 )
 from openg2g.types import TapPosition
+
+
+def _load_logistic_fits_from_csvs(
+    csv_by_model: dict[str, Path],
+) -> tuple[dict[str, LogisticModel], dict[str, LogisticModel], dict[str, LogisticModel]]:
+    """Load per-model logistic fit CSVs (columns: metric, L, x0, k, b0).
+
+    Legacy format: each model has its own CSV with rows for power/latency/throughput.
+    Subject to removal when legacy power_csvs_updated/ data is retired.
+    """
+    power: dict[str, LogisticModel] = {}
+    latency: dict[str, LogisticModel] = {}
+    throughput: dict[str, LogisticModel] = {}
+    targets = {"power": power, "latency": latency, "throughput": throughput}
+    for label, csv_path in csv_by_model.items():
+        df = pd.read_csv(csv_path)
+        for row in df.to_dict(orient="records"):
+            metric = str(row["metric"]).strip().lower()
+            if metric in targets:
+                targets[metric][label] = LogisticModel.from_dict(row)
+    return power, latency, throughput
+
+
+def _load_logistic_fits_merged(
+    csv_path: Path,
+) -> tuple[dict[str, LogisticModel], dict[str, LogisticModel], dict[str, LogisticModel]]:
+    """Load power, latency, throughput fits from a merged CSV."""
+    df = pd.read_csv(csv_path)
+    power: dict[str, LogisticModel] = {}
+    latency: dict[str, LogisticModel] = {}
+    throughput: dict[str, LogisticModel] = {}
+    targets = {"power": power, "latency": latency, "throughput": throughput}
+    for row in df.to_dict(orient="records"):
+        metric = str(row["metric"]).strip().lower()
+        if metric in targets:
+            targets[metric][str(row["model_label"])] = LogisticModel.from_dict(row)
+    return power, latency, throughput
+
+
+def _load_itl_fits_from_csv(csv_path: Path) -> dict[str, dict[int, ITLMixtureModel]]:
+    """Load ITL mixture fits from a CSV."""
+    df = pd.read_csv(csv_path)
+    result: dict[str, dict[int, ITLMixtureModel]] = {}
+    for row in df.to_dict(orient="records"):
+        model = str(row["model_label"]).strip()
+        batch = int(row["max_num_seqs"])
+        result.setdefault(model, {})[batch] = ITLMixtureModel.from_dict(row)
+    if not result:
+        raise ValueError(f"No ITL mixture rows loaded from {csv_path}")
+    return result
 
 
 def main(args: argparse.Namespace) -> None:
@@ -73,6 +123,7 @@ def main(args: argparse.Namespace) -> None:
     if data_dir is not None:
         trace_dir = data_dir / "traces"
     else:
+        # Legacy path: subject to removal when power_csvs_updated/ is retired.
         trace_dir = project_dir / "power_csvs_updated"
 
     if args.training_trace:
@@ -83,6 +134,7 @@ def main(args: argparse.Namespace) -> None:
             "(training trace is not part of the build output)"
         )
     else:
+        # Legacy path: subject to removal when power_csvs_updated/ is retired.
         training_csv = project_dir / "power_csvs_updated" / "synthetic_training_trace.csv"
 
     print("Loading power traces...")
@@ -101,9 +153,10 @@ def main(args: argparse.Namespace) -> None:
 
     print("Loading latency fits...")
     if data_dir is not None:
-        latency_fits = load_latency_fits(data_dir / "latency_fits.csv")
+        itl_fits = _load_itl_fits_from_csv(data_dir / "latency_fits.csv")
     else:
-        latency_fits = load_latency_fits(trace_dir / "ALL_MODELS_latency_fit_parameters_ALL.csv")
+        # Legacy path: subject to removal when power_csvs_updated/ is retired.
+        itl_fits = _load_itl_fits_from_csv(trace_dir / "ALL_MODELS_latency_fit_parameters_ALL.csv")
 
     print("Initializing OfflineDatacenter...")
     dc = OfflineDatacenter(
@@ -122,16 +175,19 @@ def main(args: argparse.Namespace) -> None:
         training_t_add_start=1000.0,
         training_t_add_end=2000.0,
         training_n_train_gpus=300 * gpus_per_server,
-        latency_fits=latency_fits,
+        latency_fits=itl_fits,
         latency_exact_threshold=30,
         latency_seed=0,
     )
 
     print("Loading logistic fits...")
     if data_dir is not None:
-        fits = load_logistic_fits_merged(data_dir / "logistic_fits.csv")
+        power_fits, latency_fits, throughput_fits = _load_logistic_fits_merged(
+            data_dir / "logistic_fits.csv"
+        )
     else:
-        fits = load_logistic_fits(
+        # Legacy path: subject to removal when power_csvs_updated/ is retired.
+        power_fits, latency_fits, throughput_fits = _load_logistic_fits_from_csvs(
             {
                 label: trace_dir / f"{label}_logistic_fit_parameters_combined.csv"
                 for label in required_measured_gpus
@@ -156,7 +212,9 @@ def main(args: argparse.Namespace) -> None:
 
     ofo_ctrl = OFOBatchController(
         models=models,
-        fits=fits,
+        power_fits=power_fits,
+        latency_fits=latency_fits,
+        throughput_fits=throughput_fits,
         Lth_by_model={
             "Llama-3.1-405B": 0.12,
             "Llama-3.1-70B": 0.10,

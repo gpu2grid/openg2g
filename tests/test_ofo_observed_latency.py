@@ -1,15 +1,13 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 import numpy as np
+from mlenergy_data.modeling import LogisticModel
 
 from openg2g.clock import SimulationClock
 from openg2g.controller.ofo import OFOBatchController, PrimalCfg, VoltageDualCfg
 from openg2g.datacenter.base import LLMBatchSizeControlledDatacenter
 from openg2g.events import EventEmitter, SimEvent
 from openg2g.grid.opendss import OpenDSSGrid
-from openg2g.models.logistic import load_logistic_fits
 from openg2g.models.spec import ModelSpec
 from openg2g.types import BusVoltages, Command, DatacenterState, GridState, ThreePhase
 
@@ -112,20 +110,24 @@ class _EventSink:
         self.events.append(event)
 
 
-def _write_fit_csv(path: Path) -> None:
-    path.write_text(
-        "metric,L,x0,k,b0\npower,100,6,1,50\nlatency,0.05,6,1,0.02\nthroughput,10,6,1,1\n"
-    )
+def _make_fits() -> tuple[
+    dict[str, LogisticModel], dict[str, LogisticModel], dict[str, LogisticModel]
+]:
+    """Create synthetic logistic fits for a single model M1."""
+    power = {"M1": LogisticModel(L=100.0, x0=6.0, k=1.0, b0=50.0)}
+    latency = {"M1": LogisticModel(L=0.05, x0=6.0, k=1.0, b0=0.02)}
+    throughput = {"M1": LogisticModel(L=10.0, x0=6.0, k=1.0, b0=1.0)}
+    return power, latency, throughput
 
 
-def _build_controller(tmp_path: Path) -> OFOBatchController:
+def _build_controller() -> OFOBatchController:
     model = ModelSpec(model_label="M1", replicas=10, gpus_per_replica=1)
-    fit_csv = tmp_path / "m1_fit.csv"
-    _write_fit_csv(fit_csv)
-    fits = load_logistic_fits({"M1": fit_csv})
+    power_fits, latency_fits, throughput_fits = _make_fits()
     return OFOBatchController(
         models=[model],
-        fits=fits,
+        power_fits=power_fits,
+        latency_fits=latency_fits,
+        throughput_fits=throughput_fits,
         Lth_by_model={"M1": 0.1},
         primal_cfg=PrimalCfg(eta_primal=0.05, w_latency=1.0, w_throughput=0.0, w_switch=0.0),
         voltage_dual_cfg=VoltageDualCfg(v_min=0.95, v_max=1.05, rho_v=0.5),
@@ -136,8 +138,8 @@ def _build_controller(tmp_path: Path) -> OFOBatchController:
     )
 
 
-def test_ofo_uses_observed_latency_for_dual_update(tmp_path: Path):
-    ctrl = _build_controller(tmp_path)
+def test_ofo_uses_observed_latency_for_dual_update():
+    ctrl = _build_controller()
     grid = _GridStub()
     dc = _DCStub()
 
@@ -162,8 +164,8 @@ def test_ofo_uses_observed_latency_for_dual_update(tmp_path: Path):
     assert ctrl.mu_by_model["M1"] > 0.0
 
 
-def test_ofo_requires_observed_latency_map(tmp_path: Path):
-    ctrl = _build_controller(tmp_path)
+def test_ofo_requires_observed_latency_map():
+    ctrl = _build_controller()
     grid = _GridStub()
     dc = _DCStub()
 

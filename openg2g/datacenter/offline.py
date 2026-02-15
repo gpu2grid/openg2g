@@ -11,12 +11,12 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+from mlenergy_data.modeling import ITLMixtureModel
 
 from openg2g.clock import SimulationClock
 from openg2g.datacenter.base import LLMBatchSizeControlledDatacenter
 from openg2g.datacenter.training_overlay import TrainingOverlayCache
 from openg2g.events import EventEmitter
-from openg2g.models.latency import ITLMixture2Params
 from openg2g.models.spec import ModelSpec
 from openg2g.types import Command, OfflineDatacenterState, ThreePhase
 from openg2g.utils import split_integer_evenly
@@ -295,7 +295,7 @@ class OfflineDatacenter(LLMBatchSizeControlledDatacenter):
         training_t_add_end: Global time when training overlay ends.
         training_n_train_gpus: Number of GPUs running training.
         latency_fits: Optional per-model latency fits:
-            ``model_label -> batch_size -> ITLMixture2Params``.
+            ``model_label -> batch_size -> ITLMixtureModel``.
         latency_exact_threshold: Exact-sampling threshold for latency averaging.
         latency_seed: Optional seed for latency RNG. Defaults to ``seed + 54321``.
     """
@@ -318,7 +318,7 @@ class OfflineDatacenter(LLMBatchSizeControlledDatacenter):
         training_t_add_start: float = 1000.0,
         training_t_add_end: float = 2000.0,
         training_n_train_gpus: int = 2400,
-        latency_fits: dict[str, dict[int, ITLMixture2Params]] | None = None,
+        latency_fits: dict[str, dict[int, ITLMixtureModel]] | None = None,
         latency_exact_threshold: int = 30,
         latency_seed: int | None = None,
     ):

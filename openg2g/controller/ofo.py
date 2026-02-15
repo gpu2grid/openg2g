@@ -10,13 +10,13 @@ import math
 from dataclasses import dataclass
 
 import numpy as np
+from mlenergy_data.modeling import LogisticModel
 
 from openg2g.clock import SimulationClock
 from openg2g.controller.base import Controller
 from openg2g.datacenter.base import LLMBatchSizeControlledDatacenter
 from openg2g.events import EventEmitter
 from openg2g.grid.opendss import OpenDSSGrid
-from openg2g.models.logistic import LogisticFit
 from openg2g.models.spec import ModelSpec
 from openg2g.types import (
     Command,
@@ -117,7 +117,9 @@ class PerModelPrimalX:
         *,
         models: list[ModelSpec],
         batch_set: list[int],
-        fits: dict[str, LogisticFit],
+        power_fits: dict[str, LogisticModel],
+        latency_fits: dict[str, LogisticModel],
+        throughput_fits: dict[str, LogisticModel],
         cfg: PrimalCfg,
     ):
         self.models = list(models)
@@ -125,7 +127,9 @@ class PerModelPrimalX:
         if not self.batch_set:
             raise ValueError("batch_set cannot be empty.")
 
-        self.fits = fits
+        self.power_fits = power_fits
+        self.latency_fits = latency_fits
+        self.throughput_fits = throughput_fits
         self.cfg = cfg
 
         self.x_min = math.log2(min(self.batch_set))
@@ -142,7 +146,7 @@ class PerModelPrimalX:
         for ms in self.models:
             label = ms.model_label
             try:
-                th_max = float(self.fits[label].throughput.eval(b_max))
+                th_max = float(self.throughput_fits[label].eval(b_max))
             except Exception:
                 th_max = float("nan")
             if (not np.isfinite(th_max)) or (th_max <= 0.0):
@@ -225,13 +229,9 @@ class PerModelPrimalX:
             He = H @ e
             g_voltage = float(eta_vec @ He)
 
-            p_fit = self.fits[label].power
-            l_fit = self.fits[label].latency
-            th_fit = self.fits[label].throughput
-
-            dPdx_1 = float(p_fit.deriv_wrt_x(x))
-            dLdx_1 = float(l_fit.deriv_wrt_x(x))
-            dThdx_1 = float(th_fit.deriv_wrt_x(x))
+            dPdx_1 = float(self.power_fits[label].deriv_wrt_x(x))
+            dLdx_1 = float(self.latency_fits[label].deriv_wrt_x(x))
+            dThdx_1 = float(self.throughput_fits[label].deriv_wrt_x(x))
 
             dPdx_1_kw = dPdx_1 / 1000.0
 
@@ -281,7 +281,12 @@ class OFOBatchController(Controller[LLMBatchSizeControlledDatacenter, OpenDSSGri
 
     Args:
         models: Model specifications.
-        fits: Per-model logistic fits for power/latency/throughput curves.
+        power_fits: Per-model logistic fit for power as a function of
+            log2(batch_size).
+        latency_fits: Per-model logistic fit for latency as a function of
+            log2(batch_size).
+        throughput_fits: Per-model logistic fit for throughput as a function
+            of log2(batch_size).
         Lth_by_model: Per-model latency threshold (seconds).
         primal_cfg: Primal optimizer configuration.
         voltage_dual_cfg: Voltage dual configuration (v_min, v_max, rho_v).
@@ -298,7 +303,9 @@ class OFOBatchController(Controller[LLMBatchSizeControlledDatacenter, OpenDSSGri
         self,
         *,
         models: list[ModelSpec],
-        fits: dict[str, LogisticFit],
+        power_fits: dict[str, LogisticModel],
+        latency_fits: dict[str, LogisticModel],
+        throughput_fits: dict[str, LogisticModel],
         Lth_by_model: dict[str, float],
         primal_cfg: PrimalCfg,
         voltage_dual_cfg: VoltageDualCfg,
@@ -311,7 +318,6 @@ class OFOBatchController(Controller[LLMBatchSizeControlledDatacenter, OpenDSSGri
     ):
         self._dt_s = float(dt_s)
         self._models = list(models)
-        self._fits = fits
         self._Lth_by_model = dict(Lth_by_model)
         self._rho_l = float(rho_l)
         self._estimate_H_every = int(estimate_H_every)
@@ -328,7 +334,9 @@ class OFOBatchController(Controller[LLMBatchSizeControlledDatacenter, OpenDSSGri
         self._primal = PerModelPrimalX(
             models=models,
             batch_set=batch_set,
-            fits=fits,
+            power_fits=power_fits,
+            latency_fits=latency_fits,
+            throughput_fits=throughput_fits,
             cfg=primal_cfg,
         )
         self._primal.init_from_batches({ms.model_label: batch_init for ms in models})

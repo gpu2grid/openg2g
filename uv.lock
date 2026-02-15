@@ -1117,7 +1117,15 @@ requires-dist = [
 provides-extras = ["hf"]
 
 [package.metadata.requires-dev]
-dev = [{ name = "pytest", specifier = ">=8" }]
+dev = [
+    { name = "mkdocs-material", specifier = ">=9.5" },
+    { name = "mkdocstrings", extras = ["python"], specifier = ">=0.27" },
+    { name = "pytest", specifier = ">=8" },
+]
+docs = [
+    { name = "mkdocs-material", specifier = ">=9.5" },
+    { name = "mkdocstrings", extras = ["python"], specifier = ">=0.27" },
+]
 test = [{ name = "pytest", specifier = ">=8" }]
 
 [[package]]

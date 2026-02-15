@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import numpy as np
+from mlenergy_data.modeling import ITLMixtureModel
 
 from openg2g.clock import SimulationClock
 from openg2g.datacenter.offline import (
@@ -10,7 +11,6 @@ from openg2g.datacenter.offline import (
     TraceByBatchCache,
     build_periodic_per_gpu_template,
 )
-from openg2g.models.latency import ITLMixture2Params
 from openg2g.models.spec import ModelSpec
 from openg2g.types import Command, OfflineDatacenterState
 
@@ -163,7 +163,7 @@ def test_build_periodic_template_shape():
 def test_offline_datacenter_emits_observed_itl_when_latency_fits_is_set():
     cache = _make_simple_cache()
     model = ModelSpec(model_label="TestModel", replicas=10, gpus_per_replica=1)
-    fake_params = ITLMixture2Params(
+    fake_params = ITLMixtureModel(
         loc=0.01,
         pi_steady=0.8,
         sigma_steady=0.1,
