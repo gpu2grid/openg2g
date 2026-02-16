@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import warnings
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from fractions import Fraction
 from typing import Any
 
 from openg2g.clock import SimulationClock
@@ -21,10 +23,10 @@ from openg2g.types import (
 )
 
 
-def gcd_float(a: float, b: float, tol: float = 1e-9) -> float:
-    """GCD of two positive floats using Euclidean algorithm."""
+def _gcd_fraction(a: Fraction, b: Fraction) -> Fraction:
+    """GCD of two positive Fractions using Euclidean algorithm."""
     a, b = abs(a), abs(b)
-    while b > tol:
+    while b:
         a, b = b, a % b
     return a
 
@@ -127,7 +129,7 @@ class Coordinator:
         datacenter: Datacenter backend (offline or online).
         grid: OpenDSS grid simulator.
         controllers: List of controllers, applied in order each tick.
-        T_total_s: Total simulation duration (seconds).
+        T_total_s: Total simulation duration (integer seconds).
         dc_bus: Bus name for DC voltage logging.
         live: If True, synchronize with wall-clock time.
     """
@@ -137,21 +139,43 @@ class Coordinator:
         datacenter: DatacenterBackend,
         grid: GridBackend,
         controllers: Sequence[Controller[Any, Any]],
-        T_total_s: float,
+        T_total_s: int,
         dc_bus: str = "671",
         live: bool = False,
     ) -> None:
         self.datacenter = datacenter
         self.grid = grid
         self.controllers = list(controllers)
-        self.T_total_s = float(T_total_s)
+        self.T_total_s = int(T_total_s)
         self.dc_bus = str(dc_bus)
 
         # Compute tick as GCD of all component periods
         periods = [datacenter.dt_s, grid.dt_s] + [c.dt_s for c in controllers]
         tick = periods[0]
         for p in periods[1:]:
-            tick = gcd_float(tick, p)
+            tick = _gcd_fraction(tick, p)
+
+        # Warn about potentially problematic dt configurations
+        if grid.dt_s < datacenter.dt_s:
+            warnings.warn(
+                f"dt_grid ({grid.dt_s}) < dt_dc ({datacenter.dt_s}): "
+                f"grid steps between DC steps will reuse the most recent DC power.",
+                stacklevel=2,
+            )
+        for ctrl in controllers:
+            if ctrl.dt_s < grid.dt_s:
+                warnings.warn(
+                    f"Controller {ctrl.__class__.__name__} dt_s ({ctrl.dt_s}) "
+                    f"< dt_grid ({grid.dt_s}): controller may read stale voltages.",
+                    stacklevel=2,
+                )
+        n_ticks_estimate = Fraction(self.T_total_s) / tick
+        if n_ticks_estimate > 10_000_000:
+            warnings.warn(
+                f"Simulation will run {int(n_ticks_estimate)} ticks. "
+                f"This may be slow. Consider coarser time steps.",
+                stacklevel=2,
+            )
 
         self.clock = SimulationClock(tick_s=tick, live=live)
 
@@ -197,7 +221,13 @@ class Coordinator:
         dc_buffer: list[ThreePhase] = []
         interval_start_power: ThreePhase | None = None
 
-        n_ticks = int(round(self.T_total_s / self.clock.tick_s))
+        ratio = Fraction(self.T_total_s) / self.clock.tick_s
+        if ratio.denominator != 1:
+            raise ValueError(
+                f"T_total_s ({self.T_total_s}) is not an exact multiple of "
+                f"tick_s ({self.clock.tick_s})"
+            )
+        n_ticks = int(ratio)
 
         for _ in range(n_ticks):
             # 1. Datacenter step (if due)
@@ -207,18 +237,28 @@ class Coordinator:
                 log.record_dc(dc_state)
 
             # 2. Grid step (if due). Pass full sub-trace since last grid step.
-            if self.clock.is_due(self.grid.dt_s) and dc_buffer:
-                grid_state = self.grid.step(
-                    self.clock,
-                    list(dc_buffer),
-                    interval_start_w=interval_start_power,
-                )
-                # Record the last power sample for kW logging
-                last_power = dc_buffer[-1]
-                log.record_power(last_power)
-                interval_start_power = last_power
-                dc_buffer.clear()
-                log.record_grid(grid_state, dc_bus=self.dc_bus)
+            if self.clock.is_due(self.grid.dt_s):
+                if dc_buffer:
+                    grid_state = self.grid.step(
+                        self.clock,
+                        list(dc_buffer),
+                        interval_start_w=interval_start_power,
+                    )
+                    last_power = dc_buffer[-1]
+                    log.record_power(last_power)
+                    interval_start_power = last_power
+                    dc_buffer.clear()
+                    log.record_grid(grid_state, dc_bus=self.dc_bus)
+                elif interval_start_power is not None:
+                    # Grid is due but no new DC samples. Use the most recent
+                    # DC power as a single-sample trace.
+                    grid_state = self.grid.step(
+                        self.clock,
+                        [interval_start_power],
+                        interval_start_w=None,
+                    )
+                    log.record_power(interval_start_power)
+                    log.record_grid(grid_state, dc_bus=self.dc_bus)
 
             # 3. Controllers (if due). In order, actions applied immediately.
             for ctrl in self.controllers:

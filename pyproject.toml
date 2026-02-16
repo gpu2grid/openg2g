@@ -15,9 +15,6 @@ dependencies = [
     "mlenergy-data",
 ]
 
-[tool.uv.sources]
-mlenergy-data = { path = "mlenergy-data", editable = true }
-
 [project.optional-dependencies]
 opendss = ["opendssdirect.py"]
 
@@ -62,9 +59,6 @@ known-first-party = ["openg2g"]
 [tool.pyright]
 pythonVersion = "3.10"
 typeCheckingMode = "strict"
-venvPath = "."
-venv = ".venv"
-extraPaths = ["mlenergy-data"]
 reportMissingTypeStubs = false
 reportUnknownMemberType = false
 reportUnknownVariableType = false

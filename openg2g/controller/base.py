@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from fractions import Fraction
 from typing import Generic, TypeVar, Union, get_args, get_origin
 
 from openg2g.clock import SimulationClock
@@ -106,8 +107,8 @@ class Controller(Generic[DCBackendT, GridBackendT], ABC):
 
     @property
     @abstractmethod
-    def dt_s(self) -> float:
-        """Control interval in seconds."""
+    def dt_s(self) -> Fraction:
+        """Control interval as a Fraction (seconds)."""
 
     @abstractmethod
     def step(

@@ -30,14 +30,14 @@ def plot_power_trajectories(
     batch_sizes: list[int] | None = None,
     xlim_s: tuple[float, float] | None = None,
     rolling_window: int = 10,
-    figsize: tuple[float, float] = (7.1, 3.0),
-    dpi: int = 300,
+    figsize: tuple[float, float] = (10, 5),
+    dpi: int = 160,
     save_path: Path | str | None = None,
 ) -> Figure:
     """Plot total GPU power trajectories per batch size (Fig. 2).
 
     One subplot per model. Each curve is a different batch size,
-    color-coded using the viridis colormap. Power is shown in kW.
+    color-coded using the viridis colormap.
 
     Args:
         trace_dir: Directory containing per-model trace CSVs with columns
@@ -78,7 +78,7 @@ def plot_power_trajectories(
 
         batches_found: list[int] = []
         times: list[np.ndarray] = []
-        powers_kw: list[np.ndarray] = []
+        powers_w: list[np.ndarray] = []
         for csv_path in csv_files:
             batch = _extract_batch_from_filename(csv_path)
             if batch_sizes is not None and batch not in batch_sizes:
@@ -97,7 +97,7 @@ def plot_power_trajectories(
 
             batches_found.append(batch)
             times.append(time_s)
-            powers_kw.append(power_w / 1000.0)
+            powers_w.append(power_w)
 
         if not batches_found:
             ax.set_title(f"{model_label} (no matching traces)")
@@ -105,20 +105,20 @@ def plot_power_trajectories(
 
         cmap = plt.get_cmap("viridis", len(batches_found))
         for i, (b, t, p) in enumerate(
-            zip(batches_found, times, powers_kw, strict=True)
+            zip(batches_found, times, powers_w, strict=True)
         ):
-            ax.plot(t, p, label=f"batch={b}", color=cmap(i), linewidth=0.8)
+            ax.plot(t, p, label=f"batch={b}", color=cmap(i))
 
         label_char = panel_labels[row] if row < len(panel_labels) else ""
         gpu_suffix = "GPUs" if num_gpus > 1 else "GPU"
         ax.set_title(
             f"({label_char}) {model_label}: Total-GPU Power ({num_gpus} {gpu_suffix})",
-            fontsize=10,
+            fontsize=13,
         )
-        ax.set_ylabel("Power (kW)", fontsize=9)
+        ax.set_ylabel("Power (W)", fontsize=11)
         if row == 0:
             ax.legend(
-                fontsize=7,
+                fontsize=9,
                 ncol=len(batches_found),
                 loc="lower center",
                 frameon=True,
@@ -131,7 +131,7 @@ def plot_power_trajectories(
             ax.set_xlim(left=0)
         ax.set_ylim(bottom=0)
 
-    axes[-1, 0].set_xlabel("Time (seconds)", fontsize=9)
+    axes[-1, 0].set_xlabel("Time (seconds)", fontsize=11)
 
     fig.tight_layout()
 
@@ -149,10 +149,10 @@ def plot_logistic_fits(
     model_labels: list[str],
     *,
     fit_exclude_batches: dict[str, set[int]] | None = None,
-    figsize: tuple[float, float] = (7.1, 4.65),
+    figsize: tuple[float, float] = (6.45, 5.2),
     dpi: int = 300,
-    marker_size: float = 26.0,
-    line_width: float = 2.2,
+    marker_size: float = 16.0,
+    line_width: float = 1.8,
     grid_alpha: float = 0.25,
     title_fontsize: int = 12,
     label_fontsize: int = 10,
@@ -265,7 +265,6 @@ def plot_logistic_fits(
                 x,
                 y,
                 s=marker_size,
-                alpha=0.55,
                 color=line.get_color(),
                 zorder=3,
             )
@@ -283,7 +282,7 @@ def plot_logistic_fits(
         fontsize=label_fontsize,
     )
 
-    fig.tight_layout(pad=0.35, h_pad=0.7)
+    fig.tight_layout(pad=0.35, h_pad=0.6)
 
     if save_path is not None:
         save_path = Path(save_path)

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from fractions import Fraction
+
 import numpy as np
 from mlenergy_data.modeling import ITLMixtureModel
 
@@ -45,7 +47,7 @@ def test_step_returns_offline_state():
     dc = OfflineDatacenter(
         trace_cache=cache,
         models=[model],
-        dt=0.1,
+        dt=Fraction(1, 10),
         batch_init=128,
         gpus_per_server=8,
         seed=0,
@@ -56,7 +58,7 @@ def test_step_returns_offline_state():
         base_kW_per_phase=0.0,
     )
 
-    clock = SimulationClock(tick_s=0.1)
+    clock = SimulationClock(tick_s=Fraction(1, 10))
     state = dc.step(clock)
 
     assert isinstance(state, OfflineDatacenterState)
@@ -74,7 +76,7 @@ def test_step_produces_correct_number_of_states():
     dc = OfflineDatacenter(
         trace_cache=cache,
         models=[model],
-        dt=0.1,
+        dt=Fraction(1, 10),
         batch_init=128,
         gpus_per_server=8,
         seed=0,
@@ -84,7 +86,7 @@ def test_step_produces_correct_number_of_states():
         ramp_floor=1.0,
     )
 
-    clock = SimulationClock(tick_s=0.1)
+    clock = SimulationClock(tick_s=Fraction(1, 10))
     states = []
     for _ in range(10):
         states.append(dc.step(clock))
@@ -104,7 +106,7 @@ def test_batch_change_takes_effect_at_chunk_boundary():
     dc = OfflineDatacenter(
         trace_cache=cache,
         models=[model],
-        dt=0.1,
+        dt=Fraction(1, 10),
         batch_init=128,
         gpus_per_server=8,
         seed=0,
@@ -114,7 +116,7 @@ def test_batch_change_takes_effect_at_chunk_boundary():
         ramp_floor=1.0,
     )
 
-    clock = SimulationClock(tick_s=0.1)
+    clock = SimulationClock(tick_s=Fraction(1, 10))
 
     # Step a few times at batch=128
     for _ in range(5):
@@ -176,7 +178,7 @@ def test_offline_datacenter_emits_observed_itl_when_latency_fits_is_set():
     dc = OfflineDatacenter(
         trace_cache=cache,
         models=[model],
-        dt=0.1,
+        dt=Fraction(1, 10),
         batch_init=128,
         gpus_per_server=8,
         seed=0,
@@ -187,6 +189,6 @@ def test_offline_datacenter_emits_observed_itl_when_latency_fits_is_set():
         latency_fits=latency_fits,
     )
 
-    state = dc.step(SimulationClock(tick_s=0.1))
+    state = dc.step(SimulationClock(tick_s=Fraction(1, 10)))
     assert "TestModel" in state.observed_itl_s_by_model
     assert np.isfinite(state.observed_itl_s_by_model["TestModel"])

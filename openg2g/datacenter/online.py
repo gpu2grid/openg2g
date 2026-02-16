@@ -8,6 +8,7 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import Callable
+from fractions import Fraction
 
 from openg2g.clock import SimulationClock
 from openg2g.datacenter.base import LLMBatchSizeControlledDatacenter
@@ -44,7 +45,7 @@ class OnlineDatacenter(LLMBatchSizeControlledDatacenter):
         self,
         *,
         gpu_indices: list[int],
-        dt_s: float = 0.1,
+        dt_s: Fraction = Fraction(1, 10),
         phase_assignment: dict[int, int] | None = None,
         batch_control_callback: Callable[[dict[str, int]], None] | None = None,
         replica_count_provider: Callable[[], dict[str, int]] | None = None,
@@ -58,7 +59,7 @@ class OnlineDatacenter(LLMBatchSizeControlledDatacenter):
                 "OnlineDatacenter requires the Zeus library. Install it with: pip install zeus"
             ) from exc
 
-        self._dt = float(dt_s)
+        self._dt = dt_s
         self._gpu_indices = list(gpu_indices)
         self._batch_callback = batch_control_callback
         # Optional hook for HIL setups (e.g., vLLM replicas) to report
@@ -87,7 +88,7 @@ class OnlineDatacenter(LLMBatchSizeControlledDatacenter):
         self._history: list[OnlineDatacenterState] = []
 
     @property
-    def dt_s(self) -> float:
+    def dt_s(self) -> Fraction:
         return self._dt
 
     @property

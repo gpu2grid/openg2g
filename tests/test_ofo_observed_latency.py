@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from fractions import Fraction
+
 import numpy as np
 from mlenergy_data.modeling import LogisticModel
 
@@ -19,8 +21,8 @@ class _GridStub(OpenDSSGrid):
         self._history: list[GridState] = []
 
     @property
-    def dt_s(self) -> float:
-        return 1.0
+    def dt_s(self) -> Fraction:
+        return Fraction(1)
 
     @property
     def state(self) -> GridState | None:
@@ -72,8 +74,8 @@ class _DCStub(LLMBatchSizeControlledDatacenter):
         self._state: DatacenterState | None = None
 
     @property
-    def dt_s(self) -> float:
-        return 1.0
+    def dt_s(self) -> Fraction:
+        return Fraction(1)
 
     @property
     def state(self) -> DatacenterState | None:
@@ -134,7 +136,7 @@ def _build_controller() -> OFOBatchController:
         batch_set=[8, 16, 32, 64, 128],
         batch_init=64,
         rho_l=1.0,
-        dt_s=1.0,
+        dt_s=Fraction(1),
     )
 
 
@@ -157,9 +159,9 @@ def test_ofo_uses_observed_latency_for_dual_update():
     dc.set_state(dc_state)
     grid.set_state(grid_state)
     sink = _EventSink()
-    events = EventEmitter(SimulationClock(1.0), sink, "controller")
+    events = EventEmitter(SimulationClock(Fraction(1)), sink, "controller")
 
-    action = ctrl.step(SimulationClock(1.0), dc, grid, events)
+    action = ctrl.step(SimulationClock(Fraction(1)), dc, grid, events)
     assert len(action.commands) == 1
     assert ctrl.mu_by_model["M1"] > 0.0
 
@@ -178,10 +180,10 @@ def test_ofo_requires_observed_latency_map():
     )
     dc.set_state(dc_state)
     sink = _EventSink()
-    events = EventEmitter(SimulationClock(1.0), sink, "controller")
+    events = EventEmitter(SimulationClock(Fraction(1)), sink, "controller")
 
     try:
-        ctrl.step(SimulationClock(1.0), dc, grid, events)
+        ctrl.step(SimulationClock(Fraction(1)), dc, grid, events)
     except RuntimeError as exc:
         assert "observed_itl_s_by_model" in str(exc)
     else:

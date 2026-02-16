@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 import warnings
 from dataclasses import dataclass, field
+from fractions import Fraction
 
 
 @dataclass
@@ -14,18 +15,27 @@ class SimulationClock:
     Components run at different rates (DC=0.1s, Grid=1.0s, Controller=1.0s or 60s).
     The coordinator computes `tick_s` as the GCD of all component periods.
 
+    All time step parameters use `fractions.Fraction` for exact arithmetic.
+    The `time_s` property returns `float` for compatibility with numpy/plotting.
+
     In live mode (`live=True`), the clock synchronizes with wall-clock time.
     If computation falls behind, a warning is issued.
     """
 
-    tick_s: float
+    tick_s: Fraction
     live: bool = False
     _step: int = field(default=0, init=False, repr=False)
     _wall_t0: float | None = field(default=None, init=False, repr=False)
 
+    def __post_init__(self) -> None:
+        if not isinstance(self.tick_s, Fraction):  # pyright: ignore[reportUnnecessaryIsInstance]
+            raise TypeError(f"tick_s must be a Fraction, got {type(self.tick_s).__name__}")
+        if self.tick_s <= 0:
+            raise ValueError(f"tick_s must be positive, got {self.tick_s}")
+
     @property
     def time_s(self) -> float:
-        return self._step * self.tick_s
+        return float(self._step * self.tick_s)
 
     @property
     def step(self) -> int:
@@ -46,7 +56,7 @@ class SimulationClock:
             now = time.monotonic()
             if now < expected_wall:
                 time.sleep(expected_wall - now)
-            elif now - expected_wall > self.tick_s:
+            elif now - expected_wall > float(self.tick_s):
                 lag = now - expected_wall
                 warnings.warn(
                     f"Clock lag: {lag:.3f}s behind wall time at sim t={self.time_s:.1f}s. "
@@ -55,9 +65,18 @@ class SimulationClock:
                 )
         return self.time_s
 
-    def is_due(self, period_s: float) -> bool:
-        """Check if an event with the given period should fire on this tick."""
-        period_ticks = round(period_s / self.tick_s)
+    def is_due(self, period_s: Fraction) -> bool:
+        """Check if an event with the given period should fire on this tick.
+
+        Raises:
+            ValueError: If *period_s* is not an exact multiple of *tick_s*.
+        """
+        ratio = period_s / self.tick_s
+        if ratio.denominator != 1:
+            raise ValueError(
+                f"period_s={period_s} is not an exact multiple of tick_s={self.tick_s}"
+            )
+        period_ticks = int(ratio)
         if period_ticks <= 0:
             return True
         return self._step % period_ticks == 0

@@ -11,6 +11,7 @@ Two modes correspond to two baselines in the paper:
 from __future__ import annotations
 
 import argparse
+from fractions import Fraction
 from pathlib import Path
 
 import numpy as np
@@ -103,8 +104,8 @@ def main(args: argparse.Namespace) -> None:
     v_max = 1.05
     dc_bus = "671"
     gpus_per_server = 8
-    dt_dc = 0.1
-    t_total_s = 3600.0
+    dt_dc = Fraction(1, 10)
+    t_total_s = 3600
 
     print("Loading power traces...")
     traces_by_batch = load_traces_by_batch_from_dir(
@@ -157,14 +158,14 @@ def main(args: argparse.Namespace) -> None:
         dc_bus=dc_bus,
         dc_kv_ll=4.16,
         pf_dc=0.95,
-        dt_s=0.1,
+        dt_s=Fraction(1, 10),
         dc_conn="wye",
         controls_off=False,
         tap_schedule=tap_schedule,
         freeze_regcontrols=True,
     )
 
-    ctrl = TapScheduleController(schedule=[], dt_s=1.0)
+    ctrl = TapScheduleController(schedule=[], dt_s=Fraction(1))
 
     print(f"Running simulation (mode={mode})...")
     coord = Coordinator(

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import types
+from fractions import Fraction
 from typing import Any, cast
 
 import pytest
@@ -23,8 +24,8 @@ from openg2g.types import (
 
 class _DC(DatacenterBackend):
     @property
-    def dt_s(self) -> float:
-        return 1.0
+    def dt_s(self) -> Fraction:
+        return Fraction(1)
 
     @property
     def state(self) -> DatacenterState | None:
@@ -43,8 +44,8 @@ class _DC(DatacenterBackend):
 
 class _Grid(GridBackend):
     @property
-    def dt_s(self) -> float:
-        return 1.0
+    def dt_s(self) -> Fraction:
+        return Fraction(1)
 
     @property
     def state(self) -> GridState | None:
@@ -92,7 +93,7 @@ def test_controller_requires_explicit_generic_parameters():
             "_BadMissingGeneric",
             (controller_any,),
             {
-                "dt_s": property(lambda self: 1.0),
+                "dt_s": property(lambda self: Fraction(1)),
                 "step": lambda self, clock, datacenter, grid, events: ControlAction(commands=[]),
             },
         )
@@ -106,7 +107,7 @@ def test_controller_rejects_reversed_generic_order():
             (reversed_base,),
             exec_body=lambda ns: ns.update(
                 {
-                    "dt_s": property(lambda self: 1.0),
+                    "dt_s": property(lambda self: Fraction(1)),
                     "step": lambda self, clock, datacenter, grid, events: ControlAction(
                         commands=[]
                     ),
@@ -126,7 +127,7 @@ def test_controller_rejects_random_classes_in_generics():
             (random_base,),
             exec_body=lambda ns: ns.update(
                 {
-                    "dt_s": property(lambda self: 1.0),
+                    "dt_s": property(lambda self: Fraction(1)),
                     "step": lambda self, clock, datacenter, grid, events: ControlAction(
                         commands=[]
                     ),
@@ -146,7 +147,7 @@ def test_controller_rejects_non_abc_subclass_for_grid_generic():
             (bad_grid_base,),
             exec_body=lambda ns: ns.update(
                 {
-                    "dt_s": property(lambda self: 1.0),
+                    "dt_s": property(lambda self: Fraction(1)),
                     "step": lambda self, clock, datacenter, grid, events: ControlAction(
                         commands=[]
                     ),
@@ -158,8 +159,8 @@ def test_controller_rejects_non_abc_subclass_for_grid_generic():
 def test_controller_inherits_compatibility_from_typed_parent():
     class _BaseTyped(Controller[_DC, _Grid]):
         @property
-        def dt_s(self) -> float:
-            return 1.0
+        def dt_s(self) -> Fraction:
+            return Fraction(1)
 
         def step(
             self,

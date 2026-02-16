@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from fractions import Fraction
+
 from openg2g.clock import SimulationClock
 from openg2g.controller.base import Controller
 from openg2g.datacenter.base import DatacenterBackend
@@ -23,14 +25,14 @@ class TapScheduleController(Controller[DatacenterBackend, GridBackend]):
         self,
         *,
         schedule: list[tuple[float, dict[str, float]]],
-        dt_s: float = 1.0,
+        dt_s: Fraction = Fraction(1),
     ) -> None:
-        self._dt_s = float(dt_s)
+        self._dt_s = dt_s
         self._schedule = sorted(list(schedule), key=lambda x: float(x[0]))
         self._idx = 0
 
     @property
-    def dt_s(self) -> float:
+    def dt_s(self) -> Fraction:
         return self._dt_s
 
     def step(

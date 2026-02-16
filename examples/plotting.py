@@ -259,7 +259,7 @@ def plot_allbus_voltages_per_phase(
     reg_label: str = "Regulator bus",
     reg_color: str = "black",
     reg_lw: float = 2.4,
-    reg_zorder: int = 6,
+    reg_zorder: int = 5,
     title_template: str = "Voltage trajectories (Phase {label})",
     shared_legend_phase: str = "B",
     filename_template: str = "allbus_voltages_phase_{label}.png",

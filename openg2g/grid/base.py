@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
+from fractions import Fraction
 
 import numpy as np
 
@@ -17,8 +18,8 @@ class GridBackend(ABC):
 
     @property
     @abstractmethod
-    def dt_s(self) -> float:
-        """Native timestep in seconds."""
+    def dt_s(self) -> Fraction:
+        """Native timestep as a Fraction (seconds)."""
 
     @property
     @abstractmethod

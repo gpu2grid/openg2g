@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from fractions import Fraction
 from pathlib import Path
 from typing import Any
 
@@ -36,8 +37,8 @@ def build_periodic_per_gpu_template(
     trace_p_total: np.ndarray,
     measured_gpus: int,
     *,
-    dt: float,
-    T: float,
+    dt: Fraction | float,
+    T: Fraction | float,
     is_total: bool = True,
     steady_skip_s: float = 0.0,
 ) -> np.ndarray:
@@ -150,7 +151,9 @@ class TraceByBatchCache:
         self._templates: dict[tuple[int, str], np.ndarray] = {}
         self._built = False
 
-    def build_templates(self, *, T: float, dt: float, steady_skip_s: float = 0.0) -> None:
+    def build_templates(
+        self, *, T: Fraction | float, dt: Fraction | float, steady_skip_s: float = 0.0
+    ) -> None:
         self._templates.clear()
         for b, per_model in self.traces_by_batch.items():
             for label, tr in per_model.items():
@@ -177,8 +180,8 @@ class TraceByBatchCache:
         cls,
         traces_by_batch: dict[int, dict[str, dict[str, Any]]],
         *,
-        T: float,
-        dt: float,
+        T: Fraction | float,
+        dt: Fraction | float,
         steady_skip_s: float = 0.0,
     ) -> TraceByBatchCache:
         """Create a cache and build all templates in one step."""
@@ -314,7 +317,7 @@ class OfflineDatacenter(LLMBatchSizeControlledDatacenter):
         *,
         trace_cache: TraceByBatchCache,
         models: list[ModelSpec],
-        dt: float,
+        dt: Fraction,
         batch_init: int,
         gpus_per_server: int = 8,
         seed: int = 0,
@@ -331,7 +334,7 @@ class OfflineDatacenter(LLMBatchSizeControlledDatacenter):
         latency_exact_threshold: int = 30,
         latency_seed: int | None = None,
     ) -> None:
-        self._dt = float(dt)
+        self._dt = dt
         self._cache = trace_cache
         self._models = list(models)
         self._gpus_per_server = int(gpus_per_server)
@@ -375,7 +378,7 @@ class OfflineDatacenter(LLMBatchSizeControlledDatacenter):
         self._history: list[OfflineDatacenterState] = []
 
     @property
-    def dt_s(self) -> float:
+    def dt_s(self) -> Fraction:
         return self._dt
 
     @property
@@ -445,7 +448,7 @@ class OfflineDatacenter(LLMBatchSizeControlledDatacenter):
         workload: WorkloadConfig,
         *,
         trace_cache: TraceByBatchCache,
-        dt: float,
+        dt: Fraction,
         seed: int = 0,
         chunk_steps: int = 600,
         latency_fits: dict[str, dict[int, ITLMixtureModel]] | None = None,
@@ -554,7 +557,7 @@ class OfflineDatacenter(LLMBatchSizeControlledDatacenter):
 
     def _generate_chunk(self, t0_s: float) -> None:
         """Generate a chunk of power-trace samples starting at *t0_s*."""
-        dt = self._dt
+        dt = float(self._dt)
         n = self._chunk_steps
         # Generate n+1 internal steps (endpoint-inclusive), serving the first n.
         n_internal = n + 1

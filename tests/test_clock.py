@@ -3,19 +3,22 @@
 from __future__ import annotations
 
 import warnings
+from fractions import Fraction
 from unittest.mock import patch
+
+import pytest
 
 from openg2g.clock import SimulationClock
 
 
 def test_time_starts_at_zero():
-    clock = SimulationClock(tick_s=0.1)
+    clock = SimulationClock(tick_s=Fraction(1, 10))
     assert clock.time_s == 0.0
     assert clock.step == 0
 
 
 def test_advance_increments():
-    clock = SimulationClock(tick_s=0.5)
+    clock = SimulationClock(tick_s=Fraction(1, 2))
     t = clock.advance()
     assert t == 0.5
     assert clock.step == 1
@@ -25,66 +28,77 @@ def test_advance_increments():
 
 
 def test_is_due_every_tick():
-    clock = SimulationClock(tick_s=0.1)
-    assert clock.is_due(0.1)
+    clock = SimulationClock(tick_s=Fraction(1, 10))
+    assert clock.is_due(Fraction(1, 10))
     clock.advance()
-    assert clock.is_due(0.1)
+    assert clock.is_due(Fraction(1, 10))
 
 
 def test_is_due_multi_rate():
-    clock = SimulationClock(tick_s=0.1)
+    clock = SimulationClock(tick_s=Fraction(1, 10))
     # At step 0: everything is due
-    assert clock.is_due(0.1)
-    assert clock.is_due(1.0)
-    assert clock.is_due(60.0)
+    assert clock.is_due(Fraction(1, 10))
+    assert clock.is_due(Fraction(1))
+    assert clock.is_due(Fraction(60))
 
     # Advance 1 tick (step=1, t=0.1s)
     clock.advance()
-    assert clock.is_due(0.1)
-    assert not clock.is_due(1.0)
-    assert not clock.is_due(60.0)
+    assert clock.is_due(Fraction(1, 10))
+    assert not clock.is_due(Fraction(1))
+    assert not clock.is_due(Fraction(60))
 
     # Advance to step=10 (t=1.0s)
     for _ in range(9):
         clock.advance()
     assert clock.step == 10
-    assert clock.is_due(0.1)
-    assert clock.is_due(1.0)
-    assert not clock.is_due(60.0)
+    assert clock.is_due(Fraction(1, 10))
+    assert clock.is_due(Fraction(1))
+    assert not clock.is_due(Fraction(60))
 
     # Advance to step=600 (t=60.0s)
     for _ in range(590):
         clock.advance()
     assert clock.step == 600
-    assert clock.is_due(0.1)
-    assert clock.is_due(1.0)
-    assert clock.is_due(60.0)
+    assert clock.is_due(Fraction(1, 10))
+    assert clock.is_due(Fraction(1))
+    assert clock.is_due(Fraction(60))
 
 
 def test_is_due_non_power_of_ten():
-    """Period that doesn't divide the tick evenly still works via rounding."""
-    clock = SimulationClock(tick_s=0.1)
-    # Period 0.3s -> round(0.3/0.1) = 3 ticks
-    assert clock.is_due(0.3)  # step 0
+    """Period 3/10 is an exact multiple of tick 1/10 → 3 ticks."""
+    clock = SimulationClock(tick_s=Fraction(1, 10))
+    assert clock.is_due(Fraction(3, 10))  # step 0
     clock.advance()  # step 1
-    assert not clock.is_due(0.3)
+    assert not clock.is_due(Fraction(3, 10))
     clock.advance()  # step 2
-    assert not clock.is_due(0.3)
+    assert not clock.is_due(Fraction(3, 10))
     clock.advance()  # step 3
-    assert clock.is_due(0.3)
+    assert clock.is_due(Fraction(3, 10))
 
 
-def test_is_due_period_smaller_than_tick():
-    """If period < tick, event fires every tick."""
-    clock = SimulationClock(tick_s=1.0)
-    assert clock.is_due(0.01)
-    clock.advance()
-    assert clock.is_due(0.01)
+def test_is_due_period_not_multiple_of_tick_raises():
+    """If period is not an exact multiple of tick, raise ValueError."""
+    clock = SimulationClock(tick_s=Fraction(1))
+    with pytest.raises(ValueError, match="not an exact multiple"):
+        clock.is_due(Fraction(1, 100))
+
+
+def test_tick_s_must_be_fraction():
+    """Passing a float for tick_s raises TypeError."""
+    with pytest.raises(TypeError, match="must be a Fraction"):
+        SimulationClock(tick_s=0.1)  # type: ignore[arg-type]
+
+
+def test_tick_s_must_be_positive():
+    with pytest.raises(ValueError, match="must be positive"):
+        SimulationClock(tick_s=Fraction(0))
+    with pytest.raises(ValueError, match="must be positive"):
+        SimulationClock(tick_s=Fraction(-1, 10))
 
 
 def test_live_mode_lag_warning():
     """Live mode warns when computation takes longer than a tick."""
-    clock = SimulationClock(tick_s=0.1, live=True)
+    clock = SimulationClock(tick_s=Fraction(1, 10), live=True)
 
     # Simulate wall time progressing faster than real-time
     # First advance sets _wall_t0
@@ -104,7 +118,7 @@ def test_live_mode_lag_warning():
 
 def test_live_mode_sleeps_when_ahead():
     """Live mode sleeps when ahead of wall time."""
-    clock = SimulationClock(tick_s=1.0, live=True)
+    clock = SimulationClock(tick_s=Fraction(1), live=True)
 
     sleep_calls = []
 

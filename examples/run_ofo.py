@@ -8,6 +8,7 @@ OFOBatchController] + Coordinator.
 from __future__ import annotations
 
 import argparse
+from fractions import Fraction
 from pathlib import Path
 
 import numpy as np
@@ -138,9 +139,9 @@ def main(args: argparse.Namespace) -> None:
     v_max = 1.05
     dc_bus = "671"
     gpus_per_server = 8
-    dt_dc = 0.1
-    dt_ctrl = 1.0
-    t_total_s = 3600.0
+    dt_dc = Fraction(1, 10)
+    dt_ctrl = Fraction(1)
+    t_total_s = 3600
 
     TAP_STEP = 0.00625  # standard 5/8% tap step
     tap_schedule = TapPosition(
@@ -227,7 +228,7 @@ def main(args: argparse.Namespace) -> None:
         dc_bus=dc_bus,
         dc_kv_ll=4.16,
         pf_dc=0.95,
-        dt_s=dt_dc,
+        dt_s=Fraction(1, 10),
         dc_conn="wye",
         controls_off=True,
         tap_schedule=tap_schedule,
@@ -297,7 +298,7 @@ def main(args: argparse.Namespace) -> None:
         log.batch_log_by_model,
         per_model,
         model_labels=INFERENCE.model_labels,
-        dt_ctrl_s=dt_ctrl,
+        dt_ctrl_s=float(dt_ctrl),
         save_path=save_dir / "model_timeseries_4panel.png",
     )
 
@@ -324,7 +325,7 @@ def main(args: argparse.Namespace) -> None:
     if log.batch_log_by_model:
         plot_batch_schedule(
             log.batch_log_by_model,
-            dt_ctrl,
+            float(dt_ctrl),
             save_path=save_dir / "batch_schedule.png",
             title="Batch Size Schedule (OFO)",
         )

@@ -6,6 +6,7 @@ Requires `pip install opendssdirect.py` (optional dependency).
 from __future__ import annotations
 
 import math
+from fractions import Fraction
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -78,7 +79,7 @@ class OpenDSSGrid(GridBackend):
         dc_bus: str,
         dc_kv_ll: float,
         pf_dc: float,
-        dt_s: float = 1.0,
+        dt_s: Fraction = Fraction(1),
         dc_conn: str = "wye",
         controls_off: bool = True,
         tap_schedule: TapSchedule | None = None,
@@ -92,7 +93,7 @@ class OpenDSSGrid(GridBackend):
         self._dc_bus = str(dc_bus)
         self._dc_kv_ll = float(dc_kv_ll)
         self._pf_dc = float(pf_dc)
-        self._dt_s = float(dt_s)
+        self._dt_s = dt_s
         self._dc_conn = str(dc_conn)
         self._controls_off = bool(controls_off)
         self._freeze_regcontrols = bool(freeze_regcontrols)
@@ -117,7 +118,7 @@ class OpenDSSGrid(GridBackend):
         self._build_vmag_indices()
 
     @property
-    def dt_s(self) -> float:
+    def dt_s(self) -> Fraction:
         return self._dt_s
 
     @property
@@ -319,8 +320,9 @@ class OpenDSSGrid(GridBackend):
         if n_samples < 2:
             return list(load_trace_w)
 
-        t_dc = np.linspace(0.0, self._dt_s, n_samples)
-        t_dss = np.array([0.0, self._dt_s])
+        dt_f = float(self._dt_s)
+        t_dc = np.linspace(0.0, dt_f, n_samples)
+        t_dss = np.array([0.0, dt_f])
 
         P_A = np.array([p.a for p in load_trace_w])
         P_B = np.array([p.b for p in load_trace_w])
@@ -351,7 +353,7 @@ class OpenDSSGrid(GridBackend):
 
         dss.Text.Command("Reset")
         dss.Text.Command("Set Mode=Time")
-        dss.Text.Command(f"Set Stepsize={self._dt_s}s")
+        dss.Text.Command(f"Set Stepsize={float(self._dt_s)}s")
         dss.Text.Command("Set ControlMode=Time")
         if self._controls_off:
             dss.Text.Command("Set ControlMode=Off")

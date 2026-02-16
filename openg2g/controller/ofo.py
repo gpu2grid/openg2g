@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from fractions import Fraction
 
 import numpy as np
 from mlenergy_data.modeling import LogisticModel
@@ -335,11 +336,11 @@ class OFOBatchController(Controller[LLMBatchSizeControlledDatacenter, OpenDSSGri
         batch_set: list[int],
         batch_init: int = 128,
         rho_l: float = 1.0,
-        dt_s: float = 1.0,
+        dt_s: Fraction = Fraction(1),
         estimate_H_every: int = 0,
         estimate_H_dp_kw: float = 100.0,
     ) -> None:
-        self._dt_s = float(dt_s)
+        self._dt_s = dt_s
         self._models = list(models)
         self._Lth_by_model = dict(Lth_by_model)
         self._rho_l = float(rho_l)
@@ -385,7 +386,7 @@ class OFOBatchController(Controller[LLMBatchSizeControlledDatacenter, OpenDSSGri
         primal_cfg: PrimalCfg,
         voltage_dual_cfg: VoltageDualCfg,
         rho_l: float = 1.0,
-        dt_s: float = 1.0,
+        dt_s: Fraction = Fraction(1),
         estimate_H_every: int = 0,
         estimate_H_dp_kw: float = 100.0,
     ) -> OFOBatchController:
@@ -430,7 +431,7 @@ class OFOBatchController(Controller[LLMBatchSizeControlledDatacenter, OpenDSSGri
         return instance
 
     @property
-    def dt_s(self) -> float:
+    def dt_s(self) -> Fraction:
         return self._dt_s
 
     @property

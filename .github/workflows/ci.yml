@@ -9,8 +9,10 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
       - run: uv sync --group lint
       - run: bash scripts/lint.sh
 
@@ -20,9 +22,10 @@ jobs:
       matrix:
         python-version: ["3.10", "3.11", "3.12"]
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v7
         with:
+          enable-cache: true
           python-version: ${{ matrix.python-version }}
       - run: uv sync --group test
       - run: uv run pytest tests/ -v

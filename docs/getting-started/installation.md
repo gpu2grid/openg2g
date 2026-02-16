@@ -18,7 +18,7 @@ This installs the core library with trace-replay datacenter support and plotting
 To use the OpenDSS-based grid simulator:
 
 ```bash
-pip install "openg2g[grid]"
+pip install "openg2g[opendss]"
 ```
 
 This adds `opendssdirect.py`, which provides the Python bindings for OpenDSS.
@@ -28,7 +28,7 @@ This adds `opendssdirect.py`, which provides the Python bindings for OpenDSS.
 Clone the repository and install all development dependencies:
 
 ```bash
-git clone https://github.com/your-org/openg2g.git
+git clone https://github.com/TODO/openg2g.git
 cd openg2g
 uv sync
 ```
@@ -41,10 +41,11 @@ The project uses PEP 735 dependency groups managed by uv:
 
 | Group | Contents | Install |
 |---|---|---|
-| `dev` | Everything below + OpenDSS | `uv sync` (default) |
+| `dev` | Everything below | `uv sync` (default) |
 | `test` | pytest | `uv sync --group test` |
 | `lint` | ruff, pyright | `uv sync --group lint` |
 | `docs` | mkdocs-material, mkdocstrings | `uv sync --group docs` |
+| `examples` | openg2g[opendss], matplotlib | `uv sync --group examples` |
 
 ### Verify the Installation
 

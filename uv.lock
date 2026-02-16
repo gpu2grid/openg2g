@@ -1120,11 +1120,17 @@ provides-extras = ["hf"]
 dev = [
     { name = "mkdocs-material", specifier = ">=9.5" },
     { name = "mkdocstrings", extras = ["python"], specifier = ">=0.27" },
+    { name = "pyright" },
     { name = "pytest", specifier = ">=8" },
+    { name = "ruff" },
 ]
 docs = [
     { name = "mkdocs-material", specifier = ">=9.5" },
     { name = "mkdocstrings", extras = ["python"], specifier = ">=0.27" },
+]
+lint = [
+    { name = "pyright" },
+    { name = "ruff" },
 ]
 test = [{ name = "pytest", specifier = ">=8" }]
 

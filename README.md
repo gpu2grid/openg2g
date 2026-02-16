@@ -41,14 +41,18 @@ from openg2g.coordinator import Coordinator
 from openg2g.datacenter.offline import OfflineDatacenter, TraceByBatchCache
 from openg2g.grid.opendss import OpenDSSGrid
 from openg2g.controller.noop import NoopController
+from openg2g.models.spec import LLMInferenceModelSpec
 
 # 1. Set up a trace-based datacenter
-cache = TraceByBatchCache(traces_by_batch)
-cache.build_templates(T=3600.0, dt=0.1)
-dc = OfflineDatacenter(trace_cache=cache, models=models, ...)
+models = [
+    LLMInferenceModelSpec(model_label="Llama-3.1-8B", num_replicas=720, gpus_per_replica=1),
+    LLMInferenceModelSpec(model_label="Llama-3.1-70B", num_replicas=180, gpus_per_replica=4),
+]
+cache = TraceByBatchCache.from_traces(traces_by_batch, T=3600.0, dt=0.1)
+dc = OfflineDatacenter(trace_cache=cache, models=models, dt=0.1, batch_init=128)
 
 # 2. Set up the grid
-grid = OpenDSSGrid(case_dir="path/to/13Bus", master="IEEE13Nodeckt.dss", ...)
+grid = OpenDSSGrid(case_dir="examples/ieee13", master="IEEE13Nodeckt.dss", ...)
 
 # 3. Run the simulation
 coord = Coordinator(
@@ -68,19 +72,18 @@ See [`examples/`](examples/) for complete simulation scripts:
 
 ## Running Example Simulations
 
-Simulation data (power traces, latency fits, logistic fits) can be built from raw ML.ENERGY benchmark data using the [`mlenergy-data`](mlenergy-data/) library.
+Simulation data (power traces, latency fits, logistic fits) can be built from ML.ENERGY benchmark data using the [`mlenergy-data`](mlenergy-data/) library.
 
 ### 1. Build simulation data from benchmarks
 
-The build script reads raw benchmark results and produces the trace CSVs, latency fit parameters, and logistic fit parameters that the simulation consumes. Model selection is controlled by a JSON config file ([`data/openg2g_models.json`](data/openg2g_models.json)).
+The build script reads benchmark data and produces the trace CSVs, latency fit parameters, and logistic fit parameters that the simulation consumes. Model selection is controlled by a JSON config file ([`data/openg2g_models.json`](data/openg2g_models.json)).
 
 Generated artifacts go into `data/generated/` (gitignored). Source files (`data/*.py`, `data/openg2g_models.json`) are versioned.
 
 ```bash
 uv run python data/build_mlenergy_data.py \
-  --root /path/to/benchmark_root \
+  --mlenergy-data-dir /path/to/compiled/data \
   --config data/openg2g_models.json \
-  --llm-config-dir /path/to/benchmark_root/llm/configs \
   --out-dir data/generated
 ```
 

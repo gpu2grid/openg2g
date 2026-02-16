@@ -9,12 +9,10 @@ OpenG2G ships with example simulations in the `examples/` directory:
 
 ## Data Requirements
 
-Both examples require data files that are not included in the repository:
+Both examples require simulation data:
 
-- **Power trace CSVs** (`power_csvs_updated/`) -- per-model GPU power traces at various batch sizes, latency fit parameters, and logistic fit parameters.
-- **OpenDSS case files** (`OpenDss_Test/13Bus/`) -- IEEE 13-bus test feeder files.
-
-Place these directories in the project root before running.
+- **Power trace CSVs** -- per-model GPU power traces at various batch sizes, latency fit parameters, and logistic fit parameters. Build from benchmark data with `data/build_mlenergy_data.py` (see the README) or use the legacy `power_csvs_updated/` directory.
+- **OpenDSS case files** -- IEEE 13-bus test feeder files, included in the repo at `examples/ieee13/`.
 
 ## Baseline Simulation
 

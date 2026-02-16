@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
+from fractions import Fraction
 
 from openg2g.clock import SimulationClock
 from openg2g.events import EventEmitter
@@ -15,8 +16,8 @@ class DatacenterBackend(ABC):
 
     @property
     @abstractmethod
-    def dt_s(self) -> float:
-        """Native timestep in seconds."""
+    def dt_s(self) -> Fraction:
+        """Native timestep as a Fraction (seconds)."""
 
     @property
     @abstractmethod

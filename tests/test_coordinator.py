@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import warnings
 from collections.abc import Callable
+from fractions import Fraction
 
 import numpy as np
 
 from openg2g.clock import SimulationClock
 from openg2g.controller.base import Controller
-from openg2g.coordinator import Coordinator, gcd_float
+from openg2g.coordinator import Coordinator, _gcd_fraction  # pyright: ignore[reportPrivateUsage]
 from openg2g.datacenter.base import DatacenterBackend
 from openg2g.events import EventEmitter
 from openg2g.grid.base import GridBackend
@@ -23,16 +25,16 @@ from openg2g.types import (
 )
 
 
-def testgcd_float():
-    assert abs(gcd_float(0.1, 1.0) - 0.1) < 1e-9
-    assert abs(gcd_float(0.5, 1.5) - 0.5) < 1e-9
-    assert abs(gcd_float(60.0, 1.0) - 1.0) < 1e-9
+def test_gcd_fraction():
+    assert _gcd_fraction(Fraction(1, 10), Fraction(1)) == Fraction(1, 10)
+    assert _gcd_fraction(Fraction(1, 2), Fraction(3, 2)) == Fraction(1, 2)
+    assert _gcd_fraction(Fraction(60), Fraction(1)) == Fraction(1)
 
 
 class _StubDC(DatacenterBackend):
     """Minimal datacenter for coordinator tests."""
 
-    def __init__(self, dt_s: float = 0.1) -> None:
+    def __init__(self, dt_s: Fraction = Fraction(1, 10)) -> None:
         self._dt_s = dt_s
         self._state: DatacenterState | None = None
         self._history: list[DatacenterState] = []
@@ -40,7 +42,7 @@ class _StubDC(DatacenterBackend):
         self.apply_control_calls: list[Command] = []
 
     @property
-    def dt_s(self) -> float:
+    def dt_s(self) -> Fraction:
         return self._dt_s
 
     @property
@@ -71,7 +73,7 @@ class _StubDC(DatacenterBackend):
 class _StubGrid(GridBackend):
     """Minimal grid for coordinator tests."""
 
-    def __init__(self, dt_s: float = 1.0) -> None:
+    def __init__(self, dt_s: Fraction = Fraction(1)) -> None:
         self._dt_s = dt_s
         self._state: GridState | None = None
         self._history: list[GridState] = []
@@ -79,7 +81,7 @@ class _StubGrid(GridBackend):
         self.step_calls: list[tuple[SimulationClock, list[ThreePhase]]] = []
 
     @property
-    def dt_s(self) -> float:
+    def dt_s(self) -> Fraction:
         return self._dt_s
 
     @property
@@ -128,7 +130,7 @@ class _StubController(Controller[DatacenterBackend, GridBackend]):
 
     def __init__(
         self,
-        dt_s: float = 1.0,
+        dt_s: Fraction = Fraction(1),
         action: ControlAction | None = None,
         on_step: Callable[
             [SimulationClock, DatacenterBackend, GridBackend, EventEmitter],
@@ -142,7 +144,7 @@ class _StubController(Controller[DatacenterBackend, GridBackend]):
         self.call_count = 0
 
     @property
-    def dt_s(self) -> float:
+    def dt_s(self) -> Fraction:
         return self._dt_s
 
     def step(
@@ -159,12 +161,12 @@ class _StubController(Controller[DatacenterBackend, GridBackend]):
 
 
 def test_coordinator_dc_fires_every_tick():
-    """DC (dt=0.1) should fire 10x per grid step (dt=1.0)."""
-    dc = _StubDC(dt_s=0.1)
-    grid = _StubGrid(dt_s=1.0)
-    ctrl = _StubController(dt_s=1.0)
+    """DC (dt=1/10) should fire 10x per grid step (dt=1)."""
+    dc = _StubDC(dt_s=Fraction(1, 10))
+    grid = _StubGrid(dt_s=Fraction(1))
+    ctrl = _StubController(dt_s=Fraction(1))
 
-    coord = Coordinator(dc, grid, [ctrl], T_total_s=1.0, dc_bus="671")
+    coord = Coordinator(dc, grid, [ctrl], T_total_s=1, dc_bus="671")
     coord.run()
 
     # DC fires 10 times in 1 second (steps 0-9)
@@ -175,14 +177,14 @@ def test_coordinator_dc_fires_every_tick():
 
 def test_coordinator_dc_buffer_flush():
     """Grid receives full DC buffer at each grid step."""
-    dc = _StubDC(dt_s=0.1)
-    grid = _StubGrid(dt_s=0.5)
-    ctrl = _StubController(dt_s=0.5)
+    dc = _StubDC(dt_s=Fraction(1, 10))
+    grid = _StubGrid(dt_s=Fraction(1, 2))
+    ctrl = _StubController(dt_s=Fraction(1, 2))
 
-    coord = Coordinator(dc, grid, [ctrl], T_total_s=1.0, dc_bus="671")
+    coord = Coordinator(dc, grid, [ctrl], T_total_s=1, dc_bus="671")
     coord.run()
 
-    # Grid fires at step 0 and step 5 (twice in 1 second with dt=0.5)
+    # Grid fires at step 0 and step 5 (twice in 1 second with dt=1/2)
     assert grid.step_count == 2
     # First grid call (step 0): 1 DC sample accumulated
     # Second grid call (step 5): 5 DC samples (steps 1-5)
@@ -209,11 +211,11 @@ def test_coordinator_controller_order():
             call_order.append("grid")
             return super().step(clock, load_trace_w, **kwargs)
 
-    dc = _OrderDC(dt_s=1.0)
-    grid = _OrderGrid(dt_s=1.0)
+    dc = _OrderDC(dt_s=Fraction(1))
+    grid = _OrderGrid(dt_s=Fraction(1))
 
     ctrl1 = _StubController(
-        dt_s=1.0,
+        dt_s=Fraction(1),
         on_step=lambda clock, dc, g, ev: (
             call_order.append("ctrl1"),
             ControlAction(commands=[]),
@@ -221,14 +223,14 @@ def test_coordinator_controller_order():
     )
 
     ctrl2 = _StubController(
-        dt_s=1.0,
+        dt_s=Fraction(1),
         on_step=lambda clock, dc, g, ev: (
             call_order.append("ctrl2"),
             ControlAction(commands=[]),
         )[-1],
     )
 
-    coord = Coordinator(dc, grid, [ctrl1, ctrl2], T_total_s=1.0, dc_bus="671")
+    coord = Coordinator(dc, grid, [ctrl1, ctrl2], T_total_s=1, dc_bus="671")
     coord.run()
 
     # First tick order should be: dc, grid, ctrl1, ctrl2
@@ -240,8 +242,8 @@ def test_coordinator_controller_order():
 
 def test_coordinator_batch_action_applied():
     """Batch size changes from controllers are applied to datacenter."""
-    dc = _StubDC(dt_s=1.0)
-    grid = _StubGrid(dt_s=1.0)
+    dc = _StubDC(dt_s=Fraction(1))
+    grid = _StubGrid(dt_s=Fraction(1))
 
     action_with_batch = ControlAction(
         commands=[
@@ -252,17 +254,17 @@ def test_coordinator_batch_action_applied():
             )
         ]
     )
-    ctrl = _StubController(dt_s=1.0, action=action_with_batch)
+    ctrl = _StubController(dt_s=Fraction(1), action=action_with_batch)
 
-    coord = Coordinator(dc, grid, [ctrl], T_total_s=1.0, dc_bus="671")
+    coord = Coordinator(dc, grid, [ctrl], T_total_s=1, dc_bus="671")
     coord.run()
 
     assert dc.apply_control_calls == [action_with_batch.commands[0]]
 
 
 def test_coordinator_exposes_clock_stamped_controller_events():
-    dc = _StubDC(dt_s=1.0)
-    grid = _StubGrid(dt_s=1.0)
+    dc = _StubDC(dt_s=Fraction(1))
+    grid = _StubGrid(dt_s=Fraction(1))
 
     def _on_step(
         clock: SimulationClock,
@@ -274,8 +276,8 @@ def test_coordinator_exposes_clock_stamped_controller_events():
         events.emit("controller.test", {"value": 1})
         return ControlAction(commands=[])
 
-    ctrl = _StubController(dt_s=1.0, on_step=_on_step)
-    coord = Coordinator(dc, grid, [ctrl], T_total_s=1.0, dc_bus="671")
+    ctrl = _StubController(dt_s=Fraction(1), on_step=_on_step)
+    coord = Coordinator(dc, grid, [ctrl], T_total_s=1, dc_bus="671")
     log = coord.run()
 
     assert len(log.events) == 1
@@ -292,12 +294,12 @@ def test_batch_history_is_populated_from_datacenter_events():
     class _EventedDC(DatacenterBackend):
         def __init__(self) -> None:
             self._events: EventEmitter | None = None
-            self._dt_s = 1.0
+            self._dt_s = Fraction(1)
             self._state: DatacenterState | None = None
             self._history: list[DatacenterState] = []
 
         @property
-        def dt_s(self) -> float:
+        def dt_s(self) -> Fraction:
             return self._dt_s
 
         @property
@@ -328,9 +330,9 @@ def test_batch_history_is_populated_from_datacenter_events():
             )
 
     dc = _EventedDC()
-    grid = _StubGrid(dt_s=1.0)
+    grid = _StubGrid(dt_s=Fraction(1))
     ctrl = _StubController(
-        dt_s=1.0,
+        dt_s=Fraction(1),
         action=ControlAction(
             commands=[
                 Command(
@@ -342,7 +344,7 @@ def test_batch_history_is_populated_from_datacenter_events():
         ),
     )
 
-    coord = Coordinator(dc, grid, [ctrl], T_total_s=1.0, dc_bus="671")
+    coord = Coordinator(dc, grid, [ctrl], T_total_s=1, dc_bus="671")
     log = coord.run()
     assert log.batch_log_by_model["model_a"] == [64]
 
@@ -350,8 +352,8 @@ def test_batch_history_is_populated_from_datacenter_events():
 def test_controller_generic_types_auto_extracted():
     class _TypedController(Controller[DatacenterBackend, OpenDSSGrid]):
         @property
-        def dt_s(self) -> float:
-            return 1.0
+        def dt_s(self) -> Fraction:
+            return Fraction(1)
 
         def step(
             self,
@@ -373,8 +375,8 @@ def test_controller_datacenter_mismatch_error_has_underlined_generic_snippet():
             self._state: DatacenterState | None = None
 
         @property
-        def dt_s(self) -> float:
-            return 1.0
+        def dt_s(self) -> Fraction:
+            return Fraction(1)
 
         @property
         def state(self) -> DatacenterState | None:
@@ -397,8 +399,8 @@ def test_controller_datacenter_mismatch_error_has_underlined_generic_snippet():
             self._state: DatacenterState | None = None
 
         @property
-        def dt_s(self) -> float:
-            return 1.0
+        def dt_s(self) -> Fraction:
+            return Fraction(1)
 
         @property
         def state(self) -> DatacenterState | None:
@@ -418,8 +420,8 @@ def test_controller_datacenter_mismatch_error_has_underlined_generic_snippet():
 
     class _NeedsExpectedDC(Controller[_ExpectedDC, OpenDSSGrid]):
         @property
-        def dt_s(self) -> float:
-            return 1.0
+        def dt_s(self) -> Fraction:
+            return Fraction(1)
 
         def step(
             self,
@@ -432,9 +434,9 @@ def test_controller_datacenter_mismatch_error_has_underlined_generic_snippet():
             return ControlAction(commands=[])
 
     dc = _OtherDC()
-    grid = _StubGrid(dt_s=1.0)
+    grid = _StubGrid(dt_s=Fraction(1))
     ctrl = _NeedsExpectedDC()
-    coord = Coordinator(dc, grid, [ctrl], T_total_s=1.0, dc_bus="671")
+    coord = Coordinator(dc, grid, [ctrl], T_total_s=1, dc_bus="671")
 
     try:
         coord.run()
@@ -444,3 +446,46 @@ def test_controller_datacenter_mismatch_error_has_underlined_generic_snippet():
         assert "_NeedsExpectedDC" in msg
         assert "_ExpectedDC" in msg
         assert "_OtherDC" in msg
+
+
+def test_coordinator_grid_uses_stale_power_when_dc_buffer_empty():
+    """When dt_grid < dt_dc, grid gets the most recent DC power as fallback."""
+    dc = _StubDC(dt_s=Fraction(1))
+    grid = _StubGrid(dt_s=Fraction(1, 2))
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        coord = Coordinator(dc, grid, [], T_total_s=1, dc_bus="671")
+    log = coord.run()
+
+    # Grid fires at tick 0 (dc_buffer has 1 sample) and tick 5 (dc_buffer empty,
+    # falls back to interval_start_power).
+    assert grid.step_count == 2
+    # Both grid steps should produce log entries
+    assert len(log.grid_states) == 2
+
+
+def test_coordinator_warns_dt_grid_lt_dt_dc():
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        Coordinator(
+            _StubDC(dt_s=Fraction(1)),
+            _StubGrid(dt_s=Fraction(1, 2)),
+            [],
+            T_total_s=1,
+        )
+    msgs = [str(x.message) for x in w]
+    assert any("dt_grid" in m and "dt_dc" in m for m in msgs)
+
+
+def test_coordinator_warns_ctrl_dt_lt_grid_dt():
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        Coordinator(
+            _StubDC(dt_s=Fraction(1)),
+            _StubGrid(dt_s=Fraction(1)),
+            [_StubController(dt_s=Fraction(1, 2))],
+            T_total_s=1,
+        )
+    msgs = [str(x.message) for x in w]
+    assert any("stale voltages" in m for m in msgs)

@@ -25,7 +25,9 @@ The coordinator computes the base tick as the GCD of all component periods. In t
 
 ### Offline (Trace Replay)
 
-The `OfflineDatacenter` replays CSV power traces. You first load traces into a cache, build periodic templates, then create the datacenter:
+The `OfflineDatacenter` replays CSV power traces. You first load traces into a cache, build periodic templates, then create the datacenter.
+
+#### Direct construction
 
 ```python
 from openg2g.datacenter.offline import (
@@ -33,11 +35,11 @@ from openg2g.datacenter.offline import (
     TraceByBatchCache,
     load_traces_by_batch_from_dir,
 )
-from openg2g.models.spec import ModelSpec
+from openg2g.models.spec import LLMInferenceModelSpec
 
 models = [
-    ModelSpec(model_label="Llama-3.1-8B", replicas=720, gpus_per_replica=1),
-    ModelSpec(model_label="Llama-3.1-70B", replicas=180, gpus_per_replica=4),
+    LLMInferenceModelSpec(model_label="Llama-3.1-8B", num_replicas=720, gpus_per_replica=1),
+    LLMInferenceModelSpec(model_label="Llama-3.1-70B", num_replicas=180, gpus_per_replica=4),
 ]
 
 traces_by_batch = load_traces_by_batch_from_dir(
@@ -46,8 +48,7 @@ traces_by_batch = load_traces_by_batch_from_dir(
     required_measured_gpus={m.model_label: m.gpus_per_replica for m in models},
 )
 
-cache = TraceByBatchCache(traces_by_batch)
-cache.build_templates(T=3600.0, dt=0.1)
+cache = TraceByBatchCache.from_traces(traces_by_batch, T=3600.0, dt=0.1)
 
 dc = OfflineDatacenter(
     trace_cache=cache,
@@ -61,6 +62,34 @@ dc = OfflineDatacenter(
     ramp_t_end=3000.0,
     ramp_floor=0.2,
     base_kW_per_phase=500.0,
+)
+```
+
+#### Using config objects
+
+For more complex setups (training overlays, server ramp schedules), use the `from_config()` factory with `DatacenterConfig` and `WorkloadConfig`:
+
+```python
+from openg2g.datacenter.config import DatacenterConfig, WorkloadConfig
+from openg2g.datacenter.offline import OfflineDatacenter, TraceByBatchCache
+from openg2g.models.spec import LLMInferenceModelSpec, LLMInferenceWorkload
+from openg2g.types import ServerRamp, TrainingRun
+
+workload = WorkloadConfig(
+    inference=LLMInferenceWorkload(models=(
+        LLMInferenceModelSpec(model_label="Llama-3.1-8B", num_replicas=720, gpus_per_replica=1),
+        LLMInferenceModelSpec(model_label="Llama-3.1-70B", num_replicas=180, gpus_per_replica=4),
+    )),
+    training=TrainingRun(t_start=1000.0, t_end=2000.0, n_gpus=2400),
+    server_ramps=ServerRamp(t_start=2500.0, t_end=3000.0, floor=0.2),
+)
+
+dc = OfflineDatacenter.from_config(
+    datacenter=DatacenterConfig(gpus_per_server=8, base_kW_per_phase=500.0),
+    workload=workload,
+    trace_cache=cache,
+    dt=0.1,
+    seed=0,
 )
 ```
 
@@ -104,7 +133,7 @@ tap_schedule = (
 )
 
 grid = OpenDSSGrid(
-    case_dir="OpenDss_Test/13Bus",
+    case_dir="examples/ieee13",
     master="IEEE13Nodeckt.dss",
     dc_bus="671",
     dc_kv_ll=4.16,

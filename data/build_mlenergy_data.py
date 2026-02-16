@@ -1,4 +1,4 @@
-"""Build OpenG2G simulation artifacts from ML.ENERGY raw benchmark data.
+"""Build OpenG2G simulation artifacts from ML.ENERGY benchmark data.
 
 Uses a JSON config that specifies exact model IDs, tasks, GPU counts,
 and simulation labels.  No automatic ID derivation or guessing.
@@ -47,7 +47,7 @@ def _emit_trace_bank(
         series_list: list[tuple[np.ndarray, np.ndarray]] = []
         t_ends: list[float] = []
 
-        for _run_id, rg in g.groupby("run_id"):
+        for _results_path, rg in g.groupby("results_path"):
             rr = rg.sort_values("relative_time_s")
             t = rr["relative_time_s"].to_numpy(dtype=float)
             p = rr["value"].to_numpy(dtype=float)
@@ -185,7 +185,7 @@ def _extract_itl_samples(runs: LLMRuns) -> pd.DataFrame:
             vals.extend(_smooth_chunked_itl(raw_itl))
         arr = [x for x in vals if x > 0 and math.isfinite(x)]
         if not arr:
-            raise ValueError(f"No valid ITL samples in run: {run.run_id}")
+            raise ValueError(f"No valid ITL samples in run: {run.results_path}")
         for v in arr:
             sample_rows.append(
                 {
@@ -329,9 +329,9 @@ def main() -> int:
         description="Build OpenG2G simulation artifacts from raw benchmark data"
     )
     parser.add_argument(
-        "--root",
-        required=True,
-        help="Benchmark data root (e.g., /turbo/jwnchung/benchmark-ampere02/3.0)",
+        "--mlenergy-data-dir",
+        default=None,
+        help="Path to compiled mlenergy-data directory. If omitted, loads from Hugging Face Hub.",
     )
     parser.add_argument(
         "--config",
@@ -347,8 +347,6 @@ def main() -> int:
         default="power.device_instant",
         choices=["power.device_instant", "power.device_average", "temperature"],
     )
-    parser.add_argument("--llm-config-dir", default=None)
-    parser.add_argument("--diffusion-config-dir", default=None)
     parser.add_argument(
         "--plot",
         action=argparse.BooleanOptionalAction,
@@ -362,7 +360,6 @@ def main() -> int:
         format="%(asctime)s %(name)s %(levelname)s %(message)s",
     )
 
-    root = Path(args.root)
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -372,14 +369,20 @@ def main() -> int:
 
     unique_tasks = {str(entry["task"]) for entry in config}
 
-    logger.info("Loading runs from %s (tasks: %s)", root, sorted(unique_tasks))
-    all_runs = LLMRuns.from_directory(
-        root,
-        tasks=unique_tasks,
-        snapshots=("current",),
-        config_dir=(Path(args.llm_config_dir) if args.llm_config_dir else None),
-        stable_only=False,
-    )
+    if args.mlenergy_data_dir:
+        logger.info("Loading runs from %s (tasks: %s)", args.mlenergy_data_dir, sorted(unique_tasks))
+        all_runs = LLMRuns.from_directory(
+            args.mlenergy_data_dir,
+            tasks=unique_tasks,
+            stable_only=False,
+        )
+    else:
+        logger.info("Loading runs from Hugging Face Hub (tasks: %s)", sorted(unique_tasks))
+        all_runs = LLMRuns.from_hf(
+            tasks=unique_tasks,
+            stable_only=False,
+            download_raw=True,
+        )
     if not all_runs:
         raise ValueError("No runs found in benchmark root for the specified tasks")
 
@@ -444,7 +447,7 @@ def main() -> int:
     run_summary = (
         run_df.groupby(["model_label", "num_gpus", "max_num_seqs"], dropna=False)
         .agg(
-            n_runs=("run_id", "count"),
+            n_runs=("results_path", "count"),
             avg_power_watts_median=("avg_power_watts", "median"),
             avg_itl_ms_median=("median_itl_ms", "median"),
             throughput_toks_s_median=("output_throughput_tokens_per_sec", "median"),
