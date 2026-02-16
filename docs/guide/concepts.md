@@ -1,6 +1,6 @@
 # Concepts and Background
 
-This page explains **why** datacenter--grid coordination matters and introduces the key concepts behind OpenG2G.
+This page explains **why** datacenter--grid coordination matters and introduces the key concepts behind OpenG2G. For the full technical treatment, see the [GPU-to-Grid paper](https://arxiv.org/abs/2602.05116).
 
 ## The Problem: GPU Datacenters Meet Distribution Grids
 
@@ -18,9 +18,22 @@ The central insight is that **GPU batch size** is a controllable knob that simul
 
 By adjusting batch sizes in response to grid voltage measurements, a datacenter can regulate its own impact on the distribution network while maintaining acceptable service quality.
 
+These relationships are modeled with four-parameter logistic curves fit to real GPU benchmark data from the [ML.ENERGY Benchmark](https://ml.energy/data) (see Section II-C of the [paper](https://arxiv.org/abs/2602.05116)):
+
+```
+  Power (W)                              Latency (s)
+    |          ___________                  |              ___________
+    |         /                             |             /
+    |        /                              |            /
+    |    ___/                               |    _______/
+    |___/                                   |___/
+    └───────────────────── batch            └───────────────────── batch
+       8   32  128  512                        8   32  128  512
+```
+
 ## Online Feedback Optimization (OFO)
 
-OpenG2G implements an **Online Feedback Optimization** controller that solves this coordination problem in real time. At each control step, the OFO controller:
+OpenG2G implements an **Online Feedback Optimization** controller that solves this coordination problem in real time (Section III of the [paper](https://arxiv.org/abs/2602.05116)). At each control step, the OFO controller:
 
 1. **Reads** the latest grid voltages and datacenter state
 2. **Computes** a gradient step that balances:
@@ -31,7 +44,7 @@ OpenG2G implements an **Online Feedback Optimization** controller that solves th
 3. **Projects** the result onto the feasible set of discrete batch sizes
 4. **Applies** the new batch sizes to the datacenter
 
-The controller uses dual variables for voltage constraints and latency constraints, updating them with online gradient ascent. This formulation is derived from the paper's Eq. 18 and extended with configurable weights for each objective.
+The controller uses dual variables for voltage constraints and latency constraints, updating them with online gradient ascent. See the [Architecture](architecture.md#the-ofo-controller) page for the controller internals diagram and equation references.
 
 ## Simulation Components
 
@@ -48,6 +61,55 @@ The grid simulator runs AC power flow on standard IEEE test feeders using OpenDS
 ### Controllers
 
 Controllers close the feedback loop. They read the latest datacenter and grid state, compute control actions (batch size changes, tap adjustments), and apply them. Multiple controllers compose in order within the simulation coordinator.
+
+## End-to-End System
+
+The full system connects GPU benchmark data through simulation to voltage regulation:
+
+```
+                       Data preparation
+
+  Real GPUs          mlenergy-data            Generated CSVs
+  running LLMs       toolkit                  (data/generated/)
+  ┌──────────┐      ┌─────────────┐          ┌──────────────────┐
+  │Benchmark │─────>│ Load, fit,  │─────────>│ Power traces     │
+  │  runs    │      │ validate    │          │ Logistic fits    │
+  │(H100×N)  │      │             │          │ Latency fits     │
+  └──────────┘      └─────────────┘          └────────┬─────────┘
+                                                      │
+ ═════════════════════════════════════════════════════╪═════════════
+                                                      │
+                         Simulation                   │
+                                                      v
+                         ┌──────────────────────────────────────┐
+                         │           Coordinator                │
+                         │           (3600 s sim)               │
+                         │                                      │
+                         │  ┌────────────┐   ┌──────────────┐   │
+  Power traces ─────────>│  │ Datacenter │   │  OpenDSS     │   │
+  Latency fits ─────────>│  │ (offline)  │──>│  Grid        │   │
+                         │  │            │   │  (13-bus)    │   │
+                         │  └────────────┘   └───────┬──────┘   │
+                         │        ^                  │          │
+                         │        │   batch cmd      │ voltages │
+                         │        │                  v          │
+  Logistic fits ────────>│  ┌─────┴───────────────────────────┐ │
+                         │  │       OFO Controller            │ │
+                         │  │  min cost s.t. V_min ≤ V ≤ V_max│ │
+                         │  └─────────────────────────────────┘ │
+                         └──────────────────────────────────────┘
+                                          │
+                                          v
+                                   ┌──────────────┐
+                                   │  Outputs     │
+                                   │  Voltages    │
+                                   │  Batch sizes │
+                                   │  Latencies   │
+                                   │  Metrics     │
+                                   └──────────────┘
+```
+
+For details on the data preparation step, see the [Data Pipeline](data-pipeline.md) page.
 
 ## What Can You Explore?
 

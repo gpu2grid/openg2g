@@ -7,11 +7,13 @@ OpenG2G ships with example simulations in the `examples/` directory:
     - `--mode tap-change` -- scheduled tap changes at t=1500s and t=3300s ("Tap change only")
 - `run_ofo.py` -- OFO closed-loop control with batch size optimization
 
+These correspond to the three evaluation cases in the [GPU-to-Grid paper](https://arxiv.org/abs/2602.05116).
+
 ## Data Requirements
 
 Both examples require simulation data:
 
-- **Power trace CSVs** -- per-model GPU power traces at various batch sizes, latency fit parameters, and logistic fit parameters. Build from benchmark data with `data/build_mlenergy_data.py` (see the README) or use the legacy `power_csvs_updated/` directory.
+- **Power trace CSVs** -- per-model GPU power traces at various batch sizes, latency fit parameters, and logistic fit parameters. Build from benchmark data with `data/build_mlenergy_data.py` (see the [Data Pipeline](../guide/data-pipeline.md) page) or use the legacy `power_csvs_updated/` directory.
 - **OpenDSS case files** -- IEEE 13-bus test feeder files, included in the repo at `examples/ieee13/`.
 
 ## Baseline Simulation
@@ -37,8 +39,8 @@ Key parameters (defined at the top of the script):
 Outputs are saved to `outputs/baseline_no-tap/` or `outputs/baseline_tap-change/`:
 
 - `power_profiles.png` -- three-phase DC power over time
-- `voltage_trajectories_phase_{A,B,C}.png` -- all-bus voltage trajectories
-- `console_output.txt` -- voltage violation statistics
+- `allbus_voltages_phase_{A,B,C}.png` -- all-bus voltage trajectories
+- `console_output.txt` -- full simulation log
 
 ## OFO Simulation
 
@@ -61,31 +63,36 @@ Outputs are saved to `outputs/ofo/`:
 
 - `dc_power_3ph.png` -- three-phase DC power
 - `batch_schedule.png` -- batch size schedule per model
-- `all_bus_voltages_phase_{A,B,C}.png` -- voltage trajectories
+- `allbus_voltages_phase_{A,B,C}.png` -- voltage trajectories
+- `console_output.txt` -- full simulation log with per-step OFO decisions
 
 ## Understanding the Output
 
 ### Voltage Statistics
 
-Both simulations print voltage violation statistics:
+Both simulations log voltage violation statistics at the end of the run:
 
 ```
-=== Voltage Statistics (all-bus) ===
-  voltage_violation_time = 1006.5 s
-  worst_vmin             = 0.934839
-  worst_vmax             = 1.050770
-  integral_violation     = 31.2408 pu·s
+run_baseline INFO === Voltage Statistics (all-bus) ===
+run_baseline INFO   voltage_violation_time = 1006.1 s
+run_baseline INFO   worst_vmin             = 0.934924
+run_baseline INFO   worst_vmax             = 1.050714
+run_baseline INFO   integral_violation     = 31.2029 pu·s
 ```
 
 - **violation_time**: total time any bus-phase voltage is outside [0.95, 1.05] pu
 - **worst_vmin / worst_vmax**: extremes across all buses, phases, and time
-- **integral_violation**: time-integrated sum of voltage violations across all bus-phase pairs
+- **integral_violation**: time-integrated sum of voltage violations across all bus-phase pairs (see Section IV-C of the [paper](https://arxiv.org/abs/2602.05116))
 
 ### Batch Schedule (OFO only)
 
 ```
-=== Batch Schedule Summary ===
-  Llama-3.1-8B: avg_batch=461.0, changes=11
+run_ofo INFO === Batch Schedule Summary ===
+run_ofo INFO   Llama-3.1-8B: avg_batch=404.4, changes=37
+run_ofo INFO   Llama-3.1-70B: avg_batch=112.9, changes=13
+run_ofo INFO   Llama-3.1-405B: avg_batch=68.8, changes=10
+run_ofo INFO   Qwen3-30B-A3B: avg_batch=192.4, changes=21
+run_ofo INFO   Qwen3-235B-A22B: avg_batch=51.0, changes=9
 ```
 
 Shows the average batch size and number of batch size changes per model over the simulation.

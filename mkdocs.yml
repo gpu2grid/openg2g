@@ -4,6 +4,9 @@ repo_url: https://github.com/TODO/openg2g
 
 theme:
   name: material
+  favicon: assets/transmission-tower.svg
+  icon:
+    logo: material/transmission-tower
   palette:
     - scheme: default
       primary: indigo
@@ -52,6 +55,7 @@ nav:
     - Running a Simulation: getting-started/running.md
   - Guide:
     - Concepts and Background: guide/concepts.md
+    - Data Pipeline: guide/data-pipeline.md
     - Architecture: guide/architecture.md
     - Composing Components: guide/composing.md
     - Custom Components: guide/custom-components.md

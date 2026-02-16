@@ -38,8 +38,12 @@ from openg2g.datacenter.offline import (
 from openg2g.models.spec import LLMInferenceModelSpec
 
 models = [
-    LLMInferenceModelSpec(model_label="Llama-3.1-8B", num_replicas=720, gpus_per_replica=1),
-    LLMInferenceModelSpec(model_label="Llama-3.1-70B", num_replicas=180, gpus_per_replica=4),
+    LLMInferenceModelSpec(
+        model_label="Llama-3.1-8B", num_replicas=720, gpus_per_replica=1, initial_batch_size=128,
+    ),
+    LLMInferenceModelSpec(
+        model_label="Llama-3.1-70B", num_replicas=180, gpus_per_replica=4, initial_batch_size=128,
+    ),
 ]
 
 traces_by_batch = load_traces_by_batch_from_dir(
@@ -77,8 +81,12 @@ from openg2g.types import ServerRamp, TrainingRun
 
 workload = WorkloadConfig(
     inference=LLMInferenceWorkload(models=(
-        LLMInferenceModelSpec(model_label="Llama-3.1-8B", num_replicas=720, gpus_per_replica=1),
-        LLMInferenceModelSpec(model_label="Llama-3.1-70B", num_replicas=180, gpus_per_replica=4),
+        LLMInferenceModelSpec(
+            model_label="Llama-3.1-8B", num_replicas=720, gpus_per_replica=1, initial_batch_size=128,
+        ),
+        LLMInferenceModelSpec(
+            model_label="Llama-3.1-70B", num_replicas=180, gpus_per_replica=4, initial_batch_size=128,
+        ),
     )),
     training=TrainingRun(t_start=1000.0, t_end=2000.0, n_gpus=2400),
     server_ramps=ServerRamp(t_start=2500.0, t_end=3000.0, floor=0.2),
