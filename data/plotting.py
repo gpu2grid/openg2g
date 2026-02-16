@@ -19,8 +19,6 @@ from matplotlib.axes import Axes
 from matplotlib.figure import Figure
 from mlenergy_data.modeling import LogisticModel
 
-# pyright: reportAttributeAccessIssue=false
-
 
 def plot_power_trajectories(
     trace_dir: Path,

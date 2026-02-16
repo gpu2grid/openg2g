@@ -18,8 +18,6 @@ import pandas as pd
 from mlenergy_data.modeling import ITLMixtureModel, LogisticModel
 from mlenergy_data.records import LLMRuns
 
-# pyright: reportGeneralTypeIssues=false, reportAttributeAccessIssue=false
-
 logger = logging.getLogger(__name__)
 
 

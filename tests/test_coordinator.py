@@ -10,7 +10,7 @@ import numpy as np
 
 from openg2g.clock import SimulationClock
 from openg2g.controller.base import Controller
-from openg2g.coordinator import Coordinator, _gcd_fraction  # pyright: ignore[reportPrivateUsage]
+from openg2g.coordinator import Coordinator, _gcd_fraction
 from openg2g.datacenter.base import DatacenterBackend
 from openg2g.events import EventEmitter
 from openg2g.grid.base import GridBackend

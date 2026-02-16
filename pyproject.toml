@@ -20,7 +20,7 @@ opendss = ["opendssdirect.py"]
 
 [dependency-groups]
 test = ["pytest"]
-lint = ["ruff", "pyright"]
+lint = ["ruff", "ty"]
 docs = ["mkdocs-material", "mkdocstrings[python]"]
 examples = ["openg2g[opendss]", "matplotlib"]
 dev = [
@@ -58,17 +58,6 @@ ignore = [
 
 [tool.ruff.lint.isort]
 known-first-party = ["openg2g"]
-
-[tool.pyright]
-pythonVersion = "3.10"
-typeCheckingMode = "strict"
-reportMissingTypeStubs = false
-reportUnknownMemberType = false
-reportUnknownVariableType = false
-reportUnknownArgumentType = false
-reportUnknownLambdaType = false
-reportUnknownParameterType = false
-reportConstantRedefinition = false
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

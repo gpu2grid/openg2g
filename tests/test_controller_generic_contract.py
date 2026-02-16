@@ -100,7 +100,7 @@ def test_controller_requires_explicit_generic_parameters():
 
 
 def test_controller_rejects_reversed_generic_order():
-    reversed_base = Controller.__class_getitem__((OpenDSSGrid, DatacenterBackend))  # type: ignore[attr-defined]
+    reversed_base = Controller.__class_getitem__((OpenDSSGrid, DatacenterBackend))  # type: ignore[unresolved-attribute]
     with pytest.raises(TypeError, match="is not a subclass of DatacenterBackend"):
         types.new_class(
             "_BadReversed",
@@ -118,7 +118,7 @@ def test_controller_rejects_random_classes_in_generics():
     class _Random:
         pass
 
-    random_base = Controller.__class_getitem__((_Random, OpenDSSGrid))  # type: ignore[attr-defined]
+    random_base = Controller.__class_getitem__((_Random, OpenDSSGrid))  # type: ignore[unresolved-attribute]
     with pytest.raises(TypeError, match="is not a subclass of DatacenterBackend"):
         types.new_class(
             "_BadRandom",
@@ -136,7 +136,7 @@ def test_controller_rejects_non_abc_subclass_for_grid_generic():
     class _NotGrid:
         pass
 
-    bad_grid_base = Controller.__class_getitem__((_DC, _NotGrid))  # type: ignore[attr-defined]
+    bad_grid_base = Controller.__class_getitem__((_DC, _NotGrid))  # type: ignore[unresolved-attribute]
     with pytest.raises(TypeError, match="is not a subclass of GridBackend"):
         types.new_class(
             "_BadGrid",

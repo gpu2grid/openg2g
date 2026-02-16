@@ -15,7 +15,7 @@ import math
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import matplotlib.figure
 import matplotlib.pyplot as plt
@@ -91,10 +91,9 @@ def extract_per_model_timeseries(
         itl_s[label] = np.array([s.observed_itl_s_by_model.get(label, float("nan")) for s in dc_states])
 
     if dc_states and isinstance(dc_states[0], OfflineDatacenterState):
+        offline_states = cast(list[OfflineDatacenterState], dc_states)
         for label in model_labels:
-            power_w[label] = np.array(
-                [s.power_by_model_w.get(label, 0.0) for s in dc_states]  # type: ignore[union-attr]
-            )
+            power_w[label] = np.array([s.power_by_model_w.get(label, 0.0) for s in offline_states])
 
     return PerModelTimeSeries(
         time_s=time_s,

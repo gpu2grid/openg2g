@@ -86,7 +86,7 @@ def test_is_due_period_not_multiple_of_tick_raises():
 def test_tick_s_must_be_fraction():
     """Passing a float for tick_s raises TypeError."""
     with pytest.raises(TypeError, match="must be a Fraction"):
-        SimulationClock(tick_s=0.1)  # type: ignore[arg-type]
+        SimulationClock(tick_s=0.1)  # type: ignore[invalid-argument-type]
 
 
 def test_tick_s_must_be_positive():

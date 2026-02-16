@@ -107,7 +107,7 @@ class OnlineDatacenter(LLMBatchSizeControlledDatacenter):
 
         for idx in self._gpu_indices:
             try:
-                power_w = self._gpus[idx].getInstantPowerUsage()  # type: ignore[index]
+                power_w = self._gpus[idx].getInstantPowerUsage()  # type: ignore[not-subscriptable]
                 gpu_power[idx] = float(power_w)
                 self._last_power[idx] = float(power_w)
             except Exception as exc:

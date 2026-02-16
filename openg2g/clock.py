@@ -28,7 +28,7 @@ class SimulationClock:
     _wall_t0: float | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
-        if not isinstance(self.tick_s, Fraction):  # pyright: ignore[reportUnnecessaryIsInstance]
+        if not isinstance(self.tick_s, Fraction):
             raise TypeError(f"tick_s must be a Fraction, got {type(self.tick_s).__name__}")
         if self.tick_s <= 0:
             raise ValueError(f"tick_s must be positive, got {self.tick_s}")

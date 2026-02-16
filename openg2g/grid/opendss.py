@@ -293,8 +293,8 @@ class OpenDSSGrid(GridBackend):
         q0 = np.zeros(3, dtype=float)
         for j, ld in enumerate(load_names):
             dss.Loads.Name(ld)
-            p0[j] = float(dss.Loads.kW())  # pyright: ignore[reportArgumentType]
-            q0[j] = float(dss.Loads.kvar())  # pyright: ignore[reportArgumentType]
+            p0[j] = float(dss.Loads.kW())
+            q0[j] = float(dss.Loads.kvar())
 
         M = len(self._v_index)
         sensitivity = np.zeros((M, 3), dtype=float)
@@ -383,7 +383,7 @@ class OpenDSSGrid(GridBackend):
             dss.Solution.Solve()
 
     def _cache_buses_with_phases(self) -> None:
-        self.all_buses = list(dss.Circuit.AllBusNames())  # pyright: ignore[reportArgumentType]
+        self.all_buses = list(dss.Circuit.AllBusNames())
         self.buses_with_phase = {ph: [] for ph in _PHASES}
         for b in self.all_buses:
             dss.Circuit.SetActiveBus(b)
@@ -394,7 +394,7 @@ class OpenDSSGrid(GridBackend):
 
     def _cache_node_map(self) -> None:
         """Cache the mapping from AllBusMagPu indices to (bus, phase) pairs."""
-        node_names = list(dss.Circuit.AllNodeNames())  # pyright: ignore[reportArgumentType]
+        node_names = list(dss.Circuit.AllNodeNames())
         self._node_map: list[tuple[str, int]] = []
         for name in node_names:
             parts = name.split(".")
@@ -451,10 +451,10 @@ class OpenDSSGrid(GridBackend):
         if i == 0:
             return reg_map
         while i > 0:
-            rc = dss.RegControls.Name().lower()  # pyright: ignore[reportOptionalMemberAccess]
+            rc = dss.RegControls.Name().lower()
             xf = dss.RegControls.Transformer()
-            w = int(dss.RegControls.Winding())  # pyright: ignore[reportArgumentType]
-            reg_map[rc] = (xf, w)  # pyright: ignore[reportArgumentType]
+            w = int(dss.RegControls.Winding())
+            reg_map[rc] = (xf, w)
             i = dss.RegControls.Next()
         return reg_map
 

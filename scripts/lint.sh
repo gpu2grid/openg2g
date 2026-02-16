@@ -9,4 +9,4 @@ else
 fi
 
 ruff check openg2g tests examples data
-pyright openg2g tests examples data
+ty check openg2g tests examples data

@@ -45,7 +45,7 @@ from openg2g.metrics.voltage import compute_allbus_voltage_stats
 from openg2g.models.spec import LLMInferenceModelSpec, LLMInferenceWorkload
 from openg2g.types import ServerRamp, TapPosition, TrainingRun
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("run_ofo")
 
 BATCH_SET = (8, 16, 32, 64, 128, 256, 512)
 
@@ -377,9 +377,11 @@ if __name__ == "__main__":
         help="Logging verbosity (default: INFO).",
     )
     args = parser.parse_args()
+
     logging.basicConfig(
         level=getattr(logging, args.log_level),
-        format="%(asctime)s %(name)s %(levelname)s %(message)s",
+        format="%(levelname)s %(asctime)s [%(name)s:%(lineno)d] %(message)s",
         datefmt="%H:%M:%S",
     )
+
     main(args)
