@@ -37,29 +37,42 @@ uv sync
 ## Quick Start
 
 ```python
+from fractions import Fraction
+
 from openg2g.coordinator import Coordinator
 from openg2g.datacenter.offline import OfflineDatacenter, TraceByBatchCache
 from openg2g.grid.opendss import OpenDSSGrid
 from openg2g.controller.noop import NoopController
 from openg2g.models.spec import LLMInferenceModelSpec
+from openg2g.types import TapPosition
 
 # 1. Set up a trace-based datacenter
 models = [
-    LLMInferenceModelSpec(model_label="Llama-3.1-8B", num_replicas=720, gpus_per_replica=1),
-    LLMInferenceModelSpec(model_label="Llama-3.1-70B", num_replicas=180, gpus_per_replica=4),
+    LLMInferenceModelSpec("Llama-3.1-8B", num_replicas=720, gpus_per_replica=1, initial_batch_size=128),
+    LLMInferenceModelSpec("Llama-3.1-70B", num_replicas=180, gpus_per_replica=4, initial_batch_size=128),
 ]
-cache = TraceByBatchCache.from_traces(traces_by_batch, T=3600.0, dt=0.1)
-dc = OfflineDatacenter(trace_cache=cache, models=models, dt=0.1, batch_init=128)
+cache = TraceByBatchCache(traces_by_batch)
+cache.build_templates(duration_s=3600, timestep_s=Fraction(1, 10))
+dc = OfflineDatacenter(trace_cache=cache, models=models, timestep_s=Fraction(1, 10))
 
 # 2. Set up the grid
-grid = OpenDSSGrid(case_dir="examples/ieee13", master="IEEE13Nodeckt.dss", ...)
+TAP_STEP = 0.00625
+grid = OpenDSSGrid(
+    case_dir="examples/ieee13",
+    master="IEEE13Nodeckt.dss",
+    dc_bus="671",
+    dc_bus_kv=4.16,
+    power_factor=0.95,
+    dt_s=Fraction(1, 10),
+    tap_schedule=TapPosition(a=1.0 + 14 * TAP_STEP, b=1.0 + 6 * TAP_STEP, c=1.0 + 15 * TAP_STEP).at(t=0),
+)
 
 # 3. Run the simulation
 coord = Coordinator(
     datacenter=dc,
     grid=grid,
     controllers=[NoopController()],
-    T_total_s=3600.0,
+    total_duration_s=3600,
 )
 log = coord.run()
 ```
