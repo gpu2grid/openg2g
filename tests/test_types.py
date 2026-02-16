@@ -142,9 +142,7 @@ class TestServerRamp:
 
     def test_pipe_creates_schedule(self) -> None:
         """Piping two ServerRamps should produce a ServerRampSchedule."""
-        s = ServerRamp(t_start=100, t_end=200, target=0.5) | ServerRamp(
-            t_start=300, t_end=400, target=1.0
-        )
+        s = ServerRamp(t_start=100, t_end=200, target=0.5) | ServerRamp(t_start=300, t_end=400, target=1.0)
         assert isinstance(s, ServerRampSchedule)
         assert len(s) == 2
 
@@ -181,9 +179,7 @@ class TestServerRampSchedule:
     def test_two_ramps(self) -> None:
         """Two sequential ramps: first ramps down to 0.2, second ramps back
         up to 1.0. The fraction should hold between ramps."""
-        s = ServerRamp(t_start=1000, t_end=2000, target=0.2) | ServerRamp(
-            t_start=3000, t_end=3500, target=1.0
-        )
+        s = ServerRamp(t_start=1000, t_end=2000, target=0.2) | ServerRamp(t_start=3000, t_end=3500, target=1.0)
         assert s.fraction_at(0.0) == 1.0
         assert s.fraction_at(1500.0) == pytest.approx(0.6)
         assert s.fraction_at(2500.0) == pytest.approx(0.2)
@@ -207,9 +203,7 @@ class TestServerRampSchedule:
 
     def test_sorted_by_start(self) -> None:
         """Ramps piped in reverse order should still be sorted by t_start."""
-        s = ServerRamp(t_start=3000, t_end=3500, target=1.0) | ServerRamp(
-            t_start=1000, t_end=2000, target=0.2
-        )
+        s = ServerRamp(t_start=3000, t_end=3500, target=1.0) | ServerRamp(t_start=1000, t_end=2000, target=0.2)
         starts = [r.t_start for r in s]
         assert starts == [1000, 3000]
 

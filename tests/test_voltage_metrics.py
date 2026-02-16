@@ -131,9 +131,7 @@ class TestComputeAllbusVoltageStats:
                 },
             ),
         ]
-        stats = compute_allbus_voltage_stats(
-            states, v_min=0.95, v_max=1.05, exclude_buses=("rg60",)
-        )
+        stats = compute_allbus_voltage_stats(states, v_min=0.95, v_max=1.05, exclude_buses=("rg60",))
         assert stats.worst_vmin == 1.0
 
     def test_nan_phase_ignored(self) -> None:

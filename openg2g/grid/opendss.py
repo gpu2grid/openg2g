@@ -1,10 +1,11 @@
 """OpenDSS-based grid simulator.
 
-Requires `pip install opendssdirect.py` (optional dependency).
+Requires ``pip install opendssdirect.py`` (optional dependency).
 """
 
 from __future__ import annotations
 
+import logging
 import math
 from fractions import Fraction
 from pathlib import Path
@@ -31,6 +32,8 @@ else:
     except ImportError:
         dss = None
 
+logger = logging.getLogger(__name__)
+
 _PHASES = (1, 2, 3)
 _PHASE_NAME = {1: "A", 2: "B", 3: "C"}
 _PHASE_REG_NAMES = ("reg1", "reg2", "reg3")  # A, B, C
@@ -38,10 +41,7 @@ _PHASE_REG_NAMES = ("reg1", "reg2", "reg3")  # A, B, C
 
 def _require_dss() -> None:
     if dss is None:  # runtime guard
-        raise ImportError(
-            "opendssdirect is required for OpenDSSGrid. "
-            "Install it with: pip install opendssdirect.py"
-        )
+        raise ImportError("opendssdirect is required for OpenDSSGrid. Install it with: pip install opendssdirect.py")
 
 
 class OpenDSSGrid(GridBackend):
@@ -51,13 +51,13 @@ class OpenDSSGrid(GridBackend):
         case_dir: Absolute path to the directory containing OpenDSS case files.
         master: Name of the master DSS file (relative to *case_dir*).
         dc_bus: Bus name where the datacenter is connected.
-        dc_kv_ll: Line-to-line voltage (kV) at the DC bus.
-        pf_dc: Power factor of the datacenter loads.
+        dc_bus_kv: Line-to-line voltage (kV) at the datacenter bus.
+        power_factor: Power factor of the datacenter loads.
         dt_s: Grid simulation timestep (seconds).
-        dc_conn: Connection type for DC loads (default `"wye"`).
+        connection_type: Connection type for DC loads (default ``"wye"``).
         controls_off: If True, disable OpenDSS voltage regulators / controls.
         tap_schedule: Pre-planned regulator tap settings as a
-            `TapSchedule`, built via the fluent API:
+            ``TapSchedule``, built via the fluent API:
 
                 TAP_STEP = 0.00625  # standard 5/8% tap step
                 TapPosition(
@@ -66,7 +66,7 @@ class OpenDSSGrid(GridBackend):
                     c=1.0 + 15 * TAP_STEP,
                 ).at(t=0)
 
-            Each `TapPosition` field is a per-unit tap ratio.
+            Each ``TapPosition`` field is a per-unit tap ratio.
         freeze_regcontrols: If True, disable regcontrols after setting taps.
         exclude_buses: Buses to exclude from voltage indexing (e.g., source bus).
     """
@@ -77,10 +77,10 @@ class OpenDSSGrid(GridBackend):
         case_dir: str | Path,
         master: str,
         dc_bus: str,
-        dc_kv_ll: float,
-        pf_dc: float,
+        dc_bus_kv: float,
+        power_factor: float,
         dt_s: Fraction = Fraction(1),
-        dc_conn: str = "wye",
+        connection_type: str = "wye",
         controls_off: bool = True,
         tap_schedule: TapSchedule | None = None,
         freeze_regcontrols: bool = True,
@@ -91,10 +91,10 @@ class OpenDSSGrid(GridBackend):
         self._case_dir = str(Path(case_dir).resolve())
         self._master = str(master)
         self._dc_bus = str(dc_bus)
-        self._dc_kv_ll = float(dc_kv_ll)
-        self._pf_dc = float(pf_dc)
+        self._dc_bus_kv = float(dc_bus_kv)
+        self._power_factor = float(power_factor)
         self._dt_s = dt_s
-        self._dc_conn = str(dc_conn)
+        self._connection_type = str(connection_type)
         self._controls_off = bool(controls_off)
         self._freeze_regcontrols = bool(freeze_regcontrols)
 
@@ -116,6 +116,16 @@ class OpenDSSGrid(GridBackend):
         self._init_dss()
         self._v_index = self._build_v_index()
         self._build_vmag_indices()
+
+        logger.info(
+            "OpenDSSGrid: case=%s, dc_bus=%s, dt=%s s, controls_off=%s, %d buses, %d bus-phase pairs",
+            self._master,
+            self._dc_bus,
+            self._dt_s,
+            self._controls_off,
+            len(self.all_buses),
+            len(self._v_index),
+        )
 
     @property
     def dt_s(self) -> Fraction:
@@ -139,25 +149,25 @@ class OpenDSSGrid(GridBackend):
     def step(
         self,
         clock: SimulationClock,
-        load_trace_w: list[ThreePhase],
+        power_samples_w: list[ThreePhase],
         *,
-        interval_start_w: ThreePhase | None = None,
+        interval_start_power_w: ThreePhase | None = None,
     ) -> GridState:
         """Advance one grid period and return the resulting voltage state.
 
-        If multiple DC samples are provided (i.e., `dt_grid > dt_dc`),
-        they are resampled to two DSS grid points via `np.interp` to
+        If multiple DC samples are provided (i.e., ``dt_grid > dt_dc``),
+        they are resampled to two DSS grid points via ``np.interp`` to
         avoid unnecessary solves.  When a single sample is provided
-        (`dt_grid == dt_dc`), it is solved directly.
+        (``dt_grid == dt_dc``), it is solved directly.
 
         Args:
             clock: Current simulation clock.
-            load_trace_w: List of `ThreePhase` power samples (Watts)
+            power_samples_w: List of ``ThreePhase`` power samples (Watts)
                 accumulated since the last grid step.
-            interval_start_w: Optional power at the start of the interval
-                (saved from the previous grid step).  When the buffer
-                contains multiple samples, it is prepended so that the
-                resampled trace covers the full grid period including
+            interval_start_power_w: Optional power at the start of the
+                interval (saved from the previous grid step).  When the
+                buffer contains multiple samples, it is prepended so that
+                the resampled trace covers the full grid period including
                 the starting boundary.
 
         Returns:
@@ -165,17 +175,17 @@ class OpenDSSGrid(GridBackend):
         """
         self.apply_taps_if_needed(clock.time_s)
 
-        pf = max(min(self._pf_dc, 0.999999), 1e-6)
+        pf = max(min(self._power_factor, 0.999999), 1e-6)
         tanphi = math.tan(math.acos(pf))
 
-        resampled = len(load_trace_w) > 1
+        resampled = len(power_samples_w) > 1
         if resampled:
-            trace = list(load_trace_w)
-            if interval_start_w is not None:
-                trace.insert(0, interval_start_w)
-            samples = self._resample_dc_to_dss(trace)
+            trace = list(power_samples_w)
+            if interval_start_power_w is not None:
+                trace.insert(0, interval_start_power_w)
+            samples = self._resample_power_to_grid_points(trace)
         else:
-            samples = load_trace_w
+            samples = power_samples_w
 
         first_solve_voltages: BusVoltages | None = None
         for power in samples:
@@ -239,6 +249,7 @@ class OpenDSSGrid(GridBackend):
         while self._tap_idx < len(self._tap_schedule):
             t_ev, taps = self._tap_schedule[self._tap_idx]
             if float(t_ev) <= t_now + 1e-12:
+                logger.info("Applying tap schedule entry %d at t=%.1f s: %s", self._tap_idx, t_ev, taps)
                 self._set_reg_taps(taps)
                 self._tap_idx += 1
                 self._solve()
@@ -251,29 +262,30 @@ class OpenDSSGrid(GridBackend):
         vmag = np.asarray(dss.Circuit.AllBusMagPu())
         return vmag[self._v_index_to_vmag]
 
-    def estimate_H(
+    def estimate_sensitivity(
         self,
-        dp_kw: float = 100.0,
+        perturbation_kw: float = 100.0,
     ) -> tuple[np.ndarray, np.ndarray]:
         """Estimate voltage sensitivity matrix H = dv/dp (pu per kW).
 
         Uses finite differences on the 3 single-phase DC loads.
 
         Returns:
-            H: Sensitivity matrix, shape (M, 3), where M = len(v_index).
-            v0: Baseline voltage vector, shape (M,).
+            Tuple of ``(sensitivity, baseline_voltages)`` where
+            ``sensitivity`` has shape ``(M, 3)`` (M = len(v_index)) and
+            ``baseline_voltages`` has shape ``(M,)``.
         """
-        dp_kw = float(dp_kw)
-        if dp_kw <= 0:
-            raise ValueError("dp_kw must be positive.")
+        perturbation_kw = float(perturbation_kw)
+        if perturbation_kw <= 0:
+            raise ValueError("perturbation_kw must be positive.")
 
-        pf = max(min(self._pf_dc, 0.999999), 1e-6)
+        pf = max(min(self._power_factor, 0.999999), 1e-6)
         tanphi = math.tan(math.acos(pf))
-        dq_kvar = dp_kw * tanphi
+        dq_kvar = perturbation_kw * tanphi
 
         # Baseline solve
         self._solve()
-        v0 = self.voltages_vector()
+        baseline_voltages = self.voltages_vector()
 
         # Baseline P, Q for each DC load
         load_names = ("DataCenterA", "DataCenterB", "DataCenterC")
@@ -285,56 +297,54 @@ class OpenDSSGrid(GridBackend):
             q0[j] = float(dss.Loads.kvar())  # pyright: ignore[reportArgumentType]
 
         M = len(self._v_index)
-        H = np.zeros((M, 3), dtype=float)
+        sensitivity = np.zeros((M, 3), dtype=float)
 
         for j, ld in enumerate(load_names):
-            new_p = p0[j] + dp_kw
+            new_p = p0[j] + perturbation_kw
             new_q = q0[j] + dq_kvar
 
             dss.Text.Command(f"Edit Load.{ld} kW={new_p:.6f} kvar={new_q:.6f}")
             self._solve()
 
             v_plus = self.voltages_vector()
-            H[:, j] = (v_plus - v0) / dp_kw
+            sensitivity[:, j] = (v_plus - baseline_voltages) / perturbation_kw
 
             # Restore
             dss.Text.Command(f"Edit Load.{ld} kW={p0[j]:.6f} kvar={q0[j]:.6f}")
             self._solve()
 
-        return H, v0
+        return sensitivity, baseline_voltages
 
-    def _resample_dc_to_dss(self, load_trace_w: list[ThreePhase]) -> list[ThreePhase]:
+    def _resample_power_to_grid_points(self, power_samples_w: list[ThreePhase]) -> list[ThreePhase]:
         """Resample DC sub-step power onto DSS grid points via np.interp.
 
-        Matches the original `resample_to_uniform_grid` convention:
-        `n_dss + 1` evenly-spaced DSS points over the grid period, where
-        `n_dss = floor(dt_s / dt_s) = 1`.
+        Matches the original ``resample_to_uniform_grid`` convention:
+        ``n_dss + 1`` evenly-spaced DSS points over the grid period, where
+        ``n_dss = floor(dt_s / dt_s) = 1``.
 
         Args:
-            load_trace_w: DC power samples (Watts) covering the grid period.
+            power_samples_w: DC power samples (Watts) covering the grid period.
 
         Returns:
             Resampled ThreePhase samples at DSS grid points.
         """
-        n_samples = len(load_trace_w)
+        n_samples = len(power_samples_w)
         if n_samples < 2:
-            return list(load_trace_w)
+            return list(power_samples_w)
 
         dt_f = float(self._dt_s)
         t_dc = np.linspace(0.0, dt_f, n_samples)
         t_dss = np.array([0.0, dt_f])
 
-        P_A = np.array([p.a for p in load_trace_w])
-        P_B = np.array([p.b for p in load_trace_w])
-        P_C = np.array([p.c for p in load_trace_w])
+        P_A = np.array([p.a for p in power_samples_w])
+        P_B = np.array([p.b for p in power_samples_w])
+        P_C = np.array([p.c for p in power_samples_w])
 
         rA = np.interp(t_dss, t_dc, P_A)
         rB = np.interp(t_dss, t_dc, P_B)
         rC = np.interp(t_dss, t_dc, P_C)
 
-        return [
-            ThreePhase(a=float(rA[i]), b=float(rB[i]), c=float(rC[i])) for i in range(len(t_dss))
-        ]
+        return [ThreePhase(a=float(rA[i]), b=float(rB[i]), c=float(rC[i])) for i in range(len(t_dss))]
 
     def _init_dss(self) -> None:
         dss.Basic.ClearAll()
@@ -344,11 +354,11 @@ class OpenDSSGrid(GridBackend):
         self._reg_map = self._cache_regcontrol_map()
 
         # Add 3 single-phase DC loads
-        kv_ln = self._dc_kv_ll / math.sqrt(3.0)
+        kv_ln = self._dc_bus_kv / math.sqrt(3.0)
         for ph, nm in zip(_PHASES, ("DataCenterA", "DataCenterB", "DataCenterC"), strict=True):
             dss.Text.Command(
                 f"New Load.{nm} bus1={self._dc_bus}.{ph} phases=1 "
-                f"conn={self._dc_conn} kV={kv_ln:.6f} kW=0 kvar=0 model=1"
+                f"conn={self._connection_type} kV={kv_ln:.6f} kW=0 kvar=0 model=1"
             )
 
         dss.Text.Command("Reset")
@@ -412,14 +422,12 @@ class OpenDSSGrid(GridBackend):
     def _snapshot_bus_voltages(self) -> BusVoltages:
         """Snapshot all per-bus, per-phase voltage magnitudes into BusVoltages.
 
-        Uses `dss.Circuit.AllBusMagPu()` for a single bulk read instead
-        of per-bus `SetActiveBus` calls, reducing DSS API overhead from
+        Uses ``dss.Circuit.AllBusMagPu()`` for a single bulk read instead
+        of per-bus ``SetActiveBus`` calls, reducing DSS API overhead from
         ~9N calls to 1 (where N = number of buses).
         """
         vmag = dss.Circuit.AllBusMagPu()
-        vals: dict[str, list[float]] = {
-            bus: [float("nan"), float("nan"), float("nan")] for bus in self.all_buses
-        }
+        vals: dict[str, list[float]] = {bus: [float("nan"), float("nan"), float("nan")] for bus in self.all_buses}
         for i, (bus, phase) in enumerate(self._node_map):
             if 1 <= phase <= 3:
                 vals[bus][phase - 1] = float(vmag[i])

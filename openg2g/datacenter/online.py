@@ -55,9 +55,7 @@ class OnlineDatacenter(LLMBatchSizeControlledDatacenter):
         try:
             from zeus.device import get_gpus
         except ImportError as exc:
-            raise ImportError(
-                "OnlineDatacenter requires the Zeus library. Install it with: pip install zeus"
-            ) from exc
+            raise ImportError("OnlineDatacenter requires the Zeus library. Install it with: pip install zeus") from exc
 
         self._dt = dt_s
         self._gpu_indices = list(gpu_indices)

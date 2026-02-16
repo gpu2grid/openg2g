@@ -111,9 +111,7 @@ def generate_training_like_trace(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Generate a synthetic GPU training-like power trace"
-    )
+    parser = argparse.ArgumentParser(description="Generate a synthetic GPU training-like power trace")
     parser.add_argument("--out-csv", required=True, help="Output CSV path")
     parser.add_argument("--seed", type=int, default=2)
     parser.add_argument("--T", type=float, default=1000.0, help="Duration (s)")

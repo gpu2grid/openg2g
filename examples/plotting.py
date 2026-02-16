@@ -87,12 +87,8 @@ def extract_per_model_timeseries(
 
     for label in model_labels:
         batch_size[label] = np.array([s.batch_size_by_model.get(label, 0) for s in dc_states])
-        active_replicas[label] = np.array(
-            [s.active_replicas_by_model.get(label, 0) for s in dc_states]
-        )
-        itl_s[label] = np.array(
-            [s.observed_itl_s_by_model.get(label, float("nan")) for s in dc_states]
-        )
+        active_replicas[label] = np.array([s.active_replicas_by_model.get(label, 0) for s in dc_states])
+        itl_s[label] = np.array([s.observed_itl_s_by_model.get(label, float("nan")) for s in dc_states])
 
     if dc_states and isinstance(dc_states[0], OfflineDatacenterState):
         for label in model_labels:
@@ -384,11 +380,7 @@ def plot_allbus_voltages_per_phase(
             shared_labels = ordered_labels
             shared_handles = [handles_by_label[lab] for lab in shared_labels]
 
-        if (
-            ph_int == shared_legend_phase_int
-            and shared_handles is not None
-            and shared_labels is not None
-        ):
+        if ph_int == shared_legend_phase_int and shared_handles is not None and shared_labels is not None:
             if legend_mode == "best":
                 ax.legend(
                     shared_handles,
@@ -589,9 +581,7 @@ def plot_model_timeseries_4panel(
         wrep = per_model.active_replicas[lab].astype(float)
         with np.errstate(divide="ignore", invalid="ignore"):
             throughput = np.where(itl > 0, bs * wrep / itl, np.nan)
-        ax.plot(
-            per_model.time_s / 60.0, throughput, lw=lw_main, color=model_to_color[lab], label=lab
-        )
+        ax.plot(per_model.time_s / 60.0, throughput, lw=lw_main, color=model_to_color[lab], label=lab)
 
     ax.set_yscale("log")
     _apply_overlays(ax)

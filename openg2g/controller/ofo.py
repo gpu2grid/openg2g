@@ -6,6 +6,7 @@ latency management via GPU batch size control.
 
 from __future__ import annotations
 
+import logging
 import math
 from dataclasses import dataclass
 from fractions import Fraction
@@ -18,94 +19,99 @@ from openg2g.controller.base import Controller
 from openg2g.datacenter.base import LLMBatchSizeControlledDatacenter
 from openg2g.events import EventEmitter
 from openg2g.grid.opendss import OpenDSSGrid
-from openg2g.models.spec import LLMInferenceWorkload, ModelSpec
+from openg2g.models.spec import LLMInferenceModelSpec, LLMInferenceWorkload
 from openg2g.types import (
     Command,
     ControlAction,
 )
 
+logger = logging.getLogger(__name__)
+
 
 @dataclass
-class VoltageDualCfg:
+class VoltageDualConfig:
     """Configuration for the voltage dual variable update.
 
     Attributes:
         v_min: Lower voltage limit (pu).
         v_max: Upper voltage limit (pu).
-        rho_v: Step size for the voltage dual ascent.
+        ascent_step_size: Step size for the voltage dual ascent (ρ_v in Eqs. 5-6).
     """
 
     v_min: float = 0.95
     v_max: float = 1.05
-    rho_v: float = 0.5
+    ascent_step_size: float = 0.5  # ρ_v in Eqs. 5-6
 
 
 @dataclass
-class PrimalCfg:
+class PrimalConfig:
     """Configuration for the primal batch-size optimizer.
 
     Attributes:
-        eta_primal: Primal gradient descent step size.
+        descent_step_size: Primal gradient descent step size (ρ_x in Eq. 8).
         w_latency: Weight on the direct latency penalty term
             `w_L * dL/dx`.  This is an implementation extension beyond
             the paper's Eq. 18, which only has the dual term.
         w_throughput: Weight on the (negative) throughput gradient.
         w_switch: Weight on the switching cost regularizer
             `gamma * ||x - x_prev||^2`.
-        k_v: Scaling factor applied to the voltage gradient term.  Multiplies
-            `eta^T H e_i dP/dx`.  Not present in the paper's equations;
-            used here as a tuning knob.
+        voltage_gradient_scale: Scaling factor applied to the voltage gradient
+            term.  Multiplies `eta^T H e_i dP/dx`.  Not present in the paper's
+            equations; used here as a tuning knob.
     """
 
-    eta_primal: float = 0.05
+    descent_step_size: float = 0.05  # ρ_x in Eq. 8
     w_latency: float = 0.0
     w_throughput: float = 0.1
     w_switch: float = 0.0
-    k_v: float = 1e6
+    voltage_gradient_scale: float = 1e6
 
 
-class FullNetworkVoltageDual:
+class VoltageDualVariables:
     """Full-network duals for voltage box constraints.
 
     Maintains per-bus dual variables for under- and overvoltage and updates
     them via projected gradient ascent:
 
-        lam_low  <- [lam_low  + rho_v * (v_min - v_hat)]+
-        lam_high <- [lam_high + rho_v * (v_hat - v_max)]+
+        dual_undervoltage  <- [dual_undervoltage  + ρ_v * (v_min - v̂)]+
+        dual_overvoltage   <- [dual_overvoltage   + ρ_v * (v̂ - v_max)]+
 
     Args:
-        M3: Number of bus-phase pairs in the voltage vector.
-        cfg: Voltage dual configuration (bounds and step size).
+        n_bus_phases: Number of bus-phase pairs in the voltage vector (3M).
+        config: Voltage dual configuration (bounds and step size).
     """
 
-    def __init__(self, M3: int, cfg: VoltageDualCfg) -> None:
-        self.cfg = cfg
-        self.lam_low = np.zeros(int(M3), dtype=float)
-        self.lam_high = np.zeros(int(M3), dtype=float)
+    def __init__(self, n_bus_phases: int, config: VoltageDualConfig) -> None:
+        self.config = config
+        self.dual_undervoltage = np.zeros(int(n_bus_phases), dtype=float)  # λ in Eq. 5
+        self.dual_overvoltage = np.zeros(int(n_bus_phases), dtype=float)  # λ̄ in Eq. 6
 
-    def update(self, v_hat: np.ndarray) -> None:
+    def update(self, observed_voltages: np.ndarray) -> None:
         """Update duals given observed voltage vector.
 
         Args:
-            v_hat: Observed voltage magnitudes (pu), shape `(M3,)`.
+            observed_voltages: Observed voltage magnitudes (pu), shape
+                ``(n_bus_phases,)``.
 
         Raises:
-            ValueError: If `v_hat` length does not match the dual dimension.
+            ValueError: If ``observed_voltages`` length does not match the dual
+                dimension.
         """
-        v_hat = np.asarray(v_hat, float).reshape(-1)
-        if v_hat.shape[0] != self.lam_low.shape[0]:
+        observed_voltages = np.asarray(observed_voltages, float).reshape(-1)
+        if observed_voltages.shape[0] != self.dual_undervoltage.shape[0]:
             raise ValueError(
-                f"v_hat has len {v_hat.shape[0]} but duals have len {self.lam_low.shape[0]}"
+                f"observed_voltages has len {observed_voltages.shape[0]} "
+                f"but duals have len {self.dual_undervoltage.shape[0]}"
             )
-        vmin = float(self.cfg.v_min)
-        vmax = float(self.cfg.v_max)
-        rho = float(self.cfg.rho_v)
-        self.lam_low = np.maximum(self.lam_low + rho * (vmin - v_hat), 0.0)
-        self.lam_high = np.maximum(self.lam_high + rho * (v_hat - vmax), 0.0)
+        vmin = float(self.config.v_min)
+        vmax = float(self.config.v_max)
+        rho = float(self.config.ascent_step_size)
+        self.dual_undervoltage = np.maximum(self.dual_undervoltage + rho * (vmin - observed_voltages), 0.0)
+        self.dual_overvoltage = np.maximum(self.dual_overvoltage + rho * (observed_voltages - vmax), 0.0)
 
-    def eta(self) -> np.ndarray:
-        """Return the voltage dual difference `lam_high - lam_low`."""
-        return self.lam_high - self.lam_low
+    def dual_difference(self) -> np.ndarray:
+        """Return the voltage dual difference (η = λ̄ − λ, Appendix B)."""
+        return self.dual_overvoltage - self.dual_undervoltage
 
 
 def phase_share_from_placement(placement: dict[str, int]) -> np.ndarray:
@@ -119,54 +125,54 @@ def phase_share_from_placement(placement: dict[str, int]) -> np.ndarray:
     return np.array([a / s, b / s, c / s], dtype=float)
 
 
-class PerModelPrimalX:
+class PrimalBatchOptimizer:
     """Primal batch-size optimizer operating in log2 space.
 
-    Maintains continuous state `x_i = log2(batch_i)` per model and applies
+    Maintains continuous state ``x_i = log2(batch_i)`` per model and applies
     a gradient descent step using voltage duals, latency duals, and fitted
     power/latency/throughput curves.
 
     Args:
         models: Model specifications for each served model.
-        batch_set: Allowed batch sizes (union across all models).
+        feasible_batch_sizes: Allowed batch sizes (union across all models).
         power_fits: Per-model logistic fit for power vs log2(batch_size).
         latency_fits: Per-model logistic fit for latency vs log2(batch_size).
         throughput_fits: Per-model logistic fit for throughput vs
             log2(batch_size).
-        cfg: Primal optimizer configuration.
+        config: Primal optimizer configuration.
     """
 
     def __init__(
         self,
         *,
-        models: list[ModelSpec],
-        batch_set: list[int],
+        models: list[LLMInferenceModelSpec],
+        feasible_batch_sizes: list[int],
         power_fits: dict[str, LogisticModel],
         latency_fits: dict[str, LogisticModel],
         throughput_fits: dict[str, LogisticModel],
-        cfg: PrimalCfg,
+        config: PrimalConfig,
     ) -> None:
         self.models = list(models)
-        self.batch_set = sorted({int(b) for b in batch_set})
-        if not self.batch_set:
-            raise ValueError("batch_set cannot be empty.")
+        self.feasible_batch_sizes = sorted({int(b) for b in feasible_batch_sizes})
+        if not self.feasible_batch_sizes:
+            raise ValueError("feasible_batch_sizes cannot be empty.")
 
         self.power_fits = power_fits
         self.latency_fits = latency_fits
         self.throughput_fits = throughput_fits
-        self.cfg = cfg
+        self.config = config
 
-        self.x_min = math.log2(min(self.batch_set))
-        self.x_max = math.log2(max(self.batch_set))
+        self.log_batch_size_min = math.log2(min(self.feasible_batch_sizes))
+        self.log_batch_size_max = math.log2(max(self.feasible_batch_sizes))
 
-        self.x_by_model: dict[str, float] = {
-            ms.model_label: float(self.x_max) for ms in self.models
+        self.log_batch_size_by_model: dict[str, float] = {
+            ms.model_label: float(self.log_batch_size_max) for ms in self.models
         }
-        self.x_prev_by_model: dict[str, float] = dict(self.x_by_model)
+        self.prev_log_batch_size_by_model: dict[str, float] = dict(self.log_batch_size_by_model)
 
         # Per-model throughput normalization: r_i(x_max) for a single replica
-        self.th_max_by_model: dict[str, float] = {}
-        b_max = int(max(self.batch_set))
+        self.throughput_max_by_model: dict[str, float] = {}
+        b_max = int(max(self.feasible_batch_sizes))
         for ms in self.models:
             label = ms.model_label
             try:
@@ -175,102 +181,103 @@ class PerModelPrimalX:
                 th_max = float("nan")
             if (not np.isfinite(th_max)) or (th_max <= 0.0):
                 th_max = 1.0
-            self.th_max_by_model[label] = th_max
+            self.throughput_max_by_model[label] = th_max
 
-    def _project_x(self, x: float) -> float:
-        return float(min(max(float(x), self.x_min), self.x_max))
+    def _clamp_log_batch_size(self, log_batch_size: float) -> float:
+        return float(min(max(float(log_batch_size), self.log_batch_size_min), self.log_batch_size_max))
 
-    def _discretize_batch(self, x: float) -> int:
-        b_cont = 2.0 ** float(x)
-        b = min(self.batch_set, key=lambda bb: abs(float(bb) - b_cont))
+    def _discretize_batch(self, log_batch_size: float) -> int:
+        b_cont = 2.0 ** float(log_batch_size)
+        b = min(self.feasible_batch_sizes, key=lambda bb: abs(float(bb) - b_cont))
         return int(b)
 
     def init_from_batches(self, batch_init: dict[str, int]) -> None:
-        """Initialize x state from discrete batch sizes."""
+        """Initialize log-batch-size state from discrete batch sizes."""
         for ms in self.models:
             label = ms.model_label
-            b = int(batch_init.get(label, max(self.batch_set)))
-            x = math.log2(max(b, 1))
-            x = self._project_x(x)
-            self.x_by_model[label] = float(x)
-            self.x_prev_by_model[label] = float(x)
+            b = int(batch_init.get(label, max(self.feasible_batch_sizes)))
+            log_batch_size = math.log2(max(b, 1))
+            log_batch_size = self._clamp_log_batch_size(log_batch_size)
+            self.log_batch_size_by_model[label] = float(log_batch_size)
+            self.prev_log_batch_size_by_model[label] = float(log_batch_size)
 
     def step(
         self,
         *,
-        eta_vec: np.ndarray,
-        H: np.ndarray,
+        voltage_dual_diff: np.ndarray,
+        sensitivity_matrix: np.ndarray,
         phase_share_by_model: dict[str, np.ndarray],
-        mu_by_model: dict[str, float] | None = None,
-        w_by_model: dict[str, float] | None = None,
+        latency_dual_by_model: dict[str, float] | None = None,
+        replica_count_by_model: dict[str, float] | None = None,
     ) -> dict[str, int]:
         """Primal gradient descent step.
 
         Args:
-            eta_vec: Voltage dual difference vector
-                (lambda_high - lambda_low), shape `(M3,)`.
-            H: Voltage sensitivity matrix, shape `(M3, 3)`.
+            voltage_dual_diff: Voltage dual difference vector
+                (η = λ̄ − λ), shape ``(n_bus_phases,)``.
+            sensitivity_matrix: Voltage sensitivity matrix (H = dv/dp),
+                shape ``(n_bus_phases, 3)``.
             phase_share_by_model: Per-model normalized phase share vectors,
-                shape `(3,)` each.
-            mu_by_model: Per-model latency dual variables.
-            w_by_model: Per-model replica weights (active replicas count).
+                shape ``(3,)`` each.
+            latency_dual_by_model: Per-model latency dual variables (μ_i).
+            replica_count_by_model: Per-model active replica counts (w_i).
 
         Returns:
             Next batch sizes per model.
         """
-        eta_vec = np.asarray(eta_vec, float).reshape(-1)
-        H = np.asarray(H, float)
-        mu_by_model = {} if mu_by_model is None else dict(mu_by_model)
-        w_by_model = {} if w_by_model is None else dict(w_by_model)
+        voltage_dual_diff = np.asarray(voltage_dual_diff, float).reshape(-1)
+        sensitivity_matrix = np.asarray(sensitivity_matrix, float)
+        latency_dual_by_model = {} if latency_dual_by_model is None else dict(latency_dual_by_model)
+        replica_count_by_model = {} if replica_count_by_model is None else dict(replica_count_by_model)
 
-        eta_pr = float(self.cfg.eta_primal)
-        wL = float(self.cfg.w_latency)
-        wT = float(self.cfg.w_throughput)
-        wS = float(self.cfg.w_switch)
-        k_v = float(self.cfg.k_v)
+        step_size = float(self.config.descent_step_size)  # ρ_x
+        w_latency = float(self.config.w_latency)
+        w_throughput = float(self.config.w_throughput)
+        w_switch = float(self.config.w_switch)
+        voltage_gradient_scale = float(self.config.voltage_gradient_scale)
 
         batch_next: dict[str, int] = {}
 
         for ms in self.models:
             label = ms.model_label
-            x = float(self.x_by_model[label])
-            x_prev = float(self.x_prev_by_model.get(label, x))
+            log_batch_size = float(self.log_batch_size_by_model[label])
+            prev_log_batch_size = float(self.prev_log_batch_size_by_model.get(label, log_batch_size))
 
-            w_i = float(w_by_model.get(label, 0.0))
-            if (not np.isfinite(w_i)) or (w_i < 0.0):
-                w_i = 0.0
+            replica_count = float(replica_count_by_model.get(label, 0.0))  # w_i
+            if (not np.isfinite(replica_count)) or (replica_count < 0.0):
+                replica_count = 0.0
 
-            e = np.asarray(
+            phase_share = np.asarray(  # e_i (phase-allocation weight, p.7)
                 phase_share_by_model.get(label, np.array([1 / 3, 1 / 3, 1 / 3], dtype=float)),
                 float,
             ).reshape(3)
-            s = float(np.sum(e))
+            s = float(np.sum(phase_share))
             if (not np.isfinite(s)) or s <= 0.0:
-                e = np.array([1 / 3, 1 / 3, 1 / 3], dtype=float)
+                phase_share = np.array([1 / 3, 1 / 3, 1 / 3], dtype=float)
             else:
-                e = e / s
+                phase_share = phase_share / s
 
-            He = H @ e
-            g_voltage = float(eta_vec @ He)
+            weighted_sensitivity = sensitivity_matrix @ phase_share  # H @ e_i
+            voltage_gradient = float(voltage_dual_diff @ weighted_sensitivity)
 
-            dPdx_1 = float(self.power_fits[label].deriv_wrt_x(x))
-            dLdx_1 = float(self.latency_fits[label].deriv_wrt_x(x))
-            dThdx_1 = float(self.throughput_fits[label].deriv_wrt_x(x))
+            dPdx_1 = float(self.power_fits[label].deriv_wrt_x(log_batch_size))
+            dLdx_1 = float(self.latency_fits[label].deriv_wrt_x(log_batch_size))
+            dThdx_1 = float(self.throughput_fits[label].deriv_wrt_x(log_batch_size))
 
             dPdx_1_kw = dPdx_1 / 1000.0
 
-            th_max = float(self.th_max_by_model.get(label, 1.0))
+            th_max = float(self.throughput_max_by_model.get(label, 1.0))
             if (not np.isfinite(th_max)) or (th_max <= 0.0):
                 th_max = 1.0
             dThdx_norm_1 = dThdx_1 / th_max
 
-            dPdx = w_i * dPdx_1_kw
-            dThdx = w_i * dThdx_norm_1
+            dPdx = replica_count * dPdx_1_kw
+            dThdx = replica_count * dThdx_norm_1
             dLdx = dLdx_1
 
-            mu_i = float(mu_by_model.get(label, 0.0))
-            if (not np.isfinite(mu_i)) or (mu_i < 0.0):
-                mu_i = 0.0
+            latency_dual = float(latency_dual_by_model.get(label, 0.0))  # μ_i
+            if (not np.isfinite(latency_dual)) or (latency_dual < 0.0):
+                latency_dual = 0.0
 
             # Gradient of the Lagrangian w.r.t. x_i = log2(batch_i).
             # Paper Eq. 18 has:  nabla_x L = mu_i * dL/dx  (latency dual)
@@ -281,17 +288,17 @@ class PerModelPrimalX:
             #   k_v * (...)     : scaling factor on the voltage term
             #   wS * (x-x_prev) : switching cost regularizer
             grad = 0.0
-            grad += wL * dLdx
-            grad -= wT * dThdx
-            grad += k_v * g_voltage * dPdx
-            grad += mu_i * dLdx
-            if wS > 0.0:
-                grad += wS * (x - x_prev)
+            grad += w_latency * dLdx
+            grad -= w_throughput * dThdx
+            grad += voltage_gradient_scale * voltage_gradient * dPdx
+            grad += latency_dual * dLdx
+            if w_switch > 0.0:
+                grad += w_switch * (log_batch_size - prev_log_batch_size)
 
-            x_new = self._project_x(x - eta_pr * grad)
-            self.x_prev_by_model[label] = x
-            self.x_by_model[label] = x_new
-            batch_next[label] = self._discretize_batch(x_new)
+            new_log_batch_size = self._clamp_log_batch_size(log_batch_size - step_size * grad)
+            self.prev_log_batch_size_by_model[label] = log_batch_size
+            self.log_batch_size_by_model[label] = new_log_batch_size
+            batch_next[label] = self._discretize_batch(new_log_batch_size)
 
         return batch_next
 
@@ -301,7 +308,7 @@ class OFOBatchController(Controller[LLMBatchSizeControlledDatacenter, OpenDSSGri
 
     Reads grid voltage and datacenter state, updates voltage and latency
     duals, runs the primal batch-size optimizer, and returns new batch sizes.
-    Latency dual updates use `dc_state.observed_itl_s_by_model`.
+    Latency dual updates use ``dc_state.observed_itl_s_by_model``.
 
     Args:
         models: Model specifications.
@@ -311,69 +318,76 @@ class OFOBatchController(Controller[LLMBatchSizeControlledDatacenter, OpenDSSGri
             log2(batch_size).
         throughput_fits: Per-model logistic fit for throughput as a function
             of log2(batch_size).
-        Lth_by_model: Per-model latency threshold (seconds).
-        primal_cfg: Primal optimizer configuration.
-        voltage_dual_cfg: Voltage dual configuration (v_min, v_max, rho_v).
-        batch_set: Allowed batch sizes.
-        batch_init: Initial batch size.
-        rho_l: Latency dual step size.
+        itl_deadline_by_model: Per-model latency threshold (seconds).
+        primal_config: Primal optimizer configuration.
+        voltage_dual_config: Voltage dual configuration (v_min, v_max,
+            ascent_step_size).
+        feasible_batch_sizes: Allowed batch sizes.
+        latency_dual_step_size: Latency dual step size (ρ_l).
         dt_s: Control interval (seconds).
-        estimate_H_every: Re-estimate H every N control steps
-            (0 = only once at init).
-        estimate_H_dp_kw: Perturbation size for H estimation.
+        sensitivity_update_interval: Re-estimate sensitivity every N control
+            steps (0 = only once at init).
+        sensitivity_perturbation_kw: Perturbation size for sensitivity
+            estimation.
     """
 
     def __init__(
         self,
         *,
-        models: list[ModelSpec],
+        models: list[LLMInferenceModelSpec],
         power_fits: dict[str, LogisticModel],
         latency_fits: dict[str, LogisticModel],
         throughput_fits: dict[str, LogisticModel],
-        Lth_by_model: dict[str, float],
-        primal_cfg: PrimalCfg,
-        voltage_dual_cfg: VoltageDualCfg,
-        batch_set: list[int],
-        batch_init: int = 128,
-        rho_l: float = 1.0,
+        itl_deadline_by_model: dict[str, float],
+        primal_config: PrimalConfig,
+        voltage_dual_config: VoltageDualConfig,
+        feasible_batch_sizes: list[int],
+        latency_dual_step_size: float = 1.0,
         dt_s: Fraction = Fraction(1),
-        estimate_H_every: int = 0,
-        estimate_H_dp_kw: float = 100.0,
+        sensitivity_update_interval: int = 0,
+        sensitivity_perturbation_kw: float = 100.0,
     ) -> None:
         self._dt_s = dt_s
         self._models = list(models)
-        self._Lth_by_model = dict(Lth_by_model)
-        self._rho_l = float(rho_l)
-        self._estimate_H_every = int(estimate_H_every)
-        self._estimate_H_dp_kw = float(estimate_H_dp_kw)
+        self._itl_deadline_by_model = dict(itl_deadline_by_model)
+        self._latency_dual_step_size = float(latency_dual_step_size)  # ρ_l
+        self._sensitivity_update_interval = int(sensitivity_update_interval)
+        self._sensitivity_perturbation_kw = float(sensitivity_perturbation_kw)
 
         # Voltage duals are initialized lazily once voltage feature is available.
-        self._voltage_dual: FullNetworkVoltageDual | None = None
-        self._voltage_dual_cfg = voltage_dual_cfg
+        self._voltage_dual: VoltageDualVariables | None = None
+        self._voltage_dual_config = voltage_dual_config
 
-        # Latency duals (μ_i per model)
-        self._mu_by_model: dict[str, float] = {ms.model_label: 0.0 for ms in models}
+        # Latency duals (μ_i per model, Eq. 7)
+        self._latency_dual_by_model: dict[str, float] = {ms.model_label: 0.0 for ms in models}
 
         # Primal optimizer
-        self._primal = PerModelPrimalX(
+        self._optimizer = PrimalBatchOptimizer(
             models=models,
-            batch_set=batch_set,
+            feasible_batch_sizes=feasible_batch_sizes,
             power_fits=power_fits,
             latency_fits=latency_fits,
             throughput_fits=throughput_fits,
-            cfg=primal_cfg,
+            config=primal_config,
         )
-        self._primal.init_from_batches({ms.model_label: batch_init for ms in models})
+        self._optimizer.init_from_batches({ms.model_label: ms.initial_batch_size for ms in models})
 
-        # H estimation state
-        self._H: np.ndarray | None = None
-        self._v0: np.ndarray | None = None
-        self._ctrl_step_count: int = 0
+        # Sensitivity estimation state (H = ∂v/∂p, Eq. 13)
+        self._sensitivity_matrix: np.ndarray | None = None
+        self._baseline_voltages: np.ndarray | None = None
+        self._control_step_count: int = 0
 
         # Phase share cache (from datacenter placement)
         self._phase_share_by_model: dict[str, np.ndarray] = {
             ms.model_label: np.array([1 / 3, 1 / 3, 1 / 3], dtype=float) for ms in models
         }
+
+        logger.info(
+            "OFOBatchController: %d models, dt=%s s, feasible_batches=%s",
+            len(models),
+            dt_s,
+            feasible_batch_sizes,
+        )
 
     @classmethod
     def from_workload(
@@ -383,66 +397,60 @@ class OFOBatchController(Controller[LLMBatchSizeControlledDatacenter, OpenDSSGri
         power_fits: dict[str, LogisticModel],
         latency_fits: dict[str, LogisticModel],
         throughput_fits: dict[str, LogisticModel],
-        primal_cfg: PrimalCfg,
-        voltage_dual_cfg: VoltageDualCfg,
-        rho_l: float = 1.0,
+        primal_config: PrimalConfig,
+        voltage_dual_config: VoltageDualConfig,
+        latency_dual_step_size: float = 1.0,
         dt_s: Fraction = Fraction(1),
-        estimate_H_every: int = 0,
-        estimate_H_dp_kw: float = 100.0,
+        sensitivity_update_interval: int = 0,
+        sensitivity_perturbation_kw: float = 100.0,
     ) -> OFOBatchController:
         """Create an OFO controller from an LLMInferenceWorkload.
 
-        Derives `batch_set`, `batch_init`, and `Lth_by_model` from
-        the workload's model specs.
+        Derives ``feasible_batch_sizes`` and ``itl_deadline_by_model``
+        from the workload's model specs.
 
         Args:
             workload: LLM inference workload specification.
             power_fits: Per-model logistic fit for power.
             latency_fits: Per-model logistic fit for latency.
             throughput_fits: Per-model logistic fit for throughput.
-            primal_cfg: Primal optimizer configuration.
-            voltage_dual_cfg: Voltage dual configuration.
-            rho_l: Latency dual step size.
+            primal_config: Primal optimizer configuration.
+            voltage_dual_config: Voltage dual configuration.
+            latency_dual_step_size: Latency dual step size (ρ_l).
             dt_s: Control interval (seconds).
-            estimate_H_every: Re-estimate H every N control steps.
-            estimate_H_dp_kw: Perturbation size for H estimation.
+            sensitivity_update_interval: Re-estimate sensitivity every N
+                control steps.
+            sensitivity_perturbation_kw: Perturbation size for sensitivity
+                estimation.
         """
-        models = list(workload.models)
-        batch_set = workload.feasible_batch_sizes_union
-        Lth_by_model = workload.itl_deadline_by_model
-        batch_init_by_model = workload.initial_batch_size_by_model
-
-        instance = cls(
-            models=models,
+        return cls(
+            models=list(workload.models),
             power_fits=power_fits,
             latency_fits=latency_fits,
             throughput_fits=throughput_fits,
-            Lth_by_model=Lth_by_model,
-            primal_cfg=primal_cfg,
-            voltage_dual_cfg=voltage_dual_cfg,
-            batch_set=batch_set,
-            batch_init=max(batch_set),
-            rho_l=rho_l,
+            itl_deadline_by_model=workload.itl_deadline_by_model,
+            primal_config=primal_config,
+            voltage_dual_config=voltage_dual_config,
+            feasible_batch_sizes=workload.feasible_batch_sizes_union,
+            latency_dual_step_size=latency_dual_step_size,
             dt_s=dt_s,
-            estimate_H_every=estimate_H_every,
-            estimate_H_dp_kw=estimate_H_dp_kw,
+            sensitivity_update_interval=sensitivity_update_interval,
+            sensitivity_perturbation_kw=sensitivity_perturbation_kw,
         )
-        instance._primal.init_from_batches(batch_init_by_model)
-        return instance
 
     @property
     def dt_s(self) -> Fraction:
         return self._dt_s
 
     @property
-    def voltage_dual(self) -> FullNetworkVoltageDual:
+    def voltage_dual(self) -> VoltageDualVariables:
         if self._voltage_dual is None:
             raise RuntimeError("Voltage dual not initialized yet.")
         return self._voltage_dual
 
     @property
-    def mu_by_model(self) -> dict[str, float]:
-        return dict(self._mu_by_model)
+    def latency_dual_by_model(self) -> dict[str, float]:
+        return dict(self._latency_dual_by_model)
 
     def set_phase_share(self, phase_share_by_model: dict[str, np.ndarray]) -> None:
         """Update per-model phase share vectors (from datacenter placement)."""
@@ -457,80 +465,83 @@ class OFOBatchController(Controller[LLMBatchSizeControlledDatacenter, OpenDSSGri
     ) -> ControlAction:
 
         if self._voltage_dual is None:
-            self._voltage_dual = FullNetworkVoltageDual(len(grid.v_index), self._voltage_dual_cfg)
+            self._voltage_dual = VoltageDualVariables(len(grid.v_index), self._voltage_dual_config)
 
-        # 1. Re-estimate H if needed
-        if self._H is None or (
-            self._estimate_H_every > 0 and self._ctrl_step_count % self._estimate_H_every == 0
+        # 1. Re-estimate sensitivity if needed
+        if self._sensitivity_matrix is None or (
+            self._sensitivity_update_interval > 0 and self._control_step_count % self._sensitivity_update_interval == 0
         ):
-            self._H, self._v0 = grid.estimate_H(self._estimate_H_dp_kw)
+            self._sensitivity_matrix, self._baseline_voltages = grid.estimate_sensitivity(
+                self._sensitivity_perturbation_kw
+            )
 
         # 2. Update voltage duals from grid state
         if grid.state is not None:
-            v_hat = grid.voltages_vector()
-            self._voltage_dual.update(v_hat)
+            observed_voltages = grid.voltages_vector()
+            self._voltage_dual.update(observed_voltages)
 
-        eta_vec = self._voltage_dual.eta()
+        voltage_dual_diff = self._voltage_dual.dual_difference()  # η = λ̄ − λ
 
         # 3. Read observed latency from datacenter and update latency duals
         dc_state = datacenter.state
         if dc_state is not None:
             missing_replicas = [
-                ms.model_label
-                for ms in self._models
-                if ms.model_label not in dc_state.active_replicas_by_model
+                ms.model_label for ms in self._models if ms.model_label not in dc_state.active_replicas_by_model
             ]
             if missing_replicas:
                 miss = ", ".join(sorted(missing_replicas))
                 raise RuntimeError(
-                    "OFOBatchController requires active_replicas_by_model for all models. "
-                    f"Missing: {miss}."
+                    f"OFOBatchController requires active_replicas_by_model for all models. Missing: {miss}."
                 )
             missing_itl = [
-                ms.model_label
-                for ms in self._models
-                if ms.model_label not in dc_state.observed_itl_s_by_model
+                ms.model_label for ms in self._models if ms.model_label not in dc_state.observed_itl_s_by_model
             ]
             if missing_itl:
                 miss = ", ".join(sorted(missing_itl))
                 raise RuntimeError(
-                    "OFOBatchController requires observed_itl_s_by_model for all models. "
-                    f"Missing: {miss}."
+                    f"OFOBatchController requires observed_itl_s_by_model for all models. Missing: {miss}."
                 )
             for ms in self._models:
                 label = ms.model_label
-                n_rep = max(int(dc_state.active_replicas_by_model.get(label, 0)), 0)
-                l_hat = float(dc_state.observed_itl_s_by_model.get(label, float("nan")))
-                if n_rep <= 0:
-                    l_hat = float("nan")
+                num_replicas = max(int(dc_state.active_replicas_by_model.get(label, 0)), 0)
+                observed_itl = float(dc_state.observed_itl_s_by_model.get(label, float("nan")))
+                if num_replicas <= 0:
+                    logger.debug("Model %s has 0 replicas, skipping latency dual update", label)
+                    observed_itl = float("nan")
 
-                Lth = float(self._Lth_by_model.get(label, 0.1))
-                if np.isfinite(l_hat):
-                    self._mu_by_model[label] = max(
-                        self._mu_by_model[label] + self._rho_l * (l_hat - Lth),
+                deadline = float(self._itl_deadline_by_model.get(label, 0.1))
+                if np.isfinite(observed_itl):
+                    self._latency_dual_by_model[label] = max(
+                        self._latency_dual_by_model[label] + self._latency_dual_step_size * (observed_itl - deadline),
                         0.0,
                     )
                 else:
-                    self._mu_by_model[label] = max(self._mu_by_model[label], 0.0)
+                    self._latency_dual_by_model[label] = max(self._latency_dual_by_model[label], 0.0)
 
-        # 4. Compute replica weights
-        w_by_model: dict[str, float] = {}
+        # 4. Compute replica counts
+        replica_count_by_model: dict[str, float] = {}
         if dc_state is not None:
             for ms in self._models:
                 label = ms.model_label
-                w_by_model[label] = float(dc_state.active_replicas_by_model.get(label, 0))
+                replica_count_by_model[label] = float(dc_state.active_replicas_by_model.get(label, 0))
 
         # 5. Primal update -> next batch sizes
-        assert self._H is not None
-        batch_next = self._primal.step(
-            eta_vec=eta_vec,
-            H=self._H,
+        assert self._sensitivity_matrix is not None
+        batch_next = self._optimizer.step(
+            voltage_dual_diff=voltage_dual_diff,
+            sensitivity_matrix=self._sensitivity_matrix,
             phase_share_by_model=self._phase_share_by_model,
-            mu_by_model=self._mu_by_model,
-            w_by_model=w_by_model,
+            latency_dual_by_model=self._latency_dual_by_model,
+            replica_count_by_model=replica_count_by_model,
         )
 
-        self._ctrl_step_count += 1
+        self._control_step_count += 1
+        logger.info(
+            "OFO step %d (t=%.1f s): batch=%s",
+            self._control_step_count,
+            clock.time_s,
+            batch_next,
+        )
         return ControlAction(
             commands=[
                 Command(

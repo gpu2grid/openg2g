@@ -11,6 +11,7 @@ Two modes correspond to two baselines in the paper:
 from __future__ import annotations
 
 import argparse
+import logging
 from fractions import Fraction
 from pathlib import Path
 
@@ -36,39 +37,24 @@ from openg2g.metrics.voltage import compute_allbus_voltage_stats
 from openg2g.models.spec import LLMInferenceModelSpec, LLMInferenceWorkload
 from openg2g.types import ServerRamp, TapPosition, TrainingRun
 
-TAP_STEP = 0.00625  # standard 5/8% tap step
+logger = logging.getLogger(__name__)
 
-INITIAL_TAPS = TapPosition(a=1.0 + 14 * TAP_STEP, b=1.0 + 6 * TAP_STEP, c=1.0 + 15 * TAP_STEP)
-
+TAP_STEP = 0.00625
 TAP_SCHEDULES = {
-    "no-tap": INITIAL_TAPS.at(t=0),
+    "no-tap": TapPosition(a=1.0 + 14 * TAP_STEP, b=1.0 + 6 * TAP_STEP, c=1.0 + 15 * TAP_STEP).at(t=0),
     "tap-change": (
         TapPosition(a=1.0 + 14 * TAP_STEP, b=1.0 + 6 * TAP_STEP, c=1.0 + 15 * TAP_STEP).at(t=0)
-        | TapPosition(a=1.0 + 16 * TAP_STEP, b=1.0 + 6 * TAP_STEP, c=1.0 + 17 * TAP_STEP).at(
-            t=25 * 60
-        )
-        | TapPosition(a=1.0 + 10 * TAP_STEP, b=1.0 + 6 * TAP_STEP, c=1.0 + 10 * TAP_STEP).at(
-            t=55 * 60
-        )
+        | TapPosition(a=1.0 + 16 * TAP_STEP, b=1.0 + 6 * TAP_STEP, c=1.0 + 17 * TAP_STEP).at(t=25 * 60)
+        | TapPosition(a=1.0 + 10 * TAP_STEP, b=1.0 + 6 * TAP_STEP, c=1.0 + 10 * TAP_STEP).at(t=55 * 60)
     ),
 }
 
 MODELS = (
-    LLMInferenceModelSpec(
-        "Llama-3.1-8B", num_replicas=720, gpus_per_replica=1, initial_batch_size=128
-    ),
-    LLMInferenceModelSpec(
-        "Llama-3.1-70B", num_replicas=180, gpus_per_replica=4, initial_batch_size=128
-    ),
-    LLMInferenceModelSpec(
-        "Llama-3.1-405B", num_replicas=90, gpus_per_replica=8, initial_batch_size=128
-    ),
-    LLMInferenceModelSpec(
-        "Qwen3-30B-A3B", num_replicas=480, gpus_per_replica=2, initial_batch_size=128
-    ),
-    LLMInferenceModelSpec(
-        "Qwen3-235B-A22B", num_replicas=210, gpus_per_replica=8, initial_batch_size=128
-    ),
+    LLMInferenceModelSpec("Llama-3.1-8B", num_replicas=720, gpus_per_replica=1, initial_batch_size=128),
+    LLMInferenceModelSpec("Llama-3.1-70B", num_replicas=180, gpus_per_replica=4, initial_batch_size=128),
+    LLMInferenceModelSpec("Llama-3.1-405B", num_replicas=90, gpus_per_replica=8, initial_batch_size=128),
+    LLMInferenceModelSpec("Qwen3-30B-A3B", num_replicas=480, gpus_per_replica=2, initial_batch_size=128),
+    LLMInferenceModelSpec("Qwen3-235B-A22B", num_replicas=210, gpus_per_replica=8, initial_batch_size=128),
 )
 
 INFERENCE = LLMInferenceWorkload(models=MODELS)
@@ -83,6 +69,10 @@ def main(args: argparse.Namespace) -> None:
     save_dir = project_dir / "outputs" / f"baseline_{mode}"
     save_dir.mkdir(parents=True, exist_ok=True)
 
+    file_handler = logging.FileHandler(save_dir / "console_output.txt", mode="w")
+    file_handler.setFormatter(logging.Formatter("%(asctime)s %(name)s %(levelname)s %(message)s", datefmt="%H:%M:%S"))
+    logging.getLogger().addHandler(file_handler)
+
     if args.data_dir:
         data_dir = Path(args.data_dir)
         trace_dir = data_dir / "traces"
@@ -93,9 +83,8 @@ def main(args: argparse.Namespace) -> None:
     if args.training_trace:
         training_csv = Path(args.training_trace)
     elif args.data_dir:
-        raise SystemExit(
-            "Error: --training-trace is required when using --data-dir "
-            "(training trace is not part of the build output)"
+        raise ValueError(
+            "Error: --training-trace is required when using --data-dir (training trace is not part of the build output)"
         )
     else:
         training_csv = project_dir / "power_csvs_updated" / "synthetic_training_trace.csv"
@@ -107,7 +96,7 @@ def main(args: argparse.Namespace) -> None:
     dt_dc = Fraction(1, 10)
     t_total_s = 3600
 
-    print("Loading power traces...")
+    logger.info("Loading power traces...")
     traces_by_batch = load_traces_by_batch_from_dir(
         base_dir=trace_dir,
         batch_set=[128],
@@ -117,9 +106,9 @@ def main(args: argparse.Namespace) -> None:
     )
 
     cache = TraceByBatchCache(traces_by_batch)
-    cache.build_templates(T=t_total_s, dt=dt_dc)
+    cache.build_templates(duration_s=t_total_s, timestep_s=dt_dc)
 
-    print("Loading latency fits...")
+    logger.info("Loading latency fits...")
     if data_dir is not None:
         itl_fits = load_itl_fits_from_csv(data_dir / "latency_fits.csv")
     else:
@@ -138,28 +127,28 @@ def main(args: argparse.Namespace) -> None:
         server_ramps=ServerRamp(t_start=2500.0, t_end=3000.0, target=0.2),
     )
 
-    print("Initializing OfflineDatacenter...")
+    logger.info("Initializing OfflineDatacenter...")
     dc = OfflineDatacenter.from_config(
         dc_config,
         workload,
         trace_cache=cache,
-        dt=dt_dc,
+        timestep_s=dt_dc,
         seed=0,
         chunk_steps=int(t_total_s / dt_dc),
-        latency_fits=itl_fits,
+        itl_distributions=itl_fits,
         latency_exact_threshold=30,
         latency_seed=0,
     )
 
-    print("Initializing OpenDSSGrid...")
+    logger.info("Initializing OpenDSSGrid...")
     grid = OpenDSSGrid(
         case_dir=str(case_dir),
         master="IEEE13Nodeckt.dss",
         dc_bus=dc_bus,
-        dc_kv_ll=4.16,
-        pf_dc=0.95,
+        dc_bus_kv=4.16,
+        power_factor=0.95,
         dt_s=Fraction(1, 10),
-        dc_conn="wye",
+        connection_type="wye",
         controls_off=False,
         tap_schedule=tap_schedule,
         freeze_regcontrols=True,
@@ -167,23 +156,22 @@ def main(args: argparse.Namespace) -> None:
 
     ctrl = TapScheduleController(schedule=[], dt_s=Fraction(1))
 
-    print(f"Running simulation (mode={mode})...")
+    logger.info("Running simulation (mode=%s)...", mode)
     coord = Coordinator(
         datacenter=dc,
         grid=grid,
         controllers=[ctrl],
-        T_total_s=t_total_s,
+        total_duration_s=t_total_s,
         dc_bus=dc_bus,
     )
     log = coord.run()
-    print(f"Simulation complete: {len(log.grid_states)} grid steps, {len(log.dc_states)} DC steps")
 
     stats = compute_allbus_voltage_stats(log.grid_states, v_min=v_min, v_max=v_max)
-    print("\n=== Voltage Statistics (all-bus) ===")
-    print(f"  voltage_violation_time = {stats.violation_time_s:.1f} s")
-    print(f"  worst_vmin             = {stats.worst_vmin:.6f}")
-    print(f"  worst_vmax             = {stats.worst_vmax:.6f}")
-    print(f"  integral_violation     = {stats.integral_violation_pu_s:.4f} pu·s")
+    logger.info("=== Voltage Statistics (all-bus) ===")
+    logger.info("  voltage_violation_time = %.1f s", stats.violation_time_s)
+    logger.info("  worst_vmin             = %.6f", stats.worst_vmin)
+    logger.info("  worst_vmax             = %.6f", stats.worst_vmax)
+    logger.info("  integral_violation     = %.4f pu·s", stats.integral_violation_pu_s)
 
     time_s = np.array(log.time_s)
     kW_A = np.array(log.kW_A)
@@ -223,14 +211,7 @@ def main(args: argparse.Namespace) -> None:
         title="DC Power by Phase",
     )
 
-    with open(save_dir / "console_output.txt", "w") as f:
-        f.write("=== Voltage Statistics (all-bus) ===\n")
-        f.write(f"  voltage_violation_time = {stats.violation_time_s:.1f} s\n")
-        f.write(f"  worst_vmin             = {stats.worst_vmin:.6f}\n")
-        f.write(f"  worst_vmax             = {stats.worst_vmax:.6f}\n")
-        f.write(f"  integral_violation     = {stats.integral_violation_pu_s:.4f} pu·s\n")
-
-    print(f"\nOutputs saved to: {save_dir}")
+    logger.info("Outputs saved to: %s", save_dir)
 
 
 if __name__ == "__main__":
@@ -244,8 +225,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--data-dir",
         default=None,
-        help="Toolkit-generated data directory (contains traces/). "
-        "Defaults to power_csvs_updated/ for legacy mode.",
+        help="Toolkit-generated data directory (contains traces/). Defaults to power_csvs_updated/ for legacy mode.",
     )
     parser.add_argument(
         "--training-trace",
@@ -253,5 +233,16 @@ if __name__ == "__main__":
         help="Path to synthetic training trace CSV. Required when using "
         "--data-dir; defaults to power_csvs_updated/synthetic_training_trace.csv.",
     )
+    parser.add_argument(
+        "--log-level",
+        default="INFO",
+        choices=["DEBUG", "INFO", "WARNING"],
+        help="Logging verbosity (default: INFO).",
+    )
     args = parser.parse_args()
+    logging.basicConfig(
+        level=getattr(logging, args.log_level),
+        format="%(asctime)s %(name)s %(levelname)s %(message)s",
+        datefmt="%H:%M:%S",
+    )
     main(args)

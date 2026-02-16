@@ -14,7 +14,7 @@ coord = Coordinator(
     datacenter=dc,
     grid=grid,
     controllers=[NoopController(dt_s=1.0)],
-    T_total_s=3600.0,
+    total_duration_s=3600,
 )
 log = coord.run()
 ```
@@ -48,13 +48,13 @@ traces_by_batch = load_traces_by_batch_from_dir(
     required_measured_gpus={m.model_label: m.gpus_per_replica for m in models},
 )
 
-cache = TraceByBatchCache.from_traces(traces_by_batch, T=3600.0, dt=0.1)
+cache = TraceByBatchCache.from_traces(traces_by_batch, duration_s=3600.0, timestep_s=0.1)
 
 dc = OfflineDatacenter(
     trace_cache=cache,
     models=models,
-    dt=0.1,
-    batch_init=128,
+    timestep_s=0.1,
+    initial_batch_size=128,
     gpus_per_server=8,
     seed=0,
     chunk_steps=36000,
@@ -88,7 +88,7 @@ dc = OfflineDatacenter.from_config(
     datacenter=DatacenterConfig(gpus_per_server=8, base_kW_per_phase=500.0),
     workload=workload,
     trace_cache=cache,
-    dt=0.1,
+    timestep_s=0.1,
     seed=0,
 )
 ```
@@ -136,10 +136,10 @@ grid = OpenDSSGrid(
     case_dir="examples/ieee13",
     master="IEEE13Nodeckt.dss",
     dc_bus="671",
-    dc_kv_ll=4.16,
-    pf_dc=0.95,
+    dc_bus_kv=4.16,
+    power_factor=0.95,
     dt_s=0.1,
-    dc_conn="wye",
+    connection_type="wye",
     controls_off=False,       # True for OFO (SolveNoControl)
     tap_schedule=tap_schedule,
     freeze_regcontrols=True,
@@ -165,7 +165,7 @@ coord = Coordinator(
     datacenter=dc,
     grid=grid,
     controllers=controllers,
-    T_total_s=3600.0,
+    total_duration_s=3600,
 )
 ```
 
@@ -196,7 +196,7 @@ coord = Coordinator(
     datacenter=dc,
     grid=grid,
     controllers=controllers,
-    T_total_s=300.0,
+    total_duration_s=300,
     live=True,
 )
 ```

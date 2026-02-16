@@ -24,25 +24,19 @@ def _normalize_backend_type_arg(
     if isinstance(arg, type):
         if issubclass(arg, required_base):
             return (arg,)
-        raise TypeError(
-            f"Controller generic type {arg!r} is not a subclass of {required_base.__name__}."
-        )
+        raise TypeError(f"Controller generic type {arg!r} is not a subclass of {required_base.__name__}.")
 
     origin = get_origin(arg)
     if origin is Union:
         out: list[type[object]] = []
         for item in get_args(arg):
             if not isinstance(item, type) or not issubclass(item, required_base):
-                raise TypeError(
-                    f"Controller generic type {item!r} is not a subclass of "
-                    f"{required_base.__name__}."
-                )
+                raise TypeError(f"Controller generic type {item!r} is not a subclass of {required_base.__name__}.")
             out.append(item)
         return tuple(out)
 
     raise TypeError(
-        f"Unsupported controller generic type argument: {arg!r}. "
-        "Use a concrete class (or Union of concrete classes)."
+        f"Unsupported controller generic type argument: {arg!r}. Use a concrete class (or Union of concrete classes)."
     )
 
 

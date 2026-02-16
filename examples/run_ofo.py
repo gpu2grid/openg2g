@@ -8,6 +8,7 @@ OFOBatchController] + Coordinator.
 from __future__ import annotations
 
 import argparse
+import logging
 from fractions import Fraction
 from pathlib import Path
 
@@ -28,8 +29,8 @@ from plotting import (
 
 from openg2g.controller.ofo import (
     OFOBatchController,
-    PrimalCfg,
-    VoltageDualCfg,
+    PrimalConfig,
+    VoltageDualConfig,
 )
 from openg2g.controller.tap_schedule import TapScheduleController
 from openg2g.coordinator import Coordinator
@@ -43,6 +44,8 @@ from openg2g.grid.opendss import OpenDSSGrid
 from openg2g.metrics.voltage import compute_allbus_voltage_stats
 from openg2g.models.spec import LLMInferenceModelSpec, LLMInferenceWorkload
 from openg2g.types import ServerRamp, TapPosition, TrainingRun
+
+logger = logging.getLogger(__name__)
 
 BATCH_SET = (8, 16, 32, 64, 128, 256, 512)
 
@@ -135,6 +138,10 @@ def main(args: argparse.Namespace) -> None:
     save_dir = project_dir / "outputs" / "ofo"
     save_dir.mkdir(parents=True, exist_ok=True)
 
+    file_handler = logging.FileHandler(save_dir / "console_output.txt", mode="w")
+    file_handler.setFormatter(logging.Formatter("%(asctime)s %(name)s %(levelname)s %(message)s", datefmt="%H:%M:%S"))
+    logging.getLogger().addHandler(file_handler)
+
     v_min = 0.95
     v_max = 1.05
     dc_bus = "671"
@@ -144,9 +151,7 @@ def main(args: argparse.Namespace) -> None:
     t_total_s = 3600
 
     TAP_STEP = 0.00625  # standard 5/8% tap step
-    tap_schedule = TapPosition(
-        a=1.0 + 14 * TAP_STEP, b=1.0 + 6 * TAP_STEP, c=1.0 + 15 * TAP_STEP
-    ).at(t=0)
+    tap_schedule = TapPosition(a=1.0 + 14 * TAP_STEP, b=1.0 + 6 * TAP_STEP, c=1.0 + 15 * TAP_STEP).at(t=0)
 
     data_dir = Path(args.data_dir) if args.data_dir else None
     if data_dir is not None:
@@ -158,13 +163,12 @@ def main(args: argparse.Namespace) -> None:
         training_csv = Path(args.training_trace)
     elif data_dir is not None:
         raise SystemExit(
-            "Error: --training-trace is required when using --data-dir "
-            "(training trace is not part of the build output)"
+            "Error: --training-trace is required when using --data-dir (training trace is not part of the build output)"
         )
     else:
         training_csv = project_dir / "power_csvs_updated" / "synthetic_training_trace.csv"
 
-    print("Loading power traces...")
+    logger.info("Loading power traces...")
     traces_by_batch = load_traces_by_batch_from_dir(
         base_dir=trace_dir,
         batch_set=list(BATCH_SET),
@@ -174,9 +178,9 @@ def main(args: argparse.Namespace) -> None:
     )
 
     cache = TraceByBatchCache(traces_by_batch)
-    cache.build_templates(T=600.0, dt=dt_dc)
+    cache.build_templates(duration_s=600.0, timestep_s=dt_dc)
 
-    print("Loading latency fits...")
+    logger.info("Loading latency fits...")
     if data_dir is not None:
         itl_fits = load_itl_fits_from_csv(data_dir / "latency_fits.csv")
     else:
@@ -195,24 +199,22 @@ def main(args: argparse.Namespace) -> None:
         server_ramps=ServerRamp(t_start=2500.0, t_end=3000.0, target=0.2),
     )
 
-    print("Initializing OfflineDatacenter...")
+    logger.info("Initializing OfflineDatacenter...")
     dc = OfflineDatacenter.from_config(
         dc_config,
         workload,
         trace_cache=cache,
-        dt=dt_dc,
+        timestep_s=dt_dc,
         seed=0,
         chunk_steps=int(dt_ctrl / dt_dc),
-        latency_fits=itl_fits,
+        itl_distributions=itl_fits,
         latency_exact_threshold=30,
         latency_seed=0,
     )
 
-    print("Loading logistic fits...")
+    logger.info("Loading logistic fits...")
     if data_dir is not None:
-        power_fits, latency_fits, throughput_fits = _load_logistic_fits_merged(
-            data_dir / "logistic_fits.csv"
-        )
+        power_fits, latency_fits, throughput_fits = _load_logistic_fits_merged(data_dir / "logistic_fits.csv")
     else:
         power_fits, latency_fits, throughput_fits = _load_logistic_fits_from_csvs(
             {
@@ -221,15 +223,15 @@ def main(args: argparse.Namespace) -> None:
             }
         )
 
-    print("Initializing OpenDSSGrid...")
+    logger.info("Initializing OpenDSSGrid...")
     grid = OpenDSSGrid(
         case_dir=str(case_dir),
         master="IEEE13Nodeckt.dss",
         dc_bus=dc_bus,
-        dc_kv_ll=4.16,
-        pf_dc=0.95,
+        dc_bus_kv=4.16,
+        power_factor=0.95,
         dt_s=Fraction(1, 10),
-        dc_conn="wye",
+        connection_type="wye",
         controls_off=True,
         tap_schedule=tap_schedule,
         freeze_regcontrols=True,
@@ -242,48 +244,47 @@ def main(args: argparse.Namespace) -> None:
         power_fits=power_fits,
         latency_fits=latency_fits,
         throughput_fits=throughput_fits,
-        primal_cfg=PrimalCfg(
-            eta_primal=0.1,
+        primal_config=PrimalConfig(
+            descent_step_size=0.1,
             w_latency=1.0,
             w_throughput=1e-3,
             w_switch=1.0,
-            k_v=1e6,
+            voltage_gradient_scale=1e6,
         ),
-        voltage_dual_cfg=VoltageDualCfg(
+        voltage_dual_config=VoltageDualConfig(
             v_min=v_min,
             v_max=v_max,
-            rho_v=1.0,
+            ascent_step_size=1.0,
         ),
-        rho_l=1.0,
+        latency_dual_step_size=1.0,
         dt_s=dt_ctrl,
-        estimate_H_every=3600,
-        estimate_H_dp_kw=100.0,
+        sensitivity_update_interval=3600,
+        sensitivity_perturbation_kw=100.0,
     )
 
-    print("Running simulation...")
+    logger.info("Running simulation...")
     coord = Coordinator(
         datacenter=dc,
         grid=grid,
         controllers=[tap_ctrl, ofo_ctrl],
-        T_total_s=t_total_s,
+        total_duration_s=t_total_s,
         dc_bus=dc_bus,
     )
     log = coord.run()
-    print(f"Simulation complete: {len(log.grid_states)} grid steps, {len(log.dc_states)} DC steps")
 
     stats = compute_allbus_voltage_stats(log.grid_states, v_min=v_min, v_max=v_max)
-    print("\n=== Voltage Statistics (all-bus) ===")
-    print(f"  voltage_violation_time = {stats.violation_time_s / 60:.2f} min")
-    print(f"  worst_vmin             = {stats.worst_vmin:.6f}")
-    print(f"  worst_vmax             = {stats.worst_vmax:.6f}")
-    print(f"  integral_violation     = {stats.integral_violation_pu_s:.5f} pu·s")
+    logger.info("=== Voltage Statistics (all-bus) ===")
+    logger.info("  voltage_violation_time = %.2f min", stats.violation_time_s / 60)
+    logger.info("  worst_vmin             = %.6f", stats.worst_vmin)
+    logger.info("  worst_vmax             = %.6f", stats.worst_vmax)
+    logger.info("  integral_violation     = %.5f pu·s", stats.integral_violation_pu_s)
 
-    print("\n=== Batch Schedule Summary ===")
+    logger.info("=== Batch Schedule Summary ===")
     for label, batches in log.batch_log_by_model.items():
         if batches:
             avg = np.mean(batches)
             changes = sum(1 for i in range(1, len(batches)) if batches[i] != batches[i - 1])
-            print(f"  {label}: avg_batch={avg:.1f}, changes={changes}")
+            logger.info("  %s: avg_batch=%.1f, changes=%d", label, avg, changes)
 
     time_s = np.array(log.time_s)
     kW_A = np.array(log.kW_A)
@@ -332,9 +333,9 @@ def main(args: argparse.Namespace) -> None:
 
     plot_voltage_dc_bus(
         time_s,
-        np.array(log.Va),
-        np.array(log.Vb),
-        np.array(log.Vc),
+        np.array(log.voltage_a_pu),
+        np.array(log.voltage_b_pu),
+        np.array(log.voltage_c_pu),
         v_min=v_min,
         v_max=v_max,
         save_path=save_dir / "voltage_dc_bus.png",
@@ -352,20 +353,7 @@ def main(args: argparse.Namespace) -> None:
             save_path=save_dir / "per_model_power.png",
         )
 
-    with open(save_dir / "console_output.txt", "w") as f:
-        f.write("=== Voltage Statistics (all-bus) ===\n")
-        f.write(f"  voltage_violation_time = {stats.violation_time_s / 60:.2f} min\n")
-        f.write(f"  worst_vmin             = {stats.worst_vmin:.6f}\n")
-        f.write(f"  worst_vmax             = {stats.worst_vmax:.6f}\n")
-        f.write(f"  integral_violation     = {stats.integral_violation_pu_s:.5f} pu·s\n")
-        f.write("\n=== Batch Schedule Summary ===\n")
-        for label, batches in log.batch_log_by_model.items():
-            if batches:
-                avg = np.mean(batches)
-                changes = sum(1 for i in range(1, len(batches)) if batches[i] != batches[i - 1])
-                f.write(f"  {label}: avg_batch={avg:.1f}, changes={changes}\n")
-
-    print(f"\nOutputs saved to: {save_dir}")
+    logger.info("Outputs saved to: %s", save_dir)
 
 
 if __name__ == "__main__":
@@ -382,5 +370,16 @@ if __name__ == "__main__":
         help="Path to synthetic training trace CSV. Required when using "
         "--data-dir; defaults to power_csvs_updated/synthetic_training_trace.csv.",
     )
+    parser.add_argument(
+        "--log-level",
+        default="INFO",
+        choices=["DEBUG", "INFO", "WARNING"],
+        help="Logging verbosity (default: INFO).",
+    )
     args = parser.parse_args()
+    logging.basicConfig(
+        level=getattr(logging, args.log_level),
+        format="%(asctime)s %(name)s %(levelname)s %(message)s",
+        datefmt="%H:%M:%S",
+    )
     main(args)

@@ -98,11 +98,11 @@ class _StubGrid(GridBackend):
     def step(
         self,
         clock: SimulationClock,
-        load_trace_w: list[ThreePhase],
+        power_samples_w: list[ThreePhase],
         **kwargs: object,
     ) -> GridState:
         self.step_count += 1
-        self.step_calls.append((clock, list(load_trace_w)))
+        self.step_calls.append((clock, list(power_samples_w)))
         state = GridState(
             time_s=clock.time_s,
             voltages=BusVoltages({"671": ThreePhase(a=1.0, b=1.0, c=1.0)}),
@@ -118,7 +118,7 @@ class _StubGrid(GridBackend):
     def voltages_vector(self) -> np.ndarray:
         return np.array([1.0, 1.0, 1.0])
 
-    def estimate_H(self, dp_kw: float = 100.0) -> tuple[np.ndarray, np.ndarray]:
+    def estimate_sensitivity(self, perturbation_kw: float = 100.0) -> tuple[np.ndarray, np.ndarray]:
         return np.zeros((3, 3)), np.ones(3)
 
     def apply_control(self, command: Command) -> None:
@@ -166,7 +166,7 @@ def test_coordinator_dc_fires_every_tick():
     grid = _StubGrid(dt_s=Fraction(1))
     ctrl = _StubController(dt_s=Fraction(1))
 
-    coord = Coordinator(dc, grid, [ctrl], T_total_s=1, dc_bus="671")
+    coord = Coordinator(dc, grid, [ctrl], total_duration_s=1, dc_bus="671")
     coord.run()
 
     # DC fires 10 times in 1 second (steps 0-9)
@@ -181,7 +181,7 @@ def test_coordinator_dc_buffer_flush():
     grid = _StubGrid(dt_s=Fraction(1, 2))
     ctrl = _StubController(dt_s=Fraction(1, 2))
 
-    coord = Coordinator(dc, grid, [ctrl], T_total_s=1, dc_bus="671")
+    coord = Coordinator(dc, grid, [ctrl], total_duration_s=1, dc_bus="671")
     coord.run()
 
     # Grid fires at step 0 and step 5 (twice in 1 second with dt=1/2)
@@ -205,11 +205,11 @@ def test_coordinator_controller_order():
         def step(
             self,
             clock: SimulationClock,
-            load_trace_w: list[ThreePhase],
+            power_samples_w: list[ThreePhase],
             **kwargs: object,
         ) -> GridState:
             call_order.append("grid")
-            return super().step(clock, load_trace_w, **kwargs)
+            return super().step(clock, power_samples_w, **kwargs)
 
     dc = _OrderDC(dt_s=Fraction(1))
     grid = _OrderGrid(dt_s=Fraction(1))
@@ -230,7 +230,7 @@ def test_coordinator_controller_order():
         )[-1],
     )
 
-    coord = Coordinator(dc, grid, [ctrl1, ctrl2], T_total_s=1, dc_bus="671")
+    coord = Coordinator(dc, grid, [ctrl1, ctrl2], total_duration_s=1, dc_bus="671")
     coord.run()
 
     # First tick order should be: dc, grid, ctrl1, ctrl2
@@ -256,7 +256,7 @@ def test_coordinator_batch_action_applied():
     )
     ctrl = _StubController(dt_s=Fraction(1), action=action_with_batch)
 
-    coord = Coordinator(dc, grid, [ctrl], T_total_s=1, dc_bus="671")
+    coord = Coordinator(dc, grid, [ctrl], total_duration_s=1, dc_bus="671")
     coord.run()
 
     assert dc.apply_control_calls == [action_with_batch.commands[0]]
@@ -277,7 +277,7 @@ def test_coordinator_exposes_clock_stamped_controller_events():
         return ControlAction(commands=[])
 
     ctrl = _StubController(dt_s=Fraction(1), on_step=_on_step)
-    coord = Coordinator(dc, grid, [ctrl], T_total_s=1, dc_bus="671")
+    coord = Coordinator(dc, grid, [ctrl], total_duration_s=1, dc_bus="671")
     log = coord.run()
 
     assert len(log.events) == 1
@@ -344,7 +344,7 @@ def test_batch_history_is_populated_from_datacenter_events():
         ),
     )
 
-    coord = Coordinator(dc, grid, [ctrl], T_total_s=1, dc_bus="671")
+    coord = Coordinator(dc, grid, [ctrl], total_duration_s=1, dc_bus="671")
     log = coord.run()
     assert log.batch_log_by_model["model_a"] == [64]
 
@@ -436,7 +436,7 @@ def test_controller_datacenter_mismatch_error_has_underlined_generic_snippet():
     dc = _OtherDC()
     grid = _StubGrid(dt_s=Fraction(1))
     ctrl = _NeedsExpectedDC()
-    coord = Coordinator(dc, grid, [ctrl], T_total_s=1, dc_bus="671")
+    coord = Coordinator(dc, grid, [ctrl], total_duration_s=1, dc_bus="671")
 
     try:
         coord.run()
@@ -455,7 +455,7 @@ def test_coordinator_grid_uses_stale_power_when_dc_buffer_empty():
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        coord = Coordinator(dc, grid, [], T_total_s=1, dc_bus="671")
+        coord = Coordinator(dc, grid, [], total_duration_s=1, dc_bus="671")
     log = coord.run()
 
     # Grid fires at tick 0 (dc_buffer has 1 sample) and tick 5 (dc_buffer empty,
@@ -472,7 +472,7 @@ def test_coordinator_warns_dt_grid_lt_dt_dc():
             _StubDC(dt_s=Fraction(1)),
             _StubGrid(dt_s=Fraction(1, 2)),
             [],
-            T_total_s=1,
+            total_duration_s=1,
         )
     msgs = [str(x.message) for x in w]
     assert any("dt_grid" in m and "dt_dc" in m for m in msgs)
@@ -485,7 +485,7 @@ def test_coordinator_warns_ctrl_dt_lt_grid_dt():
             _StubDC(dt_s=Fraction(1)),
             _StubGrid(dt_s=Fraction(1)),
             [_StubController(dt_s=Fraction(1, 2))],
-            T_total_s=1,
+            total_duration_s=1,
         )
     msgs = [str(x.message) for x in w]
     assert any("stale voltages" in m for m in msgs)

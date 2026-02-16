@@ -37,7 +37,7 @@ def plot_power_trajectories(
     """Plot total GPU power trajectories per batch size (Fig. 2).
 
     One subplot per model. Each curve is a different batch size,
-    color-coded using the viridis colormap.
+    color-coded using the tab10 colormap.
 
     Args:
         trace_dir: Directory containing per-model trace CSVs with columns
@@ -47,7 +47,7 @@ def plot_power_trajectories(
         batch_sizes: If given, only plot these batch sizes. Otherwise plot all found.
         xlim_s: If given, (x_lo, x_hi) in seconds to clip the x-axis view.
         rolling_window: Rolling average window for smoothing.
-        figsize: Figure size per subplot (width shared, height per subplot).
+        figsize: Total figure size (width, height) for all subplots combined.
         dpi: Figure DPI.
         save_path: If given, save the figure to this path.
     """
@@ -55,7 +55,7 @@ def plot_power_trajectories(
     fig, axes = plt.subplots(
         n_models,
         1,
-        figsize=(figsize[0], figsize[1] * n_models),
+        figsize=figsize,
         dpi=dpi,
         squeeze=False,
     )
@@ -78,35 +78,33 @@ def plot_power_trajectories(
 
         batches_found: list[int] = []
         times: list[np.ndarray] = []
-        powers_w: list[np.ndarray] = []
+        powers_kw: list[np.ndarray] = []
         for csv_path in csv_files:
             batch = _extract_batch_from_filename(csv_path)
             if batch_sizes is not None and batch not in batch_sizes:
                 continue
             df = pd.read_csv(csv_path).sort_values("relative_time_s")
             time_s = df["relative_time_s"].to_numpy(dtype=float)
-            power_w = df["power_total_W"].to_numpy(dtype=float)
+            power_kw = df["power_total_W"].to_numpy(dtype=float) / 1000.0
 
-            if rolling_window > 1 and len(power_w) >= rolling_window:
+            if rolling_window > 1 and len(power_kw) >= rolling_window:
                 kernel = np.ones(rolling_window) / rolling_window
-                smoothed = np.convolve(power_w, kernel, mode="same")
+                smoothed = np.convolve(power_kw, kernel, mode="same")
                 half = rolling_window // 2
-                smoothed[:half] = power_w[:half]
-                smoothed[-half:] = power_w[-half:]
-                power_w = smoothed
+                smoothed[:half] = power_kw[:half]
+                smoothed[-half:] = power_kw[-half:]
+                power_kw = smoothed
 
             batches_found.append(batch)
             times.append(time_s)
-            powers_w.append(power_w)
+            powers_kw.append(power_kw)
 
         if not batches_found:
             ax.set_title(f"{model_label} (no matching traces)")
             continue
 
-        cmap = plt.get_cmap("viridis", len(batches_found))
-        for i, (b, t, p) in enumerate(
-            zip(batches_found, times, powers_w, strict=True)
-        ):
+        cmap = plt.get_cmap("tab10")
+        for i, (b, t, p) in enumerate(zip(batches_found, times, powers_kw, strict=True)):
             ax.plot(t, p, label=f"batch={b}", color=cmap(i))
 
         label_char = panel_labels[row] if row < len(panel_labels) else ""
@@ -115,7 +113,7 @@ def plot_power_trajectories(
             f"({label_char}) {model_label}: Total-GPU Power ({num_gpus} {gpu_suffix})",
             fontsize=13,
         )
-        ax.set_ylabel("Power (W)", fontsize=11)
+        ax.set_ylabel("Power (kW)", fontsize=11)
         if row == 0:
             ax.legend(
                 fontsize=9,
@@ -129,7 +127,6 @@ def plot_power_trajectories(
             ax.set_xlim(xlim_s[0], xlim_s[1])
         else:
             ax.set_xlim(left=0)
-        ax.set_ylim(bottom=0)
 
     axes[-1, 0].set_xlabel("Time (seconds)", fontsize=11)
 
@@ -208,9 +205,7 @@ def plot_logistic_fits(
     if fit_exclude_batches is None:
         fit_exclude_batches = {}
 
-    for ax_idx, (ax, (metric_name, y_col, scale, ylabel, title)) in enumerate(
-        zip(axes, metric_specs, strict=True)
-    ):
+    for ax_idx, (ax, (metric_name, y_col, scale, ylabel, title)) in enumerate(zip(axes, metric_specs, strict=True)):
         xmins: list[float] = []
         xmaxs: list[float] = []
 
@@ -245,9 +240,7 @@ def plot_logistic_fits(
             x = np.log2(mdf["max_num_seqs"].astype(float).to_numpy())
             y = mdf[y_col].astype(float).to_numpy() * scale
 
-            fit_row = fits_df[
-                (fits_df["model_label"] == label) & (fits_df["metric"] == metric_name)
-            ]
+            fit_row = fits_df[(fits_df["model_label"] == label) & (fits_df["metric"] == metric_name)]
             if fit_row.empty:
                 continue
 
@@ -298,9 +291,7 @@ def _lognorm_pdf(x: np.ndarray, sigma: float, scale: float) -> np.ndarray:
     out = np.zeros_like(x)
     mask = x > 0
     xx = x[mask]
-    out[mask] = (1.0 / (xx * sigma * np.sqrt(2.0 * np.pi))) * np.exp(
-        -(np.log(xx / scale) ** 2) / (2.0 * sigma * sigma)
-    )
+    out[mask] = (1.0 / (xx * sigma * np.sqrt(2.0 * np.pi))) * np.exp(-(np.log(xx / scale) ** 2) / (2.0 * sigma * sigma))
     return out
 
 
@@ -378,13 +369,15 @@ def plot_itl_distributions(
 
     for b in batches:
         row = fits[fits["max_num_seqs"] == b].iloc[0]
+        loc = float(row["itl_mix_loc"])
         pi = float(row["itl_mix_pi_steady"])
         s1 = float(row["itl_mix_sigma_steady"])
         sc1 = float(row["itl_mix_scale_steady"])
         s2 = float(row["itl_mix_sigma_stall"])
         sc2 = float(row["itl_mix_scale_stall"])
 
-        pdf_mix = pi * _lognorm_pdf(grid, s1, sc1) + (1 - pi) * _lognorm_pdf(grid, s2, sc2)
+        shifted = grid - loc
+        pdf_mix = pi * _lognorm_pdf(shifted, s1, sc1) + (1 - pi) * _lognorm_pdf(shifted, s2, sc2)
 
         c = colors[b]
 
@@ -413,6 +406,7 @@ def plot_itl_distributions(
 
     if inset_batch in batches:
         row = fits[fits["max_num_seqs"] == inset_batch].iloc[0]
+        loc = float(row["itl_mix_loc"])
         pi = float(row["itl_mix_pi_steady"])
         s1 = float(row["itl_mix_sigma_steady"])
         sc1 = float(row["itl_mix_scale_steady"])
@@ -426,8 +420,9 @@ def plot_itl_distributions(
         hi_i = float(np.percentile(bsamp, 99.5)) if len(bsamp) > 0 else hi
         grid_i = np.linspace(lo_i, hi_i, 600)
 
-        pdf_steady = pi * _lognorm_pdf(grid_i, s1, sc1)
-        pdf_stall = (1 - pi) * _lognorm_pdf(grid_i, s2, sc2)
+        shifted_i = grid_i - loc
+        pdf_steady = pi * _lognorm_pdf(shifted_i, s1, sc1)
+        pdf_stall = (1 - pi) * _lognorm_pdf(shifted_i, s2, sc2)
         pdf_mix_i = pdf_steady + pdf_stall
 
         axins = inset_axes(

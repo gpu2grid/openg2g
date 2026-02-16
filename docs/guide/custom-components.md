@@ -158,7 +158,7 @@ coord = Coordinator(
     datacenter=dc,
     grid=grid,
     controllers=[ctrl],
-    T_total_s=3600.0,
+    total_duration_s=3600,
 )
 log = coord.run()
 ```

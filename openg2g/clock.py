@@ -73,9 +73,7 @@ class SimulationClock:
         """
         ratio = period_s / self.tick_s
         if ratio.denominator != 1:
-            raise ValueError(
-                f"period_s={period_s} is not an exact multiple of tick_s={self.tick_s}"
-            )
+            raise ValueError(f"period_s={period_s} is not an exact multiple of tick_s={self.tick_s}")
         period_ticks = int(ratio)
         if period_ticks <= 0:
             return True

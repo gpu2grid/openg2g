@@ -10,28 +10,20 @@ import argparse
 import json
 import logging
 import math
-from dataclasses import replace
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 import pandas as pd
 from mlenergy_data.modeling import ITLMixtureModel, LogisticModel
-from mlenergy_data.records import LLMRun, LLMRuns
+from mlenergy_data.records import LLMRuns
 
 # pyright: reportGeneralTypeIssues=false, reportAttributeAccessIssue=false
 
 logger = logging.getLogger(__name__)
 
 
-def _emit_trace_bank(
-    *,
-    runs: LLMRuns,
-    dt_s: float,
-    out_dir: Path,
-    timeline_metric: str,
-) -> pd.DataFrame:
-    tl = runs.timelines(metric=timeline_metric)
+def _emit_trace_bank(*, tl: pd.DataFrame, dt_s: float, out_dir: Path) -> pd.DataFrame:
     if tl.empty:
         raise ValueError("No timeline rows extracted from selected runs")
 
@@ -41,9 +33,8 @@ def _emit_trace_bank(
     summary_rows: list[dict[str, Any]] = []
     keys = ["model_label", "num_gpus", "max_num_seqs"]
     for key, g in tl.groupby(keys, dropna=False):
-        if not isinstance(key, tuple):
-            continue
-        model_label, num_gpus, batch = key
+        assert isinstance(key, tuple)
+        model_label, num_gpus, batch = str(key[0]), cast(int, key[1]), cast(int, key[2])
         series_list: list[tuple[np.ndarray, np.ndarray]] = []
         t_ends: list[float] = []
 
@@ -91,13 +82,14 @@ def _emit_trace_bank(
 
 
 def _emit_logistic_fits(
-    runs: LLMRuns,
+    subsets_by_label: dict[str, LLMRuns],
     out_dir: Path,
     *,
     fit_exclude_batches: dict[str, set[int]],
 ) -> pd.DataFrame:
     rows: list[dict[str, Any]] = []
-    for (model_label, num_gpus), group in runs.group_by("model_label", "num_gpus").items():
+    for model_label, group in subsets_by_label.items():
+        num_gpus = group[0].num_gpus
         by_batch: dict[int, list[tuple[float, float, float]]] = {}
         exclude = fit_exclude_batches.get(str(model_label), set())
         for r in group:
@@ -129,11 +121,7 @@ def _emit_logistic_fits(
 
     if not rows:
         raise ValueError("No logistic fit rows produced")
-    df = (
-        pd.DataFrame(rows)
-        .sort_values(["model_label", "num_gpus", "metric"])
-        .reset_index(drop=True)
-    )
+    df = pd.DataFrame(rows).sort_values(["model_label", "num_gpus", "metric"]).reset_index(drop=True)
     df.to_csv(out_dir / "logistic_fits.csv", index=False)
     return df
 
@@ -189,7 +177,6 @@ def _extract_itl_samples(runs: LLMRuns) -> pd.DataFrame:
         for v in arr:
             sample_rows.append(
                 {
-                    "model_label": run.model_label,
                     "num_gpus": run.num_gpus,
                     "max_num_seqs": run.max_num_seqs,
                     "itl_s": v,
@@ -209,9 +196,9 @@ def _emit_latency_fits(
         raise ValueError("No ITL samples provided")
 
     rows: list[dict[str, Any]] = []
-    for (model_label, num_gpus, batch), g in itl.groupby(
-        ["model_label", "num_gpus", "max_num_seqs"], dropna=False
-    ):
+    for key, g in itl.groupby(["model_label", "num_gpus", "max_num_seqs"], dropna=False):
+        assert isinstance(key, tuple)
+        model_label, num_gpus, batch = str(key[0]), cast(int, key[1]), cast(int, key[2])
         fit = ITLMixtureModel.fit(
             g["itl_s"].to_numpy(dtype=float),
             max_samples=max_samples,
@@ -227,11 +214,7 @@ def _emit_latency_fits(
             }
         )
 
-    df = (
-        pd.DataFrame(rows)
-        .sort_values(["model_label", "num_gpus", "max_num_seqs"])
-        .reset_index(drop=True)
-    )
+    df = pd.DataFrame(rows).sort_values(["model_label", "num_gpus", "max_num_seqs"]).reset_index(drop=True)
     df.to_csv(out_dir / "latency_fits.csv", index=False)
     return df
 
@@ -325,9 +308,7 @@ def _generate_plots(
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(
-        description="Build OpenG2G simulation artifacts from raw benchmark data"
-    )
+    parser = argparse.ArgumentParser(description="Build OpenG2G simulation artifacts from raw benchmark data")
     parser.add_argument(
         "--mlenergy-data-dir",
         default=None,
@@ -336,7 +317,7 @@ def main() -> int:
     parser.add_argument(
         "--config",
         required=True,
-        help="JSON config file specifying models (see data/openg2g_models.json)",
+        help="JSON config file specifying models (see data/models.json)",
     )
     parser.add_argument("--out-dir", required=True)
     parser.add_argument("--dt-s", type=float, default=0.1)
@@ -371,22 +352,18 @@ def main() -> int:
 
     if args.mlenergy_data_dir:
         logger.info("Loading runs from %s (tasks: %s)", args.mlenergy_data_dir, sorted(unique_tasks))
-        all_runs = LLMRuns.from_directory(
-            args.mlenergy_data_dir,
-            tasks=unique_tasks,
-            stable_only=False,
-        )
+        all_runs = LLMRuns.from_directory(args.mlenergy_data_dir, stable_only=False).task(*unique_tasks)
     else:
         logger.info("Loading runs from Hugging Face Hub (tasks: %s)", sorted(unique_tasks))
-        all_runs = LLMRuns.from_hf(
-            tasks=unique_tasks,
-            stable_only=False,
-            download_raw=True,
-        )
+        all_runs = LLMRuns.from_hf(stable_only=False).task(*unique_tasks)
     if not all_runs:
         raise ValueError("No runs found in benchmark root for the specified tasks")
 
-    labeled: list[LLMRun] = []
+    subsets_by_label: dict[str, LLMRuns] = {}
+    tl_frames: list[pd.DataFrame] = []
+    itl_frames: list[pd.DataFrame] = []
+    run_frames: list[pd.DataFrame] = []
+
     for entry in config:
         model_id = str(entry["model_id"])
         num_gpus = int(entry["num_gpus"])
@@ -401,7 +378,20 @@ def main() -> int:
                 f"gpu={gpu!r}, num_gpus={num_gpus}, "
                 f"batch_sizes={batch_sizes}"
             )
-        labeled.extend(replace(r, model_label=label) for r in subset)
+        subsets_by_label[label] = subset
+
+        tl = subset.timelines(metric=str(args.timeline_metric))
+        tl["model_label"] = label
+        tl_frames.append(tl)
+
+        itl = _extract_itl_samples(subset)
+        itl["model_label"] = label
+        itl_frames.append(itl)
+
+        rdf = subset.to_dataframe()
+        rdf["model_label"] = label
+        run_frames.append(rdf)
+
         logger.info(
             "  %s: %d runs (model_id=%s, gpu=%s, num_gpus=%d, batches=%s)",
             label,
@@ -412,13 +402,14 @@ def main() -> int:
             sorted({r.max_num_seqs for r in subset}),
         )
 
-    selected = LLMRuns(labeled)
+    all_tl = pd.concat(tl_frames, ignore_index=True)
+    itl_samples_df = pd.concat(itl_frames, ignore_index=True)
+    run_df = pd.concat(run_frames, ignore_index=True)
 
     traces_summary = _emit_trace_bank(
-        runs=selected,
+        tl=all_tl,
         dt_s=float(args.dt_s),
         out_dir=out_dir,
-        timeline_metric=str(args.timeline_metric),
     )
     fit_exclude_batches: dict[str, set[int]] = {}
     for entry in config:
@@ -427,12 +418,11 @@ def main() -> int:
             fit_exclude_batches[str(entry["label"])] = {int(b) for b in excl}
 
     logistic_fits_df = _emit_logistic_fits(
-        selected,
+        subsets_by_label,
         out_dir,
         fit_exclude_batches=fit_exclude_batches,
     )
 
-    itl_samples_df = _extract_itl_samples(selected)
     itl_samples_df.to_parquet(out_dir / "itl_samples.parquet", index=False)
     logger.info("Saved %d ITL samples to itl_samples.parquet", len(itl_samples_df))
 
@@ -443,7 +433,6 @@ def main() -> int:
         seed=int(args.seed),
     )
 
-    run_df = selected.to_dataframe()
     run_summary = (
         run_df.groupby(["model_label", "num_gpus", "max_num_seqs"], dropna=False)
         .agg(

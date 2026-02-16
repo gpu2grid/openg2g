@@ -6,11 +6,11 @@ import numpy as np
 from mlenergy_data.modeling import LogisticModel
 
 from openg2g.clock import SimulationClock
-from openg2g.controller.ofo import OFOBatchController, PrimalCfg, VoltageDualCfg
+from openg2g.controller.ofo import OFOBatchController, PrimalConfig, VoltageDualConfig
 from openg2g.datacenter.base import LLMBatchSizeControlledDatacenter
 from openg2g.events import EventEmitter, SimEvent
 from openg2g.grid.opendss import OpenDSSGrid
-from openg2g.models.spec import ModelSpec
+from openg2g.models.spec import LLMInferenceModelSpec
 from openg2g.types import BusVoltages, Command, DatacenterState, GridState, ThreePhase
 
 
@@ -42,7 +42,7 @@ class _GridStub(OpenDSSGrid):
     def voltages_vector(self) -> np.ndarray:
         return np.array([0.94, 0.96, 1.01], dtype=float)
 
-    def estimate_H(self, dp_kw: float = 100.0) -> tuple[np.ndarray, np.ndarray]:
+    def estimate_sensitivity(self, perturbation_kw: float = 100.0) -> tuple[np.ndarray, np.ndarray]:
         H = np.eye(3, dtype=float)
         v0 = np.array([1.0, 1.0, 1.0], dtype=float)
         return H, v0
@@ -50,9 +50,9 @@ class _GridStub(OpenDSSGrid):
     def step(
         self,
         clock: SimulationClock,
-        load_trace_w: list[ThreePhase],
+        power_samples_w: list[ThreePhase],
         *,
-        interval_start_w: ThreePhase | None = None,
+        interval_start_power_w: ThreePhase | None = None,
     ) -> GridState:
 
         self._state = GridState(
@@ -112,9 +112,7 @@ class _EventSink:
         self.events.append(event)
 
 
-def _make_fits() -> tuple[
-    dict[str, LogisticModel], dict[str, LogisticModel], dict[str, LogisticModel]
-]:
+def _make_fits() -> tuple[dict[str, LogisticModel], dict[str, LogisticModel], dict[str, LogisticModel]]:
     """Create synthetic logistic fits for a single model M1."""
     power = {"M1": LogisticModel(L=100.0, x0=6.0, k=1.0, b0=50.0)}
     latency = {"M1": LogisticModel(L=0.05, x0=6.0, k=1.0, b0=0.02)}
@@ -123,19 +121,24 @@ def _make_fits() -> tuple[
 
 
 def _build_controller() -> OFOBatchController:
-    model = ModelSpec(model_label="M1", num_replicas=10, gpus_per_replica=1)
+    model = LLMInferenceModelSpec(
+        model_label="M1",
+        num_replicas=10,
+        gpus_per_replica=1,
+        feasible_batch_sizes=(8, 16, 32, 64, 128),
+        initial_batch_size=64,
+    )
     power_fits, latency_fits, throughput_fits = _make_fits()
     return OFOBatchController(
         models=[model],
         power_fits=power_fits,
         latency_fits=latency_fits,
         throughput_fits=throughput_fits,
-        Lth_by_model={"M1": 0.1},
-        primal_cfg=PrimalCfg(eta_primal=0.05, w_latency=1.0, w_throughput=0.0, w_switch=0.0),
-        voltage_dual_cfg=VoltageDualCfg(v_min=0.95, v_max=1.05, rho_v=0.5),
-        batch_set=[8, 16, 32, 64, 128],
-        batch_init=64,
-        rho_l=1.0,
+        itl_deadline_by_model={"M1": 0.1},
+        primal_config=PrimalConfig(descent_step_size=0.05, w_latency=1.0, w_throughput=0.0, w_switch=0.0),
+        voltage_dual_config=VoltageDualConfig(v_min=0.95, v_max=1.05, ascent_step_size=0.5),
+        feasible_batch_sizes=[8, 16, 32, 64, 128],
+        latency_dual_step_size=1.0,
         dt_s=Fraction(1),
     )
 
@@ -163,7 +166,7 @@ def test_ofo_uses_observed_latency_for_dual_update():
 
     action = ctrl.step(SimulationClock(Fraction(1)), dc, grid, events)
     assert len(action.commands) == 1
-    assert ctrl.mu_by_model["M1"] > 0.0
+    assert ctrl.latency_dual_by_model["M1"] > 0.0
 
 
 def test_ofo_requires_observed_latency_map():

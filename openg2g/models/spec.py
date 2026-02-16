@@ -14,10 +14,9 @@ class LLMInferenceModelSpec:
         num_replicas: Total number of replicas of this model across the datacenter.
         gpus_per_replica: GPUs allocated to each replica (determines model
             parallelism and per-replica power draw).
+        initial_batch_size: Initial batch size for this model.
         feasible_batch_sizes: Allowed batch sizes for OFO control.  Baseline
             mode only uses the first (or only) entry.
-        initial_batch_size: Initial batch size.  Defaults to the maximum of
-            `feasible_batch_sizes`.
         itl_deadline_s: Per-model inter-token latency deadline for the OFO
             latency dual (seconds).  Ignored in baseline mode.
     """
@@ -25,8 +24,8 @@ class LLMInferenceModelSpec:
     model_label: str
     num_replicas: int
     gpus_per_replica: int
+    initial_batch_size: int
     feasible_batch_sizes: tuple[int, ...] = (128,)
-    initial_batch_size: int | None = None
     itl_deadline_s: float | None = None
 
     def __post_init__(self) -> None:
@@ -36,18 +35,8 @@ class LLMInferenceModelSpec:
             raise ValueError(f"num_replicas must be >= 0, got {self.num_replicas}.")
         if self.gpus_per_replica < 1:
             raise ValueError(f"gpus_per_replica must be >= 1, got {self.gpus_per_replica}.")
-        if self.initial_batch_size is not None and self.initial_batch_size <= 0:
+        if self.initial_batch_size <= 0:
             raise ValueError(f"initial_batch_size must be > 0, got {self.initial_batch_size}.")
-
-    @property
-    def effective_initial_batch_size(self) -> int:
-        """Initial batch size, defaulting to max of feasible_batch_sizes."""
-        if self.initial_batch_size is not None:
-            return self.initial_batch_size
-        return max(self.feasible_batch_sizes)
-
-
-ModelSpec = LLMInferenceModelSpec
 
 
 @dataclass(frozen=True)
@@ -80,7 +69,7 @@ class LLMInferenceWorkload:
     @property
     def initial_batch_size_by_model(self) -> dict[str, int]:
         """Per-model initial batch sizes."""
-        return {m.model_label: m.effective_initial_batch_size for m in self.models}
+        return {m.model_label: m.initial_batch_size for m in self.models}
 
     @property
     def itl_deadline_by_model(self) -> dict[str, float]:

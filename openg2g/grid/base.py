@@ -39,9 +39,9 @@ class GridBackend(ABC):
     def step(
         self,
         clock: SimulationClock,
-        load_trace_w: list[ThreePhase],
+        power_samples_w: list[ThreePhase],
         *,
-        interval_start_w: ThreePhase | None = None,
+        interval_start_power_w: ThreePhase | None = None,
     ) -> GridState:
         """Advance one native timestep and return state for this step."""
 
@@ -54,8 +54,8 @@ class GridBackend(ABC):
         """Return voltage magnitudes in `v_index` order."""
 
     @abstractmethod
-    def estimate_H(self, dp_kw: float = 100.0) -> tuple[np.ndarray, np.ndarray]:
-        """Estimate `H = dv/dp` and return `(H, v0)`."""
+    def estimate_sensitivity(self, perturbation_kw: float = 100.0) -> tuple[np.ndarray, np.ndarray]:
+        """Estimate voltage sensitivity matrix (H = dv/dp) and return ``(H, v0)``."""
 
     def bind_event_emitter(self, emitter: EventEmitter) -> None:  # noqa: B027
         """Attach a clock-bound emitter for backend-originated events."""

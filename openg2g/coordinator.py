@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import warnings
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -21,6 +22,8 @@ from openg2g.types import (
     GridState,
     ThreePhase,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _gcd_fraction(a: Fraction, b: Fraction) -> Fraction:
@@ -43,9 +46,9 @@ class SimulationLog:
         actions: Every `ControlAction` emitted by controllers.
         commands: Flattened list of all commands from all actions.
         time_s: Simulation time at each grid step (seconds).
-        Va: DC-bus voltage phase A at each grid step (pu).
-        Vb: DC-bus voltage phase B at each grid step (pu).
-        Vc: DC-bus voltage phase C at each grid step (pu).
+        voltage_a_pu: DC-bus voltage phase A at each grid step (pu).
+        voltage_b_pu: DC-bus voltage phase B at each grid step (pu).
+        voltage_c_pu: DC-bus voltage phase C at each grid step (pu).
         kW_A: DC load power phase A at each grid step (kW).
         kW_B: DC load power phase B at each grid step (kW).
         kW_C: DC load power phase C at each grid step (kW).
@@ -60,9 +63,9 @@ class SimulationLog:
     commands: list[Command] = field(default_factory=list)
 
     time_s: list[float] = field(default_factory=list)
-    Va: list[float] = field(default_factory=list)
-    Vb: list[float] = field(default_factory=list)
-    Vc: list[float] = field(default_factory=list)
+    voltage_a_pu: list[float] = field(default_factory=list)
+    voltage_b_pu: list[float] = field(default_factory=list)
+    voltage_c_pu: list[float] = field(default_factory=list)
     kW_A: list[float] = field(default_factory=list)
     kW_B: list[float] = field(default_factory=list)
     kW_C: list[float] = field(default_factory=list)
@@ -82,9 +85,9 @@ class SimulationLog:
             if dc_bus in state.voltages
             else ThreePhase(a=float("nan"), b=float("nan"), c=float("nan"))
         )
-        self.Va.append(v_dc.a)
-        self.Vb.append(v_dc.b)
-        self.Vc.append(v_dc.c)
+        self.voltage_a_pu.append(v_dc.a)
+        self.voltage_b_pu.append(v_dc.b)
+        self.voltage_c_pu.append(v_dc.c)
 
     def record_action(self, action: ControlAction) -> None:
         self.actions.append(action)
@@ -106,16 +109,10 @@ class SimulationLog:
         self.events.append(event)
         if event.topic == "datacenter.batch_size.updated":
             if "batch_size_by_model" not in event.data:
-                raise ValueError(
-                    "Event datacenter.batch_size.updated missing required "
-                    "data['batch_size_by_model']."
-                )
+                raise ValueError("Event datacenter.batch_size.updated missing required data['batch_size_by_model'].")
             batch_map = event.data["batch_size_by_model"]
             if not isinstance(batch_map, dict):
-                raise ValueError(
-                    "Event datacenter.batch_size.updated requires "
-                    "data['batch_size_by_model'] as dict."
-                )
+                raise ValueError("Event datacenter.batch_size.updated requires data['batch_size_by_model'] as dict.")
             self.record_batch({str(k): int(v) for k, v in batch_map.items()})
 
 
@@ -129,7 +126,7 @@ class Coordinator:
         datacenter: Datacenter backend (offline or online).
         grid: OpenDSS grid simulator.
         controllers: List of controllers, applied in order each tick.
-        T_total_s: Total simulation duration (integer seconds).
+        total_duration_s: Total simulation duration (integer seconds).
         dc_bus: Bus name for DC voltage logging.
         live: If True, synchronize with wall-clock time.
     """
@@ -139,14 +136,14 @@ class Coordinator:
         datacenter: DatacenterBackend,
         grid: GridBackend,
         controllers: Sequence[Controller[Any, Any]],
-        T_total_s: int,
+        total_duration_s: int,
         dc_bus: str = "671",
         live: bool = False,
     ) -> None:
         self.datacenter = datacenter
         self.grid = grid
         self.controllers = list(controllers)
-        self.T_total_s = int(T_total_s)
+        self.total_duration_s = int(total_duration_s)
         self.dc_bus = str(dc_bus)
 
         # Compute tick as GCD of all component periods
@@ -169,11 +166,10 @@ class Coordinator:
                     f"< dt_grid ({grid.dt_s}): controller may read stale voltages.",
                     stacklevel=2,
                 )
-        n_ticks_estimate = Fraction(self.T_total_s) / tick
+        n_ticks_estimate = Fraction(self.total_duration_s) / tick
         if n_ticks_estimate > 10_000_000:
             warnings.warn(
-                f"Simulation will run {int(n_ticks_estimate)} ticks. "
-                f"This may be slow. Consider coarser time steps.",
+                f"Simulation will run {int(n_ticks_estimate)} ticks. This may be slow. Consider coarser time steps.",
                 stacklevel=2,
             )
 
@@ -191,10 +187,7 @@ class Coordinator:
             if not dc_ok:
                 expected = " | ".join(t.__name__ for t in dc_types)
                 got = type(self.datacenter).__name__
-                raise TypeError(
-                    f"{ctrl.__class__.__name__} ({sig}) requires datacenter "
-                    f"type {expected}, got {got}."
-                )
+                raise TypeError(f"{ctrl.__class__.__name__} ({sig}) requires datacenter type {expected}, got {got}.")
 
             grid_types = ctrl.compatible_grid_types()
             try:
@@ -204,9 +197,7 @@ class Coordinator:
             if not grid_ok:
                 expected = " | ".join(t.__name__ for t in grid_types)
                 got = type(self.grid).__name__
-                raise TypeError(
-                    f"{ctrl.__class__.__name__} ({sig}) requires grid type {expected}, got {got}."
-                )
+                raise TypeError(f"{ctrl.__class__.__name__} ({sig}) requires grid type {expected}, got {got}.")
 
     def run(self) -> SimulationLog:
         """Run the full simulation and return the log."""
@@ -221,13 +212,22 @@ class Coordinator:
         dc_buffer: list[ThreePhase] = []
         interval_start_power: ThreePhase | None = None
 
-        ratio = Fraction(self.T_total_s) / self.clock.tick_s
+        ratio = Fraction(self.total_duration_s) / self.clock.tick_s
         if ratio.denominator != 1:
             raise ValueError(
-                f"T_total_s ({self.T_total_s}) is not an exact multiple of "
-                f"tick_s ({self.clock.tick_s})"
+                f"total_duration_s ({self.total_duration_s}) is not an exact multiple of tick_s ({self.clock.tick_s})"
             )
         n_ticks = int(ratio)
+
+        logger.info(
+            "Starting simulation: %d s, tick=%s s, %d ticks, dt_dc=%s s, dt_grid=%s s, %d controller(s)",
+            self.total_duration_s,
+            self.clock.tick_s,
+            n_ticks,
+            self.datacenter.dt_s,
+            self.grid.dt_s,
+            len(self.controllers),
+        )
 
         for _ in range(n_ticks):
             # 1. Datacenter step (if due)
@@ -242,7 +242,7 @@ class Coordinator:
                     grid_state = self.grid.step(
                         self.clock,
                         list(dc_buffer),
-                        interval_start_w=interval_start_power,
+                        interval_start_power_w=interval_start_power,
                     )
                     last_power = dc_buffer[-1]
                     log.record_power(last_power)
@@ -255,7 +255,7 @@ class Coordinator:
                     grid_state = self.grid.step(
                         self.clock,
                         [interval_start_power],
-                        interval_start_w=None,
+                        interval_start_power_w=None,
                     )
                     log.record_power(interval_start_power)
                     log.record_grid(grid_state, dc_bus=self.dc_bus)
@@ -275,4 +275,10 @@ class Coordinator:
 
             self.clock.advance()
 
+        logger.info(
+            "Simulation complete: %d grid steps, %d DC steps, %d control actions",
+            len(log.grid_states),
+            len(log.dc_states),
+            len(log.actions),
+        )
         return log

@@ -220,9 +220,7 @@ class TrainingRun:
 
     def __post_init__(self) -> None:
         if self.t_end < self.t_start:
-            raise ValueError(
-                f"TrainingRun t_end ({self.t_end}) must be >= t_start ({self.t_start})."
-            )
+            raise ValueError(f"TrainingRun t_end ({self.t_end}) must be >= t_start ({self.t_start}).")
         if self.n_gpus < 0:
             raise ValueError(f"TrainingRun n_gpus must be >= 0, got {self.n_gpus}.")
 
@@ -263,10 +261,7 @@ class TrainingSchedule:
         return bool(self._entries)
 
     def __repr__(self) -> str:
-        parts = [
-            f"TrainingRun(t_start={r.t_start}, t_end={r.t_end}, n_gpus={r.n_gpus})"
-            for r in self._entries
-        ]
+        parts = [f"TrainingRun(t_start={r.t_start}, t_end={r.t_end}, n_gpus={r.n_gpus})" for r in self._entries]
         return " | ".join(parts)
 
 
@@ -289,9 +284,7 @@ class ServerRamp:
 
     def __post_init__(self) -> None:
         if self.t_end < self.t_start:
-            raise ValueError(
-                f"ServerRamp t_end ({self.t_end}) must be >= t_start ({self.t_start})."
-            )
+            raise ValueError(f"ServerRamp t_end ({self.t_end}) must be >= t_start ({self.t_start}).")
         if not (0.0 <= self.target <= 1.0):
             raise ValueError(f"ServerRamp target must be in [0.0, 1.0], got {self.target}.")
 
@@ -337,10 +330,7 @@ class ServerRampSchedule:
         return bool(self._entries)
 
     def __repr__(self) -> str:
-        parts = [
-            f"ServerRamp(t_start={r.t_start}, t_end={r.t_end}, target={r.target})"
-            for r in self._entries
-        ]
+        parts = [f"ServerRamp(t_start={r.t_start}, t_end={r.t_end}, target={r.target})" for r in self._entries]
         return " | ".join(parts)
 
     def fraction_at(self, t: float | np.ndarray) -> float | np.ndarray:

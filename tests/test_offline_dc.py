@@ -13,7 +13,7 @@ from openg2g.datacenter.offline import (
     TraceByBatchCache,
     build_periodic_per_gpu_template,
 )
-from openg2g.models.spec import ModelSpec
+from openg2g.models.spec import LLMInferenceModelSpec
 from openg2g.types import Command, OfflineDatacenterState
 
 
@@ -37,18 +37,17 @@ def _make_simple_cache(dt: float = 0.1, T: float = 100.0) -> TraceByBatchCache:
         }
 
     cache = TraceByBatchCache(traces_by_batch)
-    cache.build_templates(T=T, dt=dt)
+    cache.build_templates(duration_s=T, timestep_s=dt)
     return cache
 
 
 def test_step_returns_offline_state():
     cache = _make_simple_cache()
-    model = ModelSpec(model_label="TestModel", num_replicas=10, gpus_per_replica=1)
+    model = LLMInferenceModelSpec(model_label="TestModel", num_replicas=10, gpus_per_replica=1, initial_batch_size=128)
     dc = OfflineDatacenter(
         trace_cache=cache,
         models=[model],
-        dt=Fraction(1, 10),
-        batch_init=128,
+        timestep_s=Fraction(1, 10),
         gpus_per_server=8,
         seed=0,
         chunk_steps=10,
@@ -72,12 +71,11 @@ def test_step_returns_offline_state():
 def test_step_produces_correct_number_of_states():
     """Stepping through a chunk should produce chunk_steps states."""
     cache = _make_simple_cache()
-    model = ModelSpec(model_label="TestModel", num_replicas=10, gpus_per_replica=1)
+    model = LLMInferenceModelSpec(model_label="TestModel", num_replicas=10, gpus_per_replica=1, initial_batch_size=128)
     dc = OfflineDatacenter(
         trace_cache=cache,
         models=[model],
-        dt=Fraction(1, 10),
-        batch_init=128,
+        timestep_s=Fraction(1, 10),
         gpus_per_server=8,
         seed=0,
         chunk_steps=5,
@@ -102,12 +100,11 @@ def test_step_produces_correct_number_of_states():
 def test_batch_change_takes_effect_at_chunk_boundary():
     """Batch change is recorded immediately but applied at the next chunk."""
     cache = _make_simple_cache()
-    model = ModelSpec(model_label="TestModel", num_replicas=10, gpus_per_replica=1)
+    model = LLMInferenceModelSpec(model_label="TestModel", num_replicas=10, gpus_per_replica=1, initial_batch_size=128)
     dc = OfflineDatacenter(
         trace_cache=cache,
         models=[model],
-        dt=Fraction(1, 10),
-        batch_init=128,
+        timestep_s=Fraction(1, 10),
         gpus_per_server=8,
         seed=0,
         chunk_steps=10,
@@ -153,9 +150,7 @@ def test_build_periodic_template_shape():
     t = np.linspace(0, 10, 200)
     p = np.sin(t) * 100 + 200
 
-    tpl = build_periodic_per_gpu_template(
-        trace_t=t, trace_p_total=p, measured_gpus=2, dt=0.1, T=50.0
-    )
+    tpl = build_periodic_per_gpu_template(trace_t=t, trace_p_total=p, measured_gpus=2, timestep_s=0.1, duration_s=50.0)
 
     expected_steps = int(np.ceil(50.0 / 0.1)) + 1
     assert tpl.shape[0] == expected_steps
@@ -164,7 +159,7 @@ def test_build_periodic_template_shape():
 
 def test_offline_datacenter_emits_observed_itl_when_latency_fits_is_set():
     cache = _make_simple_cache()
-    model = ModelSpec(model_label="TestModel", num_replicas=10, gpus_per_replica=1)
+    model = LLMInferenceModelSpec(model_label="TestModel", num_replicas=10, gpus_per_replica=1, initial_batch_size=128)
     fake_params = ITLMixtureModel(
         loc=0.01,
         pi_steady=0.8,
@@ -178,15 +173,14 @@ def test_offline_datacenter_emits_observed_itl_when_latency_fits_is_set():
     dc = OfflineDatacenter(
         trace_cache=cache,
         models=[model],
-        dt=Fraction(1, 10),
-        batch_init=128,
+        timestep_s=Fraction(1, 10),
         gpus_per_server=8,
         seed=0,
         chunk_steps=10,
         ramp_t_start=9999,
         ramp_t_end=9999,
         ramp_floor=1.0,
-        latency_fits=latency_fits,
+        itl_distributions=latency_fits,
     )
 
     state = dc.step(SimulationClock(tick_s=Fraction(1, 10)))

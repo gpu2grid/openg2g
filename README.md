@@ -76,14 +76,14 @@ Simulation data (power traces, latency fits, logistic fits) can be built from ML
 
 ### 1. Build simulation data from benchmarks
 
-The build script reads benchmark data and produces the trace CSVs, latency fit parameters, and logistic fit parameters that the simulation consumes. Model selection is controlled by a JSON config file ([`data/openg2g_models.json`](data/openg2g_models.json)).
+The build script reads benchmark data and produces the trace CSVs, latency fit parameters, and logistic fit parameters that the simulation consumes. Model selection is controlled by a JSON config file ([`data/models.json`](data/models.json)).
 
-Generated artifacts go into `data/generated/` (gitignored). Source files (`data/*.py`, `data/openg2g_models.json`) are versioned.
+Generated artifacts go into `data/generated/` (gitignored). Source files (`data/*.py`, `data/models.json`) are versioned.
 
 ```bash
 uv run python data/build_mlenergy_data.py \
   --mlenergy-data-dir /path/to/compiled/data \
-  --config data/openg2g_models.json \
+  --config data/models.json \
   --out-dir data/generated
 ```
 

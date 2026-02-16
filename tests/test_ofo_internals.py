@@ -1,4 +1,4 @@
-"""Tests for OFO controller internals — PerModelPrimalX, FullNetworkVoltageDual,
+"""Tests for OFO controller internals — PrimalBatchOptimizer, VoltageDualVariables,
 phase_share_from_placement.
 
 Focuses on edge cases, projections, NaN handling, and shape validation —
@@ -13,10 +13,10 @@ import pytest
 from mlenergy_data.modeling import LogisticModel
 
 from openg2g.controller.ofo import (
-    FullNetworkVoltageDual,
-    PerModelPrimalX,
-    PrimalCfg,
-    VoltageDualCfg,
+    PrimalBatchOptimizer,
+    PrimalConfig,
+    VoltageDualConfig,
+    VoltageDualVariables,
     phase_share_from_placement,
 )
 from openg2g.models.spec import LLMInferenceModelSpec
@@ -29,35 +29,35 @@ def _trivial_logistic(L: float = 100.0, x0: float = 5.0, k: float = 1.0, b0: flo
 
 def _make_primal(
     *,
-    batch_set: list[int] | None = None,
-    cfg: PrimalCfg | None = None,
-) -> PerModelPrimalX:
-    """Build a PerModelPrimalX with a single model and trivial fits."""
-    if batch_set is None:
-        batch_set = [8, 16, 32, 64, 128]
-    if cfg is None:
-        cfg = PrimalCfg()
-    model = LLMInferenceModelSpec("M", num_replicas=10, gpus_per_replica=1)
+    feasible_batch_sizes: list[int] | None = None,
+    config: PrimalConfig | None = None,
+) -> PrimalBatchOptimizer:
+    """Build a PrimalBatchOptimizer with a single model and trivial fits."""
+    if feasible_batch_sizes is None:
+        feasible_batch_sizes = [8, 16, 32, 64, 128]
+    if config is None:
+        config = PrimalConfig()
+    model = LLMInferenceModelSpec("M", num_replicas=10, gpus_per_replica=1, initial_batch_size=128)
     fit = _trivial_logistic()
-    return PerModelPrimalX(
+    return PrimalBatchOptimizer(
         models=[model],
-        batch_set=batch_set,
+        feasible_batch_sizes=feasible_batch_sizes,
         power_fits={"M": fit},
         latency_fits={"M": fit},
         throughput_fits={"M": fit},
-        cfg=cfg,
+        config=config,
     )
 
 
-def _step_no_gradient(p: PerModelPrimalX) -> dict[str, int]:
+def _step_no_gradient(p: PrimalBatchOptimizer) -> dict[str, int]:
     """Run a step with zero gradient (all weights and duals zero)."""
     n = 6
     return p.step(
-        eta_vec=np.zeros(n),
-        H=np.zeros((n, 3)),
+        voltage_dual_diff=np.zeros(n),
+        sensitivity_matrix=np.zeros((n, 3)),
         phase_share_by_model={},
-        mu_by_model={"M": 0.0},
-        w_by_model={"M": 0.0},
+        latency_dual_by_model={"M": 0.0},
+        replica_count_by_model={"M": 0.0},
     )
 
 
@@ -66,14 +66,14 @@ class TestBatchDiscretization:
         """Initializing to any feasible batch size and taking a zero-gradient
         step should return that same batch size (log2 -> discrete round-trip)."""
         for b in [8, 16, 32, 64, 128]:
-            p = _make_primal(batch_set=[8, 16, 32, 64, 128])
+            p = _make_primal(feasible_batch_sizes=[8, 16, 32, 64, 128])
             p.init_from_batches({"M": b})
             assert _step_no_gradient(p)["M"] == b
 
     def test_single_batch_set(self) -> None:
         """With only one feasible batch size, discretization should always
         return it regardless of continuous x."""
-        p = _make_primal(batch_set=[64])
+        p = _make_primal(feasible_batch_sizes=[64])
         p.init_from_batches({"M": 64})
         assert _step_no_gradient(p)["M"] == 64
 
@@ -81,45 +81,45 @@ class TestBatchDiscretization:
 class TestInitFromBatches:
     def test_missing_model_defaults_to_max(self) -> None:
         """Models not in the init dict should default to the max batch size."""
-        p = _make_primal(batch_set=[8, 16, 32, 64, 128])
+        p = _make_primal(feasible_batch_sizes=[8, 16, 32, 64, 128])
         p.init_from_batches({})
-        assert p.x_by_model["M"] == pytest.approx(math.log2(128))
+        assert p.log_batch_size_by_model["M"] == pytest.approx(math.log2(128))
 
     def test_x_prev_matches_x(self) -> None:
         """After init, x_prev should equal x (no switching cost on first step)."""
-        p = _make_primal(batch_set=[8, 16, 32, 64, 128])
+        p = _make_primal(feasible_batch_sizes=[8, 16, 32, 64, 128])
         p.init_from_batches({"M": 64})
-        assert p.x_prev_by_model["M"] == p.x_by_model["M"]
+        assert p.prev_log_batch_size_by_model["M"] == p.log_batch_size_by_model["M"]
 
 
 class TestVoltageDualUpdate:
     def test_no_violation_stays_zero(self) -> None:
         """Voltages within bounds should leave both duals at zero."""
-        vd = FullNetworkVoltageDual(3, VoltageDualCfg(v_min=0.95, v_max=1.05, rho_v=1.0))
+        vd = VoltageDualVariables(3, VoltageDualConfig(v_min=0.95, v_max=1.05, ascent_step_size=1.0))
         vd.update(np.array([1.0, 1.0, 1.0]))
-        np.testing.assert_array_equal(vd.lam_low, np.zeros(3))
-        np.testing.assert_array_equal(vd.lam_high, np.zeros(3))
+        np.testing.assert_array_equal(vd.dual_undervoltage, np.zeros(3))
+        np.testing.assert_array_equal(vd.dual_overvoltage, np.zeros(3))
 
     def test_dual_projects_to_nonneg(self) -> None:
         """After a violation clears, the dual should be clamped to zero
         (not go negative), preserving the [.]+ projection."""
-        vd = FullNetworkVoltageDual(1, VoltageDualCfg(v_min=0.95, v_max=1.05, rho_v=1.0))
+        vd = VoltageDualVariables(1, VoltageDualConfig(v_min=0.95, v_max=1.05, ascent_step_size=1.0))
         vd.update(np.array([0.93]))
         vd.update(np.array([1.0]))
-        assert vd.lam_low[0] == 0.0
+        assert vd.dual_undervoltage[0] == 0.0
 
     def test_eta_sign_convention(self) -> None:
-        """eta = lam_high - lam_low should be negative for undervoltage
+        """eta = dual_overvoltage - dual_undervoltage should be negative for undervoltage
         (drives power down) and positive for overvoltage."""
-        vd = FullNetworkVoltageDual(2, VoltageDualCfg(v_min=0.95, v_max=1.05, rho_v=1.0))
+        vd = VoltageDualVariables(2, VoltageDualConfig(v_min=0.95, v_max=1.05, ascent_step_size=1.0))
         vd.update(np.array([0.93, 1.07]))
-        eta = vd.eta()
+        eta = vd.dual_difference()
         assert eta[0] < 0
         assert eta[1] > 0
 
     def test_shape_mismatch_raises(self) -> None:
         """Passing a v_hat with wrong length should raise ValueError."""
-        vd = FullNetworkVoltageDual(3, VoltageDualCfg())
+        vd = VoltageDualVariables(3, VoltageDualConfig())
         with pytest.raises(ValueError, match="len 2 but duals have len 3"):
             vd.update(np.array([1.0, 1.0]))
 
@@ -146,8 +146,14 @@ class TestPrimalStep:
         """With all gradient weights and duals set to zero, the batch size
         should remain unchanged after a step."""
         p = _make_primal(
-            batch_set=[8, 16, 32, 64, 128],
-            cfg=PrimalCfg(eta_primal=0.1, w_latency=0.0, w_throughput=0.0, w_switch=0.0, k_v=0.0),
+            feasible_batch_sizes=[8, 16, 32, 64, 128],
+            config=PrimalConfig(
+                descent_step_size=0.1,
+                w_latency=0.0,
+                w_throughput=0.0,
+                w_switch=0.0,
+                voltage_gradient_scale=0.0,
+            ),
         )
         p.init_from_batches({"M": 32})
         batch = _step_no_gradient(p)
@@ -157,34 +163,46 @@ class TestPrimalStep:
         """A positive latency dual (mu > 0) should decrease x, since the
         logistic latency fit has dL/dx > 0 (latency increases with batch)."""
         p = _make_primal(
-            batch_set=[8, 16, 32, 64, 128],
-            cfg=PrimalCfg(eta_primal=0.5, w_latency=0.0, w_throughput=0.0, w_switch=0.0, k_v=0.0),
+            feasible_batch_sizes=[8, 16, 32, 64, 128],
+            config=PrimalConfig(
+                descent_step_size=0.5,
+                w_latency=0.0,
+                w_throughput=0.0,
+                w_switch=0.0,
+                voltage_gradient_scale=0.0,
+            ),
         )
         p.init_from_batches({"M": 64})
-        x_before = p.x_by_model["M"]
+        x_before = p.log_batch_size_by_model["M"]
         p.step(
-            eta_vec=np.zeros(6),
-            H=np.zeros((6, 3)),
+            voltage_dual_diff=np.zeros(6),
+            sensitivity_matrix=np.zeros((6, 3)),
             phase_share_by_model={},
-            mu_by_model={"M": 5.0},
-            w_by_model={"M": 0.0},
+            latency_dual_by_model={"M": 5.0},
+            replica_count_by_model={"M": 0.0},
         )
-        assert p.x_by_model["M"] < x_before
+        assert p.log_batch_size_by_model["M"] < x_before
 
     def test_nan_mu_treated_as_zero(self) -> None:
         """NaN mu (from zero-replica models) should be treated as zero,
         producing no latency gradient contribution."""
         p = _make_primal(
-            batch_set=[8, 16, 32, 64, 128],
-            cfg=PrimalCfg(eta_primal=0.1, w_latency=0.0, w_throughput=0.0, w_switch=0.0, k_v=0.0),
+            feasible_batch_sizes=[8, 16, 32, 64, 128],
+            config=PrimalConfig(
+                descent_step_size=0.1,
+                w_latency=0.0,
+                w_throughput=0.0,
+                w_switch=0.0,
+                voltage_gradient_scale=0.0,
+            ),
         )
         p.init_from_batches({"M": 32})
         batch = p.step(
-            eta_vec=np.zeros(6),
-            H=np.zeros((6, 3)),
+            voltage_dual_diff=np.zeros(6),
+            sensitivity_matrix=np.zeros((6, 3)),
             phase_share_by_model={},
-            mu_by_model={"M": float("nan")},
-            w_by_model={"M": 0.0},
+            latency_dual_by_model={"M": float("nan")},
+            replica_count_by_model={"M": 0.0},
         )
         assert batch["M"] == 32
 
@@ -192,18 +210,22 @@ class TestPrimalStep:
         """Even with an extreme gradient, x should stay within
         [log2(min_batch), log2(max_batch)] after projection."""
         p = _make_primal(
-            batch_set=[8, 128],
-            cfg=PrimalCfg(
-                eta_primal=100.0, w_latency=0.0, w_throughput=0.0, w_switch=0.0, k_v=1e9
+            feasible_batch_sizes=[8, 128],
+            config=PrimalConfig(
+                descent_step_size=100.0,
+                w_latency=0.0,
+                w_throughput=0.0,
+                w_switch=0.0,
+                voltage_gradient_scale=1e9,
             ),
         )
         p.init_from_batches({"M": 64})
         p.step(
-            eta_vec=np.ones(6) * 100.0,
-            H=np.ones((6, 3)),
+            voltage_dual_diff=np.ones(6) * 100.0,
+            sensitivity_matrix=np.ones((6, 3)),
             phase_share_by_model={"M": np.array([0.5, 0.3, 0.2])},
-            mu_by_model={"M": 0.0},
-            w_by_model={"M": 100.0},
+            latency_dual_by_model={"M": 0.0},
+            replica_count_by_model={"M": 100.0},
         )
-        assert p.x_by_model["M"] >= math.log2(8)
-        assert p.x_by_model["M"] <= math.log2(128)
+        assert p.log_batch_size_by_model["M"] >= math.log2(8)
+        assert p.log_batch_size_by_model["M"] <= math.log2(128)

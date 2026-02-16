@@ -62,9 +62,9 @@ class _Grid(GridBackend):
     def step(
         self,
         clock: SimulationClock,
-        load_trace_w: list[ThreePhase],
+        power_samples_w: list[ThreePhase],
         *,
-        interval_start_w: ThreePhase | None = None,
+        interval_start_power_w: ThreePhase | None = None,
     ) -> GridState:
 
         return GridState(
@@ -80,7 +80,7 @@ class _Grid(GridBackend):
 
         return np.array([1.0], dtype=float)
 
-    def estimate_H(self, dp_kw: float = 100.0):
+    def estimate_sensitivity(self, perturbation_kw: float = 100.0):
         import numpy as np
 
         return np.zeros((1, 3), dtype=float), np.array([1.0], dtype=float)
@@ -108,9 +108,7 @@ def test_controller_rejects_reversed_generic_order():
             exec_body=lambda ns: ns.update(
                 {
                     "dt_s": property(lambda self: Fraction(1)),
-                    "step": lambda self, clock, datacenter, grid, events: ControlAction(
-                        commands=[]
-                    ),
+                    "step": lambda self, clock, datacenter, grid, events: ControlAction(commands=[]),
                 }
             ),
         )
@@ -128,9 +126,7 @@ def test_controller_rejects_random_classes_in_generics():
             exec_body=lambda ns: ns.update(
                 {
                     "dt_s": property(lambda self: Fraction(1)),
-                    "step": lambda self, clock, datacenter, grid, events: ControlAction(
-                        commands=[]
-                    ),
+                    "step": lambda self, clock, datacenter, grid, events: ControlAction(commands=[]),
                 }
             ),
         )
@@ -148,9 +144,7 @@ def test_controller_rejects_non_abc_subclass_for_grid_generic():
             exec_body=lambda ns: ns.update(
                 {
                     "dt_s": property(lambda self: Fraction(1)),
-                    "step": lambda self, clock, datacenter, grid, events: ControlAction(
-                        commands=[]
-                    ),
+                    "step": lambda self, clock, datacenter, grid, events: ControlAction(commands=[]),
                 }
             ),
         )

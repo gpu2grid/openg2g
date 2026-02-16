@@ -22,37 +22,35 @@ class TrainingOverlayCache:
 
         df = pd.read_csv(train_csv)
         if "t_s" not in df.columns or "power_W" not in df.columns:
-            raise ValueError(
-                f"{train_csv} must have columns: t_s, power_W. Got {list(df.columns)}"
-            )
+            raise ValueError(f"{train_csv} must have columns: t_s, power_W. Got {list(df.columns)}")
 
-        t_tr = df["t_s"].to_numpy(float)
-        p_tr = np.clip(df["power_W"].to_numpy(float), 0.0, None)
+        training_time = df["t_s"].to_numpy(float)
+        raw_power = np.clip(df["power_W"].to_numpy(float), 0.0, None)
 
-        if np.any(np.diff(t_tr) < 0):
-            idx = np.argsort(t_tr)
-            t_tr = t_tr[idx]
-            p_tr = p_tr[idx]
+        if np.any(np.diff(training_time) < 0):
+            idx = np.argsort(training_time)
+            training_time = training_time[idx]
+            raw_power = raw_power[idx]
 
-        t_tr = t_tr - t_tr[0]
-        if len(t_tr) < 2:
+        training_time = training_time - training_time[0]
+        if len(training_time) < 2:
             raise ValueError("Training trace must have >=2 samples.")
-        period = float(t_tr[-1] - t_tr[0])
+        period = float(training_time[-1] - training_time[0])
         if period <= 0:
             raise ValueError("Training trace time span must be positive.")
 
-        peak = float(np.max(p_tr))
+        peak = float(np.max(raw_power))
         if peak <= 0:
             raise ValueError("Training trace has non-positive peak; cannot scale.")
 
-        p_tr_1gpu = p_tr * (float(target_peak_W_per_gpu) / peak)
+        per_gpu_power = raw_power * (float(target_peak_W_per_gpu) / peak)
 
         self.train_csv = Path(train_csv)
-        self.t_tr = t_tr
-        self.p_tr_1gpu = p_tr_1gpu
+        self.training_time = training_time
+        self.per_gpu_power = per_gpu_power
         self.period = period
         self.target_peak_W_per_gpu = float(target_peak_W_per_gpu)
-        self.peak_1gpu_after_scaling = float(np.max(p_tr_1gpu))
+        self.peak_1gpu_after_scaling = float(np.max(per_gpu_power))
 
     def eval_total_on_grid(
         self,
@@ -83,10 +81,10 @@ class TrainingOverlayCache:
         t_mod = np.mod(t_local, self.period)
         p_local_1gpu = np.interp(
             t_mod,
-            self.t_tr,
-            self.p_tr_1gpu,
-            left=float(self.p_tr_1gpu[0]),
-            right=float(self.p_tr_1gpu[-1]),
+            self.training_time,
+            self.per_gpu_power,
+            left=float(self.per_gpu_power[0]),
+            right=float(self.per_gpu_power[-1]),
         )
         overlay_total[mask] = p_local_1gpu * int(n_train_gpus)
         return overlay_total

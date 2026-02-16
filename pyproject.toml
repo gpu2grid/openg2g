@@ -35,7 +35,7 @@ include = ["openg2g*"]
 
 [tool.ruff]
 target-version = "py310"
-line-length = 99
+line-length = 120
 
 [tool.ruff.lint]
 select = [
@@ -51,6 +51,9 @@ select = [
 ignore = [
     "SIM108",  # ternary operator; prefer explicit if/else for readability
     "RUF046",  # unnecessary int() cast; defensive casting is intentional
+    "RUF001",  # ambiguous unicode; intentional Greek letters in paper cross-refs
+    "RUF002",  # ambiguous unicode in docstrings; same
+    "RUF003",  # ambiguous unicode in comments; same
 ]
 
 [tool.ruff.lint.isort]
