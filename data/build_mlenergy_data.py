@@ -9,7 +9,6 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import math
 from pathlib import Path
 from typing import Any, cast
 
@@ -18,7 +17,7 @@ import pandas as pd
 from mlenergy_data.modeling import ITLMixtureModel, LogisticModel
 from mlenergy_data.records import LLMRuns
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("build_mlenergy_data")
 
 
 def _emit_trace_bank(*, tl: pd.DataFrame, dt_s: float, out_dir: Path) -> pd.DataFrame:
@@ -122,65 +121,6 @@ def _emit_logistic_fits(
     df = pd.DataFrame(rows).sort_values(["model_label", "num_gpus", "metric"]).reset_index(drop=True)
     df.to_csv(out_dir / "logistic_fits.csv", index=False)
     return df
-
-
-def _smooth_chunked_itl(itl_list: list[float]) -> list[float]:
-    """Spread chunked-prefill ITL across the tokens it covers."""
-    if not itl_list:
-        return []
-    first = 0
-    for i, x in enumerate(itl_list):
-        if x > 0:
-            first = i
-            break
-    else:
-        return []
-    filtered = itl_list[first:]
-    out: list[float] = []
-    i = 0
-    while i < len(filtered):
-        if filtered[i] <= 0:
-            i += 1
-            continue
-        latency = filtered[i]
-        j = i + 1
-        while j < len(filtered) and filtered[j] == 0:
-            j += 1
-        n = j - i
-        if n == 1:
-            out.append(float(latency))
-        else:
-            out.extend([float(latency) / float(n)] * n)
-        i = j
-    return out
-
-
-def _extract_itl_samples(runs: LLMRuns) -> pd.DataFrame:
-    """Extract raw ITL samples from result files."""
-    sample_rows: list[dict[str, Any]] = []
-    for run in runs:
-        rpath = Path(run.results_path)
-        if not rpath.exists():
-            raise FileNotFoundError(f"Missing results file: {rpath}")
-        data = json.loads(rpath.read_text())
-        vals: list[float] = []
-        for req in data.get("results", []):
-            if not req.get("success", False):
-                continue
-            raw_itl = [float(x) for x in req.get("itl", [])]
-            vals.extend(_smooth_chunked_itl(raw_itl))
-        arr = [x for x in vals if x > 0 and math.isfinite(x)]
-        if not arr:
-            raise ValueError(f"No valid ITL samples in run: {run.results_path}")
-        for v in arr:
-            sample_rows.append(
-                {
-                    "num_gpus": run.num_gpus,
-                    "max_num_seqs": run.max_num_seqs,
-                    "itl_s": v,
-                }
-            )
-    return pd.DataFrame(sample_rows)
 
 
 def _emit_latency_fits(
@@ -338,6 +278,7 @@ def main() -> int:
         level=logging.INFO,
         format="%(asctime)s %(name)s %(levelname)s %(message)s",
     )
+    logging.getLogger("httpx").setLevel(logging.WARNING)
 
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -382,7 +323,7 @@ def main() -> int:
         tl["model_label"] = label
         tl_frames.append(tl)
 
-        itl = _extract_itl_samples(subset)
+        itl = subset.inter_token_latencies()
         itl["model_label"] = label
         itl_frames.append(itl)
 
@@ -421,9 +362,6 @@ def main() -> int:
         fit_exclude_batches=fit_exclude_batches,
     )
 
-    itl_samples_df.to_parquet(out_dir / "itl_samples.parquet", index=False)
-    logger.info("Saved %d ITL samples to itl_samples.parquet", len(itl_samples_df))
-
     latency_fits_df = _emit_latency_fits(
         itl_samples_df,
         out_dir,
@@ -449,7 +387,6 @@ def main() -> int:
     logger.info("  traces: %s", out_dir / "traces")
     logger.info("  latency_fits: %s", out_dir / "latency_fits.csv")
     logger.info("  logistic_fits: %s", out_dir / "logistic_fits.csv")
-    logger.info("  itl_samples: %s", out_dir / "itl_samples.parquet")
     logger.info("  summary: %s", out_dir / "summary.csv")
 
     if args.plot:
