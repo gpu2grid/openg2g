@@ -225,8 +225,8 @@ def main(args: argparse.Namespace) -> None:
 
     logger.info("Initializing OpenDSSGrid...")
     grid = OpenDSSGrid(
-        case_dir=str(case_dir),
-        master="IEEE13Nodeckt.dss",
+        dss_case_dir=str(case_dir),
+        dss_master_file="IEEE13Nodeckt.dss",
         dc_bus=dc_bus,
         dc_bus_kv=4.16,
         power_factor=0.95,

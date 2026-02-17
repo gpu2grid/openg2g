@@ -48,8 +48,12 @@ class OpenDSSGrid(GridBackend):
     """OpenDSS-based grid simulator for distribution-level voltage analysis.
 
     Args:
-        case_dir: Absolute path to the directory containing OpenDSS case files.
-        master: Name of the master DSS file (relative to *case_dir*).
+        dss_case_dir: Absolute path to the directory containing OpenDSS case
+            files (e.g. line codes, bus coordinates).
+        dss_master_file: Name of the master DSS file, relative to
+            `dss_case_dir` (e.g. ``"IEEE13Nodeckt.dss"``). OpenDSS resolves
+            all ``redirect`` and ``BusCoords`` paths in the master file
+            relative to this directory.
         dc_bus: Bus name where the datacenter is connected.
         dc_bus_kv: Line-to-line voltage (kV) at the datacenter bus.
         power_factor: Power factor of the datacenter loads.
@@ -74,8 +78,8 @@ class OpenDSSGrid(GridBackend):
     def __init__(
         self,
         *,
-        case_dir: str | Path,
-        master: str,
+        dss_case_dir: str | Path,
+        dss_master_file: str,
         dc_bus: str,
         dc_bus_kv: float,
         power_factor: float,
@@ -88,8 +92,8 @@ class OpenDSSGrid(GridBackend):
     ) -> None:
         _require_dss()
 
-        self._case_dir = str(Path(case_dir).resolve())
-        self._master = str(master)
+        self._case_dir = str(Path(dss_case_dir).resolve())
+        self._master = str(dss_master_file)
         self._dc_bus = str(dc_bus)
         self._dc_bus_kv = float(dc_bus_kv)
         self._power_factor = float(power_factor)

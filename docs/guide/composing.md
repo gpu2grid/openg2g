@@ -141,8 +141,8 @@ tap_schedule = (
 )
 
 grid = OpenDSSGrid(
-    case_dir="examples/ieee13",
-    master="IEEE13Nodeckt.dss",
+    dss_case_dir="examples/ieee13",
+    dss_master_file="IEEE13Nodeckt.dss",
     dc_bus="671",
     dc_bus_kv=4.16,
     power_factor=0.95,
