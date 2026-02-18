@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import math
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
@@ -66,7 +67,7 @@ class PerModelTimeSeries:
 
 
 def extract_per_model_timeseries(
-    dc_states: list[DatacenterState],
+    dc_states: Sequence[DatacenterState],
 ) -> PerModelTimeSeries:
     """Build per-model arrays from a list of ``DatacenterState`` objects.
 

@@ -89,21 +89,21 @@ Simulation data (power traces, latency fits, logistic fits) can be built from ML
 
 ### 1. Build simulation data from benchmarks
 
-The build script reads benchmark data and produces the trace CSVs, latency fit parameters, and logistic fit parameters that the simulation consumes. Model selection is controlled by a JSON config file ([`data/models.json`](data/models.json)).
+The build script reads benchmark data and produces the trace CSVs, latency fit parameters, and logistic fit parameters that the simulation consumes. Model selection is controlled by a JSON config file ([`data/offline/models.json`](data/offline/models.json)).
 
-Generated artifacts go into `data/generated/` (gitignored). Source files (`data/*.py`, `data/models.json`) are versioned.
+Generated artifacts go into `data/generated/` (gitignored). Source files (`data/offline/*.py`, `data/offline/models.json`) are versioned.
 
 ```bash
-uv run python data/build_mlenergy_data.py \
+uv run python data/offline/build_mlenergy_data.py \
   --mlenergy-data-dir /path/to/compiled/data \
-  --config data/models.json \
+  --config data/offline/models.json \
   --out-dir data/generated
 ```
 
 ### 2. Generate a synthetic training power trace
 
 ```bash
-uv run python data/generate_training_trace.py \
+uv run python data/offline/generate_training_trace.py \
   --out-csv data/generated/synthetic_training_trace.csv --seed 2
 ```
 
@@ -111,17 +111,17 @@ uv run python data/generate_training_trace.py \
 
 ```bash
 # Baseline: fixed taps
-uv run python examples/run_baseline.py --mode no-tap \
+uv run python examples/offline/run_baseline.py --mode no-tap \
   --data-dir data/generated \
   --training-trace data/generated/synthetic_training_trace.csv
 
 # Baseline: scheduled tap changes
-uv run python examples/run_baseline.py --mode tap-change \
+uv run python examples/offline/run_baseline.py --mode tap-change \
   --data-dir data/generated \
   --training-trace data/generated/synthetic_training_trace.csv
 
 # OFO closed-loop control
-uv run python examples/run_ofo.py \
+uv run python examples/offline/run_ofo.py \
   --data-dir data/generated \
   --training-trace data/generated/synthetic_training_trace.csv
 ```

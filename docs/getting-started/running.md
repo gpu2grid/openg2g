@@ -2,10 +2,10 @@
 
 OpenG2G ships with example simulations in the `examples/` directory:
 
-- `run_baseline.py` -- uncontrolled baseline (no OFO, capacitor banks active), with two modes:
+- `offline/run_baseline.py` -- uncontrolled baseline (no OFO, capacitor banks active), with two modes:
     - `--mode no-tap` (default) -- fixed tap positions ("No control, no tap")
     - `--mode tap-change` -- scheduled tap changes at t=1500s and t=3300s ("Tap change only")
-- `run_ofo.py` -- OFO closed-loop control with batch size optimization
+- `offline/run_ofo.py` -- OFO closed-loop control with batch size optimization
 
 These correspond to the three evaluation cases in the [GPU-to-Grid paper](https://arxiv.org/abs/2602.05116).
 
@@ -13,7 +13,7 @@ These correspond to the three evaluation cases in the [GPU-to-Grid paper](https:
 
 Both examples require simulation data:
 
-- **Power trace CSVs** -- per-model GPU power traces at various batch sizes, latency fit parameters, and logistic fit parameters. Build from benchmark data with `data/build_mlenergy_data.py` (see the [Data Pipeline](../guide/data-pipeline.md) page) or use the legacy `power_csvs_updated/` directory.
+- **Power trace CSVs** -- per-model GPU power traces at various batch sizes, latency fit parameters, and logistic fit parameters. Build from benchmark data with `data/offline/build_mlenergy_data.py` (see the [Data Pipeline](../guide/data-pipeline.md) page) or use the legacy `power_csvs_updated/` directory.
 - **OpenDSS case files** -- IEEE 13-bus test feeder files, included in the repo at `examples/ieee13/`.
 
 ## Baseline Simulation
@@ -21,8 +21,8 @@ Both examples require simulation data:
 The baseline runs the datacenter at a fixed batch size with OpenDSS capacitor bank controls active. Two modes correspond to two baselines in the paper:
 
 ```bash
-uv run python examples/run_baseline.py                   # "No control, no tap" (default)
-uv run python examples/run_baseline.py --mode tap-change  # "Tap change only"
+uv run python examples/offline/run_baseline.py                   # "No control, no tap" (default)
+uv run python examples/offline/run_baseline.py --mode tap-change  # "Tap change only"
 ```
 
 In `tap-change` mode, regulator taps on phases A and C change at t=1500s and t=3300s.
@@ -47,7 +47,7 @@ Outputs are saved to `outputs/baseline_no-tap/` or `outputs/baseline_tap-change/
 The OFO simulation uses the primal-dual batch size controller:
 
 ```bash
-uv run python examples/run_ofo.py
+uv run python examples/offline/run_ofo.py
 ```
 
 This adds several OFO-specific parameters:

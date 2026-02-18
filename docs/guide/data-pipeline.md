@@ -79,7 +79,7 @@ Two-component lognormal mixture captures bimodal ITL distributions (steady decod
 
 ## Build-Time Pipeline
 
-Raw GPU benchmarks are processed into simulation-ready CSV artifacts by `data/build_mlenergy_data.py`:
+Raw GPU benchmarks are processed into simulation-ready CSV artifacts by `data/offline/build_mlenergy_data.py`:
 
 ```
   ML.ENERGY Benchmark DB              mlenergy-data               OpenG2G simulation
@@ -118,16 +118,16 @@ Raw GPU benchmarks are processed into simulation-ready CSV artifacts by `data/bu
 ### Running the build
 
 ```bash
-python data/build_mlenergy_data.py \
+python data/offline/build_mlenergy_data.py \
   --mlenergy-data-dir /path/to/compiled/data \
-  --config data/models.json \
+  --config data/offline/models.json \
   --out-dir data/generated
 
-python data/generate_training_trace.py \
+python data/offline/generate_training_trace.py \
   --out-csv data/generated/synthetic_training_trace.csv --seed 2
 ```
 
-The config file (`data/models.json`) maps benchmark model IDs to simulation labels.
+The config file (`data/offline/models.json`) maps benchmark model IDs to simulation labels.
 
 ## Runtime Integration
 
@@ -154,11 +154,11 @@ At simulation time, the generated CSV artifacts are consumed at two points:
 ### Passing data to simulations
 
 ```bash
-python examples/run_baseline.py --mode no-tap \
+python examples/offline/run_baseline.py --mode no-tap \
   --data-dir data/generated \
   --training-trace data/generated/synthetic_training_trace.csv
 
-python examples/run_ofo.py \
+python examples/offline/run_ofo.py \
   --data-dir data/generated \
   --training-trace data/generated/synthetic_training_trace.csv
 ```

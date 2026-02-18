@@ -236,8 +236,8 @@ Online Feedback Optimization (primal-dual) regulates batch sizes to keep voltage
 ```
   ┌─────────── BUILD TIME (once, offline) ──────────────────────┐
   │                                                              │
-  │   mlenergy-data                     data/build_mlenergy_    │
-  │                                     data.py                 │
+  │   mlenergy-data                     data/offline/            │
+  │                                     build_mlenergy_data.py  │
   │   LLMRuns  ──filter/group──>  For each (model, batch):     │
   │                                 LogisticModel.fit()  → CSV  │
   │   timelines()  ──extract──>     ITLMixtureModel.fit() → CSV │
