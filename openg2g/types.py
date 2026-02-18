@@ -6,7 +6,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 import numpy as np
 
@@ -72,9 +72,27 @@ class OfflineDatacenterState(DatacenterState):
 
 @dataclass(frozen=True)
 class OnlineDatacenterState(DatacenterState):
-    """Extended state from the online (live GPU) backend."""
+    """Extended state from the online (live GPU) backend.
 
-    gpu_power_readings: dict[int, float] = field(default_factory=dict)
+    The base `power_w` field carries the augmented three-phase power
+    (what the grid sees). This subclass adds the measured (pre-augmentation)
+    breakdown for post-hoc analysis.
+
+    Attributes:
+        measured_power_w: Total measured three-phase power from real GPUs
+            (before augmentation), plus base load.
+        measured_power_w_by_model: Per-model total measured power from real
+            GPUs (watts).
+        augmented_power_w_by_model: Per-model augmented power (watts). This
+            is the power fed to the grid for each model after scaling up.
+        augmentation_factor_by_model: Per-model augmentation multiplier
+            (virtual replicas / real replicas).
+    """
+
+    measured_power_w: ThreePhase = field(default_factory=lambda: ThreePhase(a=0.0, b=0.0, c=0.0))
+    measured_power_w_by_model: dict[str, float] = field(default_factory=dict)
+    augmented_power_w_by_model: dict[str, float] = field(default_factory=dict)
+    augmentation_factor_by_model: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -83,6 +101,11 @@ class GridState:
 
     time_s: float
     voltages: BusVoltages
+    tap_positions: TapPosition | None = None
+
+
+DCStateT = TypeVar("DCStateT", bound=DatacenterState)
+GridStateT = TypeVar("GridStateT", bound=GridState)
 
 
 @dataclass(frozen=True)
@@ -113,6 +136,14 @@ class CommandTarget(str, Enum):
 
     DATACENTER = "datacenter"
     GRID = "grid"
+
+
+class Phase(str, Enum):
+    """Electrical phase."""
+
+    A = "a"
+    B = "b"
+    C = "c"
 
 
 @dataclass(frozen=True)

@@ -20,6 +20,7 @@ from openg2g.types import (
     BusVoltages,
     Command,
     GridState,
+    TapPosition,
     TapSchedule,
     ThreePhase,
 )
@@ -44,7 +45,7 @@ def _require_dss() -> None:
         raise ImportError("opendssdirect is required for OpenDSSGrid. Install it with: pip install opendssdirect.py")
 
 
-class OpenDSSGrid(GridBackend):
+class OpenDSSGrid(GridBackend[GridState]):
     """OpenDSS-based grid simulator for distribution-level voltage analysis.
 
     Args:
@@ -219,7 +220,7 @@ class OpenDSSGrid(GridBackend):
             voltages = first_solve_voltages
         else:
             voltages = self._snapshot_bus_voltages()
-        state = GridState(time_s=clock.time_s, voltages=voltages)
+        state = GridState(time_s=clock.time_s, voltages=voltages, tap_positions=self._read_current_taps())
         self._state = state
         self._history.append(state)
         return state
@@ -481,3 +482,20 @@ class OpenDSSGrid(GridBackend):
                 dss.Text.Command(f"Edit RegControl.{rc_key} Enabled=false")
             applied += 1
         return applied, skipped
+
+    def _read_current_taps(self) -> TapPosition:
+        """Read current regulator tap positions from OpenDSS."""
+        if self._reg_map is None:
+            self._reg_map = self._cache_regcontrol_map()
+
+        taps: dict[str, float] = {}
+        for rc_key, (xfmr, wdg) in self._reg_map.items():
+            dss.Transformers.Name(xfmr)
+            dss.Transformers.Wdg(wdg)
+            taps[rc_key] = float(dss.Transformers.Tap())
+
+        return TapPosition(
+            a=taps.get("reg1"),
+            b=taps.get("reg2"),
+            c=taps.get("reg3"),
+        )

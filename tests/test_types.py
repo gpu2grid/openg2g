@@ -1,5 +1,5 @@
-"""Tests for openg2g.types — TapPosition, TapSchedule, ServerRamp, ServerRampSchedule,
-TrainingRun, TrainingSchedule."""
+"""Tests for openg2g.types — state dataclasses, TapPosition, TapSchedule, ServerRamp,
+ServerRampSchedule, TrainingRun, TrainingSchedule."""
 
 from __future__ import annotations
 
@@ -9,10 +9,14 @@ import numpy as np
 import pytest
 
 from openg2g.types import (
+    BusVoltages,
+    GridState,
+    OnlineDatacenterState,
     ServerRamp,
     ServerRampSchedule,
     TapPosition,
     TapSchedule,
+    ThreePhase,
     TrainingRun,
     TrainingSchedule,
 )
@@ -270,3 +274,52 @@ class TestTrainingSchedule:
         r = TrainingRun(t_start=0, t_end=100, n_gpus=100, trace_csv=Path("/tmp/a.csv"))
         s = TrainingSchedule(entries=(r,))
         assert "TrainingRun" in repr(s)
+
+
+class TestGridState:
+    def test_tap_positions_default_none(self) -> None:
+        state = GridState(
+            time_s=0.0,
+            voltages=BusVoltages({"671": ThreePhase(a=1.0, b=1.0, c=1.0)}),
+        )
+        assert state.tap_positions is None
+
+    def test_tap_positions_populated(self) -> None:
+        taps = TapPosition(a=1.0875, b=1.0375, c=1.09375)
+        state = GridState(
+            time_s=1.0,
+            voltages=BusVoltages({"671": ThreePhase(a=0.98, b=0.99, c=1.01)}),
+            tap_positions=taps,
+        )
+        assert state.tap_positions is taps
+        assert state.tap_positions.a == 1.0875
+
+
+class TestOnlineDatacenterState:
+    def test_construction_with_all_fields(self) -> None:
+        state = OnlineDatacenterState(
+            time_s=0.5,
+            power_w=ThreePhase(a=500e3, b=500e3, c=500e3),
+            batch_size_by_model={"8B": 128},
+            active_replicas_by_model={"8B": 4},
+            observed_itl_s_by_model={"8B": 0.05},
+            measured_power_w=ThreePhase(a=50e3, b=50e3, c=50e3),
+            measured_power_w_by_model={"8B": 120e3},
+            augmented_power_w_by_model={"8B": 1200e3},
+            augmentation_factor_by_model={"8B": 10.0},
+        )
+        assert state.power_w.total() == 1500e3
+        assert state.measured_power_w.total() == 150e3
+        assert state.augmented_power_w_by_model["8B"] == 1200e3
+        assert state.measured_power_w_by_model["8B"] == 120e3
+        assert state.augmentation_factor_by_model["8B"] == 10.0
+
+    def test_defaults(self) -> None:
+        state = OnlineDatacenterState(
+            time_s=0.0,
+            power_w=ThreePhase(a=0.0, b=0.0, c=0.0),
+        )
+        assert state.measured_power_w.total() == 0.0
+        assert state.measured_power_w_by_model == {}
+        assert state.augmented_power_w_by_model == {}
+        assert state.augmentation_factor_by_model == {}

@@ -5,15 +5,16 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
 from fractions import Fraction
+from typing import Generic
 
 import numpy as np
 
 from openg2g.clock import SimulationClock
 from openg2g.events import EventEmitter
-from openg2g.types import Command, GridState, ThreePhase
+from openg2g.types import Command, GridStateT, ThreePhase
 
 
-class GridBackend(ABC):
+class GridBackend(Generic[GridStateT], ABC):
     """Interface for grid simulation backends."""
 
     @property
@@ -23,11 +24,11 @@ class GridBackend(ABC):
 
     @property
     @abstractmethod
-    def state(self) -> GridState | None:
+    def state(self) -> GridStateT | None:
         """Latest emitted state, or `None` before the first step."""
 
     @abstractmethod
-    def history(self, n: int | None = None) -> Sequence[GridState]:
+    def history(self, n: int | None = None) -> Sequence[GridStateT]:
         """Return emitted state history (all, or latest `n`)."""
 
     @property
@@ -42,7 +43,7 @@ class GridBackend(ABC):
         power_samples_w: list[ThreePhase],
         *,
         interval_start_power_w: ThreePhase | None = None,
-    ) -> GridState:
+    ) -> GridStateT:
         """Advance one native timestep and return state for this step."""
 
     @abstractmethod
@@ -57,5 +58,11 @@ class GridBackend(ABC):
     def estimate_sensitivity(self, perturbation_kw: float = 100.0) -> tuple[np.ndarray, np.ndarray]:
         """Estimate voltage sensitivity matrix (H = dv/dp) and return ``(H, v0)``."""
 
-    def bind_event_emitter(self, emitter: EventEmitter) -> None:  # noqa: B027
+    def start(self) -> None:
+        """Acquire resources before simulation. No-op by default."""
+
+    def stop(self) -> None:
+        """Release resources after simulation. No-op by default."""
+
+    def bind_event_emitter(self, emitter: EventEmitter) -> None:
         """Attach a clock-bound emitter for backend-originated events."""

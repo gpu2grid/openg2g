@@ -285,7 +285,7 @@ class ServerLayout:
     noise_std_frac: float
 
 
-class OfflineDatacenter(LLMBatchSizeControlledDatacenter):
+class OfflineDatacenter(LLMBatchSizeControlledDatacenter[OfflineDatacenterState]):
     """Trace-based datacenter simulation with step-by-step interface.
 
     Generates power-trace chunks and serves one sample per ``step()`` call.

@@ -27,12 +27,18 @@ def _normalize_backend_type_arg(
         raise TypeError(f"Controller generic type {arg!r} is not a subclass of {required_base.__name__}.")
 
     origin = get_origin(arg)
+
+    # Handle parameterized generics like DatacenterBackend[OfflineDatacenterState]
+    if isinstance(origin, type) and issubclass(origin, required_base):
+        return (origin,)
+
     if origin is Union:
         out: list[type[object]] = []
         for item in get_args(arg):
-            if not isinstance(item, type) or not issubclass(item, required_base):
+            item_type = item if isinstance(item, type) else get_origin(item)
+            if not isinstance(item_type, type) or not issubclass(item_type, required_base):
                 raise TypeError(f"Controller generic type {item!r} is not a subclass of {required_base.__name__}.")
-            out.append(item)
+            out.append(item_type)
         return tuple(out)
 
     raise TypeError(
@@ -103,6 +109,12 @@ class Controller(Generic[DCBackendT, GridBackendT], ABC):
     @abstractmethod
     def dt_s(self) -> Fraction:
         """Control interval as a Fraction (seconds)."""
+
+    def start(self) -> None:
+        """Acquire resources before simulation. No-op by default."""
+
+    def stop(self) -> None:
+        """Release resources after simulation. No-op by default."""
 
     @abstractmethod
     def step(

@@ -8,7 +8,7 @@ import pytest
 
 from openg2g.clock import SimulationClock
 from openg2g.controller.base import Controller
-from openg2g.datacenter.base import DatacenterBackend
+from openg2g.datacenter.base import DatacenterBackend, LLMBatchSizeControlledDatacenter
 from openg2g.events import EventEmitter
 from openg2g.grid.base import GridBackend
 from openg2g.grid.opendss import OpenDSSGrid
@@ -18,11 +18,12 @@ from openg2g.types import (
     ControlAction,
     DatacenterState,
     GridState,
+    OfflineDatacenterState,
     ThreePhase,
 )
 
 
-class _DC(DatacenterBackend):
+class _DC(DatacenterBackend[DatacenterState]):
     @property
     def dt_s(self) -> Fraction:
         return Fraction(1)
@@ -42,7 +43,7 @@ class _DC(DatacenterBackend):
         pass
 
 
-class _Grid(GridBackend):
+class _Grid(GridBackend[GridState]):
     @property
     def dt_s(self) -> Fraction:
         return Fraction(1)
@@ -171,3 +172,24 @@ def test_controller_inherits_compatibility_from_typed_parent():
 
     assert _Child.compatible_datacenter_types() == (_DC,)
     assert _Child.compatible_grid_types() == (_Grid,)
+
+
+def test_controller_accepts_parameterized_backend_generics():
+    """Controller[DatacenterBackend[X], GridBackend[Y]] should work via get_origin fallback."""
+
+    class _Parameterized(Controller[LLMBatchSizeControlledDatacenter[OfflineDatacenterState], GridBackend[GridState]]):
+        @property
+        def dt_s(self) -> Fraction:
+            return Fraction(1)
+
+        def step(
+            self,
+            clock: SimulationClock,
+            datacenter: LLMBatchSizeControlledDatacenter[OfflineDatacenterState],
+            grid: GridBackend[GridState],
+            events: EventEmitter,
+        ) -> ControlAction:
+            return ControlAction(commands=[])
+
+    assert _Parameterized.compatible_datacenter_types() == (LLMBatchSizeControlledDatacenter,)
+    assert _Parameterized.compatible_grid_types() == (GridBackend,)

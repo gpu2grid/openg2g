@@ -5,13 +5,14 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
 from fractions import Fraction
+from typing import Generic
 
 from openg2g.clock import SimulationClock
 from openg2g.events import EventEmitter
-from openg2g.types import Command, DatacenterState
+from openg2g.types import Command, DCStateT
 
 
-class DatacenterBackend(ABC):
+class DatacenterBackend(Generic[DCStateT], ABC):
     """Interface for datacenter power simulation backends."""
 
     @property
@@ -21,26 +22,32 @@ class DatacenterBackend(ABC):
 
     @property
     @abstractmethod
-    def state(self) -> DatacenterState | None:
+    def state(self) -> DCStateT | None:
         """Latest emitted state, or `None` before the first step."""
 
     @abstractmethod
-    def history(self, n: int | None = None) -> Sequence[DatacenterState]:
+    def history(self, n: int | None = None) -> Sequence[DCStateT]:
         """Return emitted state history (all, or latest `n`)."""
 
     @abstractmethod
-    def step(self, clock: SimulationClock) -> DatacenterState:
+    def step(self, clock: SimulationClock) -> DCStateT:
         """Advance one native timestep. Return state for this step."""
 
     @abstractmethod
     def apply_control(self, command: Command) -> None:
         """Apply one command. Takes effect on next step() call."""
 
-    def bind_event_emitter(self, emitter: EventEmitter) -> None:  # noqa: B027
+    def start(self) -> None:
+        """Acquire resources before simulation. No-op by default."""
+
+    def stop(self) -> None:
+        """Release resources after simulation. No-op by default."""
+
+    def bind_event_emitter(self, emitter: EventEmitter) -> None:
         """Attach a clock-bound emitter for backend-originated events."""
 
 
-class LLMBatchSizeControlledDatacenter(DatacenterBackend):
+class LLMBatchSizeControlledDatacenter(DatacenterBackend[DCStateT]):
     """Datacenter that serves LLM inference and supports batch-size control.
 
     Marker layer between `DatacenterBackend` and concrete implementations.

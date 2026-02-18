@@ -31,7 +31,7 @@ def test_gcd_fraction():
     assert _gcd_fraction(Fraction(60), Fraction(1)) == Fraction(1)
 
 
-class _StubDC(DatacenterBackend):
+class _StubDC(DatacenterBackend[DatacenterState]):
     """Minimal datacenter for coordinator tests."""
 
     def __init__(self, dt_s: Fraction = Fraction(1, 10)) -> None:
@@ -70,7 +70,7 @@ class _StubDC(DatacenterBackend):
         self.apply_control_calls.append(command)
 
 
-class _StubGrid(GridBackend):
+class _StubGrid(GridBackend[GridState]):
     """Minimal grid for coordinator tests."""
 
     def __init__(self, dt_s: Fraction = Fraction(1)) -> None:
@@ -291,7 +291,7 @@ def test_coordinator_exposes_clock_stamped_controller_events():
 
 
 def test_batch_history_is_populated_from_datacenter_events():
-    class _EventedDC(DatacenterBackend):
+    class _EventedDC(DatacenterBackend[DatacenterState]):
         def __init__(self) -> None:
             self._events: EventEmitter | None = None
             self._dt_s = Fraction(1)
@@ -370,7 +370,7 @@ def test_controller_generic_types_auto_extracted():
 
 
 def test_controller_datacenter_mismatch_error_has_underlined_generic_snippet():
-    class _ExpectedDC(DatacenterBackend):
+    class _ExpectedDC(DatacenterBackend[DatacenterState]):
         def __init__(self) -> None:
             self._state: DatacenterState | None = None
 
@@ -394,7 +394,7 @@ def test_controller_datacenter_mismatch_error_has_underlined_generic_snippet():
         def apply_control(self, command: Command) -> None:
             pass
 
-    class _OtherDC(DatacenterBackend):
+    class _OtherDC(DatacenterBackend[DatacenterState]):
         def __init__(self) -> None:
             self._state: DatacenterState | None = None
 

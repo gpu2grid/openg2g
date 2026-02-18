@@ -7,7 +7,7 @@ import warnings
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from fractions import Fraction
-from typing import Any
+from typing import Any, Generic
 
 from openg2g.clock import SimulationClock
 from openg2g.controller.base import Controller
@@ -18,8 +18,8 @@ from openg2g.types import (
     Command,
     CommandTarget,
     ControlAction,
-    DatacenterState,
-    GridState,
+    DCStateT,
+    GridStateT,
     ThreePhase,
 )
 
@@ -35,14 +35,16 @@ def _gcd_fraction(a: Fraction, b: Fraction) -> Fraction:
 
 
 @dataclass
-class SimulationLog:
+class SimulationLog(Generic[DCStateT, GridStateT]):
     """Accumulated simulation data from a coordinator run.
 
-    All fields are populated by the `Coordinator.run()` loop.
+    Generic over the datacenter and grid state types. When constructed
+    via `Coordinator.run()`, the type parameters are inferred from the
+    backends, giving typed access to backend-specific state fields.
 
     Attributes:
-        dc_states: Every `DatacenterState` produced by the datacenter.
-        grid_states: Every `GridState` produced by the grid.
+        dc_states: Every datacenter state produced by the datacenter.
+        grid_states: Every grid state produced by the grid.
         actions: Every `ControlAction` emitted by controllers.
         commands: Flattened list of all commands from all actions.
         time_s: Simulation time at each grid step (seconds).
@@ -57,8 +59,8 @@ class SimulationLog:
         events: Clock-stamped simulation events from all components.
     """
 
-    dc_states: list[DatacenterState] = field(default_factory=list)
-    grid_states: list[GridState] = field(default_factory=list)
+    dc_states: list[DCStateT] = field(default_factory=list)
+    grid_states: list[GridStateT] = field(default_factory=list)
     actions: list[ControlAction] = field(default_factory=list)
     commands: list[Command] = field(default_factory=list)
 
@@ -73,10 +75,10 @@ class SimulationLog:
     batch_log_by_model: dict[str, list[int]] = field(default_factory=dict)
     events: list[SimEvent] = field(default_factory=list)
 
-    def record_dc(self, state: DatacenterState) -> None:
+    def record_dc(self, state: DCStateT) -> None:
         self.dc_states.append(state)
 
-    def record_grid(self, state: GridState, *, dc_bus: str = "671") -> None:
+    def record_grid(self, state: GridStateT, *, dc_bus: str = "671") -> None:
         self.grid_states.append(state)
         self.time_s.append(state.time_s)
 
@@ -116,15 +118,18 @@ class SimulationLog:
             self.record_batch({str(k): int(v) for k, v in batch_map.items()})
 
 
-class Coordinator:
+class Coordinator(Generic[DCStateT, GridStateT]):
     """Multi-rate simulation coordinator.
 
     Orchestrates datacenter, grid, and controller components at their
     respective rates.  The base tick is the GCD of all component periods.
 
+    Generic over datacenter and grid state types. The type parameters
+    are inferred from the backends and propagated to `SimulationLog`.
+
     Args:
         datacenter: Datacenter backend (offline or online).
-        grid: OpenDSS grid simulator.
+        grid: Grid simulator backend.
         controllers: List of controllers, applied in order each tick.
         total_duration_s: Total simulation duration (integer seconds).
         dc_bus: Bus name for DC voltage logging.
@@ -133,8 +138,8 @@ class Coordinator:
 
     def __init__(
         self,
-        datacenter: DatacenterBackend,
-        grid: GridBackend,
+        datacenter: DatacenterBackend[DCStateT],
+        grid: GridBackend[GridStateT],
         controllers: Sequence[Controller[Any, Any]],
         total_duration_s: int,
         dc_bus: str = "671",
@@ -199,15 +204,20 @@ class Coordinator:
                 got = type(self.grid).__name__
                 raise TypeError(f"{ctrl.__class__.__name__} ({sig}) requires grid type {expected}, got {got}.")
 
-    def run(self) -> SimulationLog:
+    def run(self) -> SimulationLog[DCStateT, GridStateT]:
         """Run the full simulation and return the log."""
-        log = SimulationLog()
+        log: SimulationLog[DCStateT, GridStateT] = SimulationLog()
         controller_events = EventEmitter(self.clock, log, "controller")
 
         self.datacenter.bind_event_emitter(EventEmitter(self.clock, log, "datacenter"))
         self.grid.bind_event_emitter(EventEmitter(self.clock, log, "grid"))
 
         self._validate_controller_compatibility()
+
+        self.datacenter.start()
+        self.grid.start()
+        for ctrl in self.controllers:
+            ctrl.start()
 
         dc_buffer: list[ThreePhase] = []
         interval_start_power: ThreePhase | None = None
@@ -229,51 +239,55 @@ class Coordinator:
             len(self.controllers),
         )
 
-        for _ in range(n_ticks):
-            # 1. Datacenter step (if due)
-            if self.clock.is_due(self.datacenter.dt_s):
-                dc_state = self.datacenter.step(self.clock)
-                dc_buffer.append(dc_state.power_w)
-                log.record_dc(dc_state)
+        try:
+            for _ in range(n_ticks):
+                # 1. Datacenter step (if due)
+                if self.clock.is_due(self.datacenter.dt_s):
+                    dc_state = self.datacenter.step(self.clock)
+                    dc_buffer.append(dc_state.power_w)
+                    log.record_dc(dc_state)
 
-            # 2. Grid step (if due). Pass full sub-trace since last grid step.
-            if self.clock.is_due(self.grid.dt_s):
-                if dc_buffer:
-                    grid_state = self.grid.step(
-                        self.clock,
-                        list(dc_buffer),
-                        interval_start_power_w=interval_start_power,
-                    )
-                    last_power = dc_buffer[-1]
-                    log.record_power(last_power)
-                    interval_start_power = last_power
-                    dc_buffer.clear()
-                    log.record_grid(grid_state, dc_bus=self.dc_bus)
-                elif interval_start_power is not None:
-                    # Grid is due but no new DC samples. Use the most recent
-                    # DC power as a single-sample trace.
-                    grid_state = self.grid.step(
-                        self.clock,
-                        [interval_start_power],
-                        interval_start_power_w=None,
-                    )
-                    log.record_power(interval_start_power)
-                    log.record_grid(grid_state, dc_bus=self.dc_bus)
+                # 2. Grid step (if due). Pass full sub-trace since last grid step.
+                if self.clock.is_due(self.grid.dt_s):
+                    if dc_buffer:
+                        grid_state = self.grid.step(
+                            self.clock,
+                            list(dc_buffer),
+                            interval_start_power_w=interval_start_power,
+                        )
+                        last_power = dc_buffer[-1]
+                        log.record_power(last_power)
+                        interval_start_power = last_power
+                        dc_buffer.clear()
+                        log.record_grid(grid_state, dc_bus=self.dc_bus)
+                    elif interval_start_power is not None:
+                        grid_state = self.grid.step(
+                            self.clock,
+                            [interval_start_power],
+                            interval_start_power_w=None,
+                        )
+                        log.record_power(interval_start_power)
+                        log.record_grid(grid_state, dc_bus=self.dc_bus)
 
-            # 3. Controllers (if due). In order, actions applied immediately.
-            for ctrl in self.controllers:
-                if self.clock.is_due(ctrl.dt_s):
-                    action = ctrl.step(self.clock, self.datacenter, self.grid, controller_events)
-                    for command in action.commands:
-                        if command.target == CommandTarget.DATACENTER:
-                            self.datacenter.apply_control(command)
-                        elif command.target == CommandTarget.GRID:
-                            self.grid.apply_control(command)
-                        else:
-                            raise ValueError(f"Unsupported command target: {command.target!r}")
-                    log.record_action(action)
+                # 3. Controllers (if due). In order, actions applied immediately.
+                for ctrl in self.controllers:
+                    if self.clock.is_due(ctrl.dt_s):
+                        action = ctrl.step(self.clock, self.datacenter, self.grid, controller_events)
+                        for command in action.commands:
+                            if command.target == CommandTarget.DATACENTER:
+                                self.datacenter.apply_control(command)
+                            elif command.target == CommandTarget.GRID:
+                                self.grid.apply_control(command)
+                            else:
+                                raise ValueError(f"Unsupported command target: {command.target!r}")
+                        log.record_action(action)
 
-            self.clock.advance()
+                self.clock.advance()
+        finally:
+            for ctrl in reversed(self.controllers):
+                ctrl.stop()
+            self.grid.stop()
+            self.datacenter.stop()
 
         logger.info(
             "Simulation complete: %d grid steps, %d DC steps, %d control actions",
