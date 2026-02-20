@@ -18,8 +18,9 @@ from openg2g.events import EventEmitter
 from openg2g.grid.base import GridBackend
 from openg2g.types import (
     BusVoltages,
-    Command,
+    GridCommand,
     GridState,
+    SetTaps,
     TapPosition,
     TapSchedule,
     ThreePhase,
@@ -137,7 +138,9 @@ class OpenDSSGrid(GridBackend[GridState]):
         return self._dt_s
 
     @property
-    def state(self) -> GridState | None:
+    def state(self) -> GridState:
+        if self._state is None:
+            raise RuntimeError("OpenDSSGrid.state accessed before first step().")
         return self._state
 
     def history(self, n: int | None = None) -> list[GridState]:
@@ -225,21 +228,16 @@ class OpenDSSGrid(GridBackend[GridState]):
         self._history.append(state)
         return state
 
-    def apply_control(self, command: Command) -> None:
+    def apply_control(self, command: GridCommand) -> None:
         """Apply one command to the OpenDSS grid backend."""
-        if command.kind != "set_taps":
-            raise ValueError(f"OpenDSSGrid does not support command kind={command.kind!r}")
-        if "tap_changes" not in command.payload:
-            raise ValueError("set_taps requires payload['tap_changes'].")
-        tap_changes = command.payload["tap_changes"]
-        if not isinstance(tap_changes, dict):
-            raise ValueError("set_taps requires payload['tap_changes'] as a dict.")
-        tap_map = {str(k): float(v) for k, v in tap_changes.items()}
+        if not isinstance(command, SetTaps):
+            raise TypeError(f"OpenDSSGrid does not support {type(command).__name__}")
+        tap_map = {str(k): float(v) for k, v in command.tap_changes.items()}
         self._set_reg_taps(tap_map)
         if self._events is not None:
             self._events.emit(
                 "grid.taps.updated",
-                {"kind": command.kind, "tap_changes": dict(tap_map)},
+                {"tap_changes": dict(tap_map)},
             )
 
     def bind_event_emitter(self, emitter: EventEmitter) -> None:

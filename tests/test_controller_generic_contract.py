@@ -14,9 +14,10 @@ from openg2g.grid.base import GridBackend
 from openg2g.grid.opendss import OpenDSSGrid
 from openg2g.types import (
     BusVoltages,
-    Command,
     ControlAction,
+    DatacenterCommand,
     DatacenterState,
+    GridCommand,
     GridState,
     OfflineDatacenterState,
     ThreePhase,
@@ -29,8 +30,8 @@ class _DC(DatacenterBackend[DatacenterState]):
         return Fraction(1)
 
     @property
-    def state(self) -> DatacenterState | None:
-        return None
+    def state(self) -> DatacenterState:
+        raise RuntimeError("No state yet")
 
     def history(self, n: int | None = None):
 
@@ -39,7 +40,7 @@ class _DC(DatacenterBackend[DatacenterState]):
     def step(self, clock: SimulationClock) -> DatacenterState:
         return DatacenterState(time_s=clock.time_s, power_w=ThreePhase(a=1.0, b=1.0, c=1.0))
 
-    def apply_control(self, command: Command) -> None:
+    def apply_control(self, command: DatacenterCommand) -> None:
         pass
 
 
@@ -49,8 +50,8 @@ class _Grid(GridBackend[GridState]):
         return Fraction(1)
 
     @property
-    def state(self) -> GridState | None:
-        return None
+    def state(self) -> GridState:
+        raise RuntimeError("No state yet")
 
     def history(self, n: int | None = None):
 
@@ -73,7 +74,7 @@ class _Grid(GridBackend[GridState]):
             voltages=BusVoltages({"671": ThreePhase(1.0, 1.0, 1.0)}),
         )
 
-    def apply_control(self, command: Command) -> None:
+    def apply_control(self, command: GridCommand) -> None:
         pass
 
     def voltages_vector(self):

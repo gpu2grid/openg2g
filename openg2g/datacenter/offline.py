@@ -22,10 +22,11 @@ from openg2g.datacenter.training_overlay import TrainingOverlayCache
 from openg2g.events import EventEmitter
 from openg2g.models.spec import LLMInferenceModelSpec
 from openg2g.types import (
-    Command,
+    DatacenterCommand,
     OfflineDatacenterState,
     ServerRamp,
     ServerRampSchedule,
+    SetBatchSize,
     ThreePhase,
     TrainingRun,
     TrainingSchedule,
@@ -413,7 +414,9 @@ class OfflineDatacenter(LLMBatchSizeControlledDatacenter[OfflineDatacenterState]
         return self._rng
 
     @property
-    def state(self) -> OfflineDatacenterState | None:
+    def state(self) -> OfflineDatacenterState:
+        if self._state is None:
+            raise RuntimeError("OfflineDatacenter.state accessed before first step().")
         return self._state
 
     def history(self, n: int | None = None) -> list[OfflineDatacenterState]:
@@ -433,16 +436,11 @@ class OfflineDatacenter(LLMBatchSizeControlledDatacenter[OfflineDatacenterState]
         self._history.append(state)
         return state
 
-    def apply_control(self, command: Command) -> None:
+    def apply_control(self, command: DatacenterCommand) -> None:
         """Record new batch sizes. Changes take effect at the next chunk."""
-        if command.kind != "set_batch_size":
-            raise ValueError(f"OfflineDatacenter does not support command kind={command.kind!r}")
-        if "batch_size_by_model" not in command.payload:
-            raise ValueError("set_batch_size requires payload['batch_size_by_model'].")
-        batch_map = command.payload["batch_size_by_model"]
-        if not isinstance(batch_map, dict):
-            raise ValueError("set_batch_size requires payload['batch_size_by_model'] as a dict.")
-        for label, b in batch_map.items():
+        if not isinstance(command, SetBatchSize):
+            raise TypeError(f"OfflineDatacenter does not support {type(command).__name__}")
+        for label, b in command.batch_size_by_model.items():
             b_int = int(b)
             if b_int <= 0:
                 raise ValueError(f"Batch size must be positive for model {label!r}, got {b_int}.")
@@ -453,10 +451,7 @@ class OfflineDatacenter(LLMBatchSizeControlledDatacenter[OfflineDatacenterState]
         if self._events is not None:
             self._events.emit(
                 "datacenter.batch_size.updated",
-                {
-                    "kind": command.kind,
-                    "batch_size_by_model": dict(self._batch_by_model),
-                },
+                {"batch_size_by_model": dict(self._batch_by_model)},
             )
 
     def bind_event_emitter(self, emitter: EventEmitter) -> None:

@@ -9,7 +9,7 @@ from typing import Generic
 
 from openg2g.clock import SimulationClock
 from openg2g.events import EventEmitter
-from openg2g.types import Command, DCStateT
+from openg2g.types import DatacenterCommand, DCStateT
 
 
 class DatacenterBackend(Generic[DCStateT], ABC):
@@ -22,8 +22,12 @@ class DatacenterBackend(Generic[DCStateT], ABC):
 
     @property
     @abstractmethod
-    def state(self) -> DCStateT | None:
-        """Latest emitted state, or `None` before the first step."""
+    def state(self) -> DCStateT:
+        """Latest emitted state.
+
+        Raises:
+            RuntimeError: If accessed before the first `step()` call.
+        """
 
     @abstractmethod
     def history(self, n: int | None = None) -> Sequence[DCStateT]:
@@ -34,7 +38,7 @@ class DatacenterBackend(Generic[DCStateT], ABC):
         """Advance one native timestep. Return state for this step."""
 
     @abstractmethod
-    def apply_control(self, command: Command) -> None:
+    def apply_control(self, command: DatacenterCommand) -> None:
         """Apply one command. Takes effect on next step() call."""
 
     def start(self) -> None:

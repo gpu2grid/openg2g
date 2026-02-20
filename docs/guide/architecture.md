@@ -89,37 +89,37 @@ Zooming into a sequence of coordinator ticks (DC at 0.1 s, grid and controller a
 
 ### DatacenterBackend
 
-Defined in `openg2g.datacenter.base`:
+Defined in `openg2g.datacenter.base`. Generic over the state type (`DCStateT`) emitted by `step()`:
 
 ```python
-class DatacenterBackend(ABC):
+class DatacenterBackend(Generic[DCStateT], ABC):
     @property
     def dt_s(self) -> Fraction: ...
     @property
-    def state(self) -> DatacenterState | None: ...
-    def history(self, n: int | None = None) -> Sequence[DatacenterState]: ...
-    def step(self, clock: SimulationClock) -> DatacenterState: ...
+    def state(self) -> DCStateT | None: ...
+    def history(self, n: int | None = None) -> Sequence[DCStateT]: ...
+    def step(self, clock: SimulationClock) -> DCStateT: ...
     def apply_control(self, command: Command) -> None: ...
 ```
 
-The `step()` method returns a `DatacenterState` containing three-phase power. The coordinator accumulates these into a buffer that is flushed to the grid at each grid step.
+The `step()` method returns a state dataclass (a `DatacenterState` subclass) containing three-phase power. The coordinator accumulates these into a buffer that is flushed to the grid at each grid step. The state type propagates through the coordinator to the simulation log.
 
 Two implementations ship with OpenG2G:
 
-- **`OfflineDatacenter`** replays pre-recorded GPU power traces with configurable noise, jitter, ramp profiles, and training overlays.
-- **`OnlineDatacenter`** reads live GPU power via Zeus and dispatches batch size changes through a callback.
+- **`OfflineDatacenter`** (`DatacenterBackend[OfflineDatacenterState]`) replays pre-recorded GPU power traces with configurable noise, jitter, ramp profiles, and training overlays.
+- **`OnlineDatacenter`** (`DatacenterBackend[OnlineDatacenterState]`) reads live GPU power via Zeus and dispatches batch size changes through a callback.
 
 ### GridBackend / OpenDSSGrid
 
-Defined in `openg2g.grid.base` (implemented by `openg2g.grid.opendss.OpenDSSGrid`):
+Defined in `openg2g.grid.base` (implemented by `openg2g.grid.opendss.OpenDSSGrid`). Generic over the state type (`GridStateT`) emitted by `step()`:
 
 ```python
-class GridBackend(ABC):
+class GridBackend(Generic[GridStateT], ABC):
     @property
     def dt_s(self) -> Fraction: ...
     @property
-    def state(self) -> GridState | None: ...
-    def history(self, n: int | None = None) -> Sequence[GridState]: ...
+    def state(self) -> GridStateT | None: ...
+    def history(self, n: int | None = None) -> Sequence[GridStateT]: ...
     @property
     def v_index(self) -> list[tuple[str, int]]: ...
     def step(
@@ -128,7 +128,7 @@ class GridBackend(ABC):
         power_samples_w: list[ThreePhase],
         *,
         interval_start_power_w: ThreePhase | None = None,
-    ) -> GridState: ...
+    ) -> GridStateT: ...
     def apply_control(self, command: Command) -> None: ...
     def voltages_vector(self) -> np.ndarray: ...
     def estimate_sensitivity(self, perturbation_kw: float = 100.0) -> tuple[np.ndarray, np.ndarray]: ...
@@ -136,20 +136,20 @@ class GridBackend(ABC):
 
 The grid receives a list of power samples accumulated since the last grid step. When the grid runs at a coarser rate than the datacenter, `interval_start_power_w` provides the last sample from the previous grid step so the grid can interpolate the full interval.
 
-The grid returns a `GridState` containing per-bus, per-phase voltages.
+The grid returns a state dataclass containing per-bus, per-phase voltages and (optionally) current regulator tap positions.
 
 ### Controller
 
-Defined in `openg2g.controller.base`:
+Defined in `openg2g.controller.base`. Generic over compatible datacenter and grid backend types:
 
 ```python
-class Controller(ABC):
+class Controller(Generic[DCType, GridType], ABC):
     @property
     def dt_s(self) -> Fraction: ...
     def step(self, clock, datacenter, grid, events) -> ControlAction: ...
 ```
 
-Controllers receive full datacenter/grid backend objects and a clock-bound event emitter. They return a `ControlAction` containing command envelopes.
+Controllers receive full datacenter/grid backend objects and a clock-bound event emitter. They return a `ControlAction` containing command envelopes. The generic parameters declare which backend types the controller is compatible with; the coordinator checks compatibility at construction time.
 
 Current built-in command kinds:
 - `target=CommandTarget.DATACENTER` (`"datacenter"` also accepted), `kind="set_batch_size"` with `payload["batch_size_by_model"]`
@@ -273,17 +273,22 @@ All state objects are frozen dataclasses defined in `openg2g.types`:
 | Type | Fields | Source |
 |---|---|---|
 | `ThreePhase` | `a`, `b`, `c` | Everywhere |
-| `DatacenterState` | `time_s`, `power_w`, `batch_size_by_model`, `active_replicas_by_model` | `DatacenterBackend.step()` |
-| `OfflineDatacenterState` | + `power_by_model_w`, `observed_itl_s_by_model` | `OfflineDatacenter.step()` |
-| `GridState` | `time_s`, `voltages: BusVoltages` | `OpenDSSGrid.step()` |
+| `DatacenterState` | `time_s`, `power_w`, `batch_size_by_model`, `active_replicas_by_model`, `observed_itl_s_by_model` | `DatacenterBackend.step()` |
+| `OfflineDatacenterState` | + `power_by_model_w` | `OfflineDatacenter.step()` |
+| `OnlineDatacenterState` | + `measured_power_w`, `measured_power_w_by_model`, `augmented_power_w_by_model`, `augmentation_factor_by_model` | `OnlineDatacenter.step()` |
+| `GridState` | `time_s`, `voltages: BusVoltages`, `tap_positions: TapPosition \| None` | `GridBackend.step()` |
 | `Command` | `target`, `kind`, `payload`, `metadata` | `Controller.step()` |
 | `ControlAction` | `commands: list[Command]` | `Controller.step()` |
 
+Bounded TypeVars `DCStateT` and `GridStateT` (defined in `openg2g.types`) parameterize the ABCs and propagate through the coordinator to the simulation log.
+
 ## SimulationLog
 
-The `Coordinator.run()` method returns a `SimulationLog` that accumulates:
+The `Coordinator.run()` method returns a `SimulationLog[DCStateT, GridStateT]` that accumulates:
 
-- All datacenter states, grid states, and control actions
+- All datacenter states, grid states, and control actions (typed by the backend's state type)
 - Time-series arrays for DC bus voltages and per-phase power
 - Per-model batch size history
 - Clock-stamped events from all components
+
+The state type parameters are inferred from the backends passed to the coordinator. For example, `Coordinator(datacenter=OfflineDatacenter(...), grid=OpenDSSGrid(...), ...)` returns a `SimulationLog[OfflineDatacenterState, GridState]`, so `log.dc_states` is typed as `list[OfflineDatacenterState]` without any casts.

@@ -1,0 +1,49 @@
+{
+    "v_min": 0.95,
+    "v_max": 1.05,
+    "dc_bus": "671",
+    "initial_taps": {"a": 14, "b": 6, "c": 15},
+    "prompts_file": "data/prompts.jsonl",
+    "models": [
+        {
+            "model_label": "Llama-3.1-8B",
+            "num_replicas": 720,
+            "gpus_per_replica": 1,
+            "feasible_batch_sizes": [8, 16, 32, 64, 128, 256, 512],
+            "initial_batch_size": 128,
+            "itl_deadline_s": 0.08,
+            "vllm_base_url": "http://node1:8000",
+            "model_name": "meta-llama/Llama-3.1-8B-Instruct",
+            "gpu_endpoints": [
+                {"host": "node1", "port": 4938, "gpu_indices": [0, 1, 2, 3], "phase": "a"},
+                {"host": "node1", "port": 4938, "gpu_indices": [4, 5, 6, 7], "phase": "b"}
+            ]
+        },
+        {
+            "model_label": "Llama-3.1-70B",
+            "num_replicas": 180,
+            "gpus_per_replica": 4,
+            "feasible_batch_sizes": [8, 16, 32, 64, 128, 256, 512],
+            "initial_batch_size": 128,
+            "itl_deadline_s": 0.10,
+            "vllm_base_url": "http://node2:8000",
+            "model_name": "meta-llama/Llama-3.1-70B-Instruct",
+            "gpu_endpoints": [
+                {"host": "node2", "port": 4938, "gpu_indices": [0, 1, 2, 3], "phase": "a"},
+                {"host": "node2", "port": 4938, "gpu_indices": [4, 5, 6, 7], "phase": "c"}
+            ]
+        }
+    ],
+    "augmentation": {
+        "base_kw_per_phase": 500.0,
+        "noise_frac": 0.02,
+        "stagger_buffer_s": 10.0,
+        "num_virtual_groups": 64,
+        "seed": 0
+    },
+    "load_gen": {
+        "max_output_tokens": 512,
+        "concurrency_multiplier": 3.0,
+        "itl_window_s": 1.0
+    }
+}

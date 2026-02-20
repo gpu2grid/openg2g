@@ -11,7 +11,7 @@ from openg2g.datacenter.base import LLMBatchSizeControlledDatacenter
 from openg2g.events import EventEmitter, SimEvent
 from openg2g.grid.opendss import OpenDSSGrid
 from openg2g.models.spec import LLMInferenceModelSpec
-from openg2g.types import BusVoltages, Command, DatacenterState, GridState, ThreePhase
+from openg2g.types import BusVoltages, DatacenterCommand, GridCommand, GridState, LLMDatacenterState, ThreePhase
 
 
 class _GridStub(OpenDSSGrid):
@@ -25,7 +25,9 @@ class _GridStub(OpenDSSGrid):
         return Fraction(1)
 
     @property
-    def state(self) -> GridState | None:
+    def state(self) -> GridState:
+        if self._state is None:
+            raise RuntimeError("No state yet")
         return self._state
 
     def history(self, n: int | None = None) -> list[GridState]:
@@ -65,30 +67,32 @@ class _GridStub(OpenDSSGrid):
     def set_state(self, state: GridState) -> None:
         self._state = state
 
-    def apply_control(self, command: Command) -> None:
+    def apply_control(self, command: GridCommand) -> None:
         pass
 
 
 class _DCStub(LLMBatchSizeControlledDatacenter):
     def __init__(self):
-        self._state: DatacenterState | None = None
+        self._state: LLMDatacenterState | None = None
 
     @property
     def dt_s(self) -> Fraction:
         return Fraction(1)
 
     @property
-    def state(self) -> DatacenterState | None:
+    def state(self) -> LLMDatacenterState:
+        if self._state is None:
+            raise RuntimeError("No state yet")
         return self._state
 
-    def history(self, n: int | None = None) -> list[DatacenterState]:
+    def history(self, n: int | None = None) -> list[LLMDatacenterState]:
 
         return [] if self._state is None else [self._state]
 
-    def step(self, clock: SimulationClock) -> DatacenterState:
+    def step(self, clock: SimulationClock) -> LLMDatacenterState:
 
         if self._state is None:
-            self._state = DatacenterState(
+            self._state = LLMDatacenterState(
                 time_s=0.0,
                 power_w=ThreePhase(100.0, 100.0, 100.0),
                 batch_size_by_model={"M1": 64},
@@ -97,10 +101,10 @@ class _DCStub(LLMBatchSizeControlledDatacenter):
             )
         return self._state
 
-    def set_state(self, state: DatacenterState) -> None:
+    def set_state(self, state: LLMDatacenterState) -> None:
         self._state = state
 
-    def apply_control(self, command: Command) -> None:
+    def apply_control(self, command: DatacenterCommand) -> None:
         pass
 
 
@@ -148,7 +152,7 @@ def test_ofo_uses_observed_latency_for_dual_update():
     grid = _GridStub()
     dc = _DCStub()
 
-    dc_state = DatacenterState(
+    dc_state = LLMDatacenterState(
         time_s=0.0,
         power_w=ThreePhase(100.0, 100.0, 100.0),
         batch_size_by_model={"M1": 64},
@@ -174,7 +178,7 @@ def test_ofo_requires_observed_latency_map():
     grid = _GridStub()
     dc = _DCStub()
 
-    dc_state = DatacenterState(
+    dc_state = LLMDatacenterState(
         time_s=0.0,
         power_w=ThreePhase(100.0, 100.0, 100.0),
         batch_size_by_model={"M1": 64},

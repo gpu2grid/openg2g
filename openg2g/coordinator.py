@@ -16,9 +16,10 @@ from openg2g.events import EventEmitter, SimEvent
 from openg2g.grid.base import GridBackend
 from openg2g.types import (
     Command,
-    CommandTarget,
     ControlAction,
+    DatacenterCommand,
     DCStateT,
+    GridCommand,
     GridStateT,
     ThreePhase,
 )
@@ -272,15 +273,17 @@ class Coordinator(Generic[DCStateT, GridStateT]):
                 # 3. Controllers (if due). In order, actions applied immediately.
                 for ctrl in self.controllers:
                     if self.clock.is_due(ctrl.dt_s):
-                        action = ctrl.step(self.clock, self.datacenter, self.grid, controller_events)
-                        for command in action.commands:
-                            if command.target == CommandTarget.DATACENTER:
-                                self.datacenter.apply_control(command)
-                            elif command.target == CommandTarget.GRID:
-                                self.grid.apply_control(command)
-                            else:
-                                raise ValueError(f"Unsupported command target: {command.target!r}")
-                        log.record_action(action)
+                        result = ctrl.step(self.clock, self.datacenter, self.grid, controller_events)
+                        actions = (result,) if isinstance(result, ControlAction) else result
+                        for action in actions:
+                            for command in action.commands:
+                                if isinstance(command, DatacenterCommand):
+                                    self.datacenter.apply_control(command)
+                                elif isinstance(command, GridCommand):
+                                    self.grid.apply_control(command)
+                                else:
+                                    raise ValueError(f"Unsupported command type: {type(command).__name__}")
+                            log.record_action(action)
 
                 self.clock.advance()
         finally:

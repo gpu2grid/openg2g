@@ -11,7 +11,7 @@ import numpy as np
 
 from openg2g.clock import SimulationClock
 from openg2g.events import EventEmitter
-from openg2g.types import Command, GridStateT, ThreePhase
+from openg2g.types import GridCommand, GridStateT, ThreePhase
 
 
 class GridBackend(Generic[GridStateT], ABC):
@@ -24,8 +24,12 @@ class GridBackend(Generic[GridStateT], ABC):
 
     @property
     @abstractmethod
-    def state(self) -> GridStateT | None:
-        """Latest emitted state, or `None` before the first step."""
+    def state(self) -> GridStateT:
+        """Latest emitted state.
+
+        Raises:
+            RuntimeError: If accessed before the first `step()` call.
+        """
 
     @abstractmethod
     def history(self, n: int | None = None) -> Sequence[GridStateT]:
@@ -47,7 +51,7 @@ class GridBackend(Generic[GridStateT], ABC):
         """Advance one native timestep and return state for this step."""
 
     @abstractmethod
-    def apply_control(self, command: Command) -> None:
+    def apply_control(self, command: GridCommand) -> None:
         """Apply one control command."""
 
     @abstractmethod

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Sequence
 from fractions import Fraction
 from typing import Generic, TypeVar, Union, get_args, get_origin
 
@@ -123,5 +124,5 @@ class Controller(Generic[DCBackendT, GridBackendT], ABC):
         datacenter: DCBackendT,
         grid: GridBackendT,
         events: EventEmitter,
-    ) -> ControlAction:
-        """Compute a control action. Must complete synchronously."""
+    ) -> ControlAction | Sequence[ControlAction]:
+        """Compute one or more control actions. Must complete synchronously."""

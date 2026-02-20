@@ -5,33 +5,37 @@ measurement, and to zeusd instances for live GPU power monitoring.
 Power readings from a small number of real GPUs are augmented to
 datacenter scale using temporal staggering.
 
-Requires `pip install zeus httpx`.
+Requires `pip install zeus aiohttp`.
 """
 
 from __future__ import annotations
 
 import asyncio
 import collections
+import contextlib
 import json
 import logging
+import re
 import threading
 import time
+import urllib.request
 from collections.abc import Sequence
 from dataclasses import dataclass
 from fractions import Fraction
 
-import httpx
+import aiohttp
 import numpy as np
-from zeus.monitor.power_streaming import PowerReadings, PowerStreamingClient  # type: ignore[import-not-found]
+from zeus.monitor.power_streaming import PowerReadings, PowerStreamingClient
 
 from openg2g.clock import SimulationClock
 from openg2g.datacenter.base import LLMBatchSizeControlledDatacenter
 from openg2g.events import EventEmitter
 from openg2g.models.spec import LLMInferenceModelSpec
 from openg2g.types import (
-    Command,
+    DatacenterCommand,
     OnlineDatacenterState,
     Phase,
+    SetBatchSize,
     ThreePhase,
 )
 
@@ -144,6 +148,168 @@ class PowerAugmentationConfig:
 
 
 # ---------------------------------------------------------------------------
+# Health checks (sync, using stdlib urllib)
+# ---------------------------------------------------------------------------
+
+
+def _check_vllm_health(base_url: str, timeout_s: float = 10.0) -> None:
+    """Verify a vLLM server is reachable via GET /health.
+
+    Args:
+        base_url: Base URL of the vLLM server (e.g. `http://node1:8000`).
+        timeout_s: HTTP timeout in seconds.
+
+    Raises:
+        RuntimeError: If the server is not reachable or unhealthy.
+    """
+    url = f"{base_url}/health"
+    try:
+        req = urllib.request.Request(url)
+        with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+            if resp.status != 200:
+                raise RuntimeError(f"vLLM health check failed: HTTP {resp.status} from {url}")
+    except Exception as e:
+        raise RuntimeError(f"vLLM health check failed for {url}: {e}") from e
+
+
+def _check_vllm_model(base_url: str, expected_model: str, timeout_s: float = 10.0) -> None:
+    """Verify a vLLM server is serving the expected model via GET /v1/models.
+
+    Args:
+        base_url: Base URL of the vLLM server.
+        expected_model: Model ID to expect in the response.
+        timeout_s: HTTP timeout in seconds.
+
+    Raises:
+        RuntimeError: If the model is not served or the endpoint is unreachable.
+    """
+    url = f"{base_url}/v1/models"
+    try:
+        req = urllib.request.Request(url)
+        with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+            if resp.status != 200:
+                raise RuntimeError(f"vLLM model check failed: HTTP {resp.status} from {url}")
+            data = json.loads(resp.read().decode())
+            served = [m["id"] for m in data.get("data", [])]
+            if expected_model not in served:
+                raise RuntimeError(f"vLLM at {base_url} serves {served}, expected '{expected_model}'")
+    except RuntimeError:
+        raise
+    except Exception as e:
+        raise RuntimeError(f"vLLM model check failed for {url}: {e}") from e
+
+
+def _check_zeusd_health(host: str, port: int = 4938, timeout_s: float = 10.0) -> None:
+    """Verify a zeusd instance is reachable via GET /discover.
+
+    Args:
+        host: Hostname of the zeusd instance.
+        port: TCP port.
+        timeout_s: HTTP timeout in seconds.
+
+    Raises:
+        RuntimeError: If the zeusd instance is unreachable.
+    """
+    url = f"http://{host}:{port}/discover"
+    try:
+        req = urllib.request.Request(url)
+        with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+            if resp.status != 200:
+                raise RuntimeError(f"zeusd health check failed: HTTP {resp.status} from {url}")
+    except RuntimeError:
+        raise
+    except Exception as e:
+        raise RuntimeError(f"zeusd health check failed for {url}: {e}") from e
+
+
+# ---------------------------------------------------------------------------
+# Prometheus metric extraction
+# ---------------------------------------------------------------------------
+
+_GAUGE_RE = re.compile(r"^([a-zA-Z_:][a-zA-Z0-9_:]*)\{.*?\}\s+(.+)$|^([a-zA-Z_:][a-zA-Z0-9_:]*)\s+(.+)$")
+
+_PROMETHEUS_METRICS = (
+    "vllm:num_requests_running",
+    "vllm:num_requests_waiting",
+    "vllm:num_preemptions_total",
+    "vllm:kv_cache_usage_perc",
+)
+
+
+def _parse_prometheus_text(text: str) -> dict[str, float]:
+    """Parse Prometheus text-format metrics and extract vLLM gauges.
+
+    Returns a dict with metric names (without `vllm:` prefix) mapped to
+    their summed values.
+    """
+    # Build a quick lookup of metric name -> accumulated value
+    raw: dict[str, float] = {}
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        m = _GAUGE_RE.match(line)
+        if m:
+            name = m.group(1) or m.group(3)
+            val_str = m.group(2) or m.group(4)
+            if name in _PROMETHEUS_METRICS:
+                with contextlib.suppress(ValueError):
+                    raw[name] = raw.get(name, 0.0) + float(val_str)
+
+    result: dict[str, float] = {}
+    for metric in _PROMETHEUS_METRICS:
+        if metric in raw:
+            short = metric.removeprefix("vllm:")
+            result[short] = raw[metric]
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Prometheus poller (background async task)
+# ---------------------------------------------------------------------------
+
+
+class _PrometheusPoller:
+    """Polls vLLM /metrics endpoints for Prometheus gauges.
+
+    Runs as an async task inside `_LoadGenerator`'s event loop.
+    Provides thread-safe access to the latest snapshot per model.
+    """
+
+    def __init__(
+        self,
+        deployments: Sequence[OnlineModelDeployment],
+        poll_interval_s: float = 0.5,
+    ) -> None:
+        self._deployments = {d.model_label: d for d in deployments}
+        self._poll_interval_s = poll_interval_s
+        self._lock = threading.Lock()
+        self._latest: dict[str, dict[str, float]] = {}
+
+    def get_latest(self) -> dict[str, dict[str, float]]:
+        """Return the latest metrics snapshot per model (thread-safe)."""
+        with self._lock:
+            return dict(self._latest)
+
+    async def run(self, stop_event: threading.Event) -> None:
+        """Poll loop. Call as an asyncio task."""
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5.0)) as session:
+            while not stop_event.is_set():
+                for label, dep in self._deployments.items():
+                    url = f"{dep.vllm_base_url}/metrics"
+                    try:
+                        async with session.get(url) as resp:
+                            if resp.status == 200:
+                                text = await resp.text()
+                                metrics = _parse_prometheus_text(text)
+                                with self._lock:
+                                    self._latest[label] = metrics
+                    except Exception:
+                        logger.debug("Prometheus poll failed for %s", label, exc_info=True)
+                await asyncio.sleep(self._poll_interval_s)
+
+
+# ---------------------------------------------------------------------------
 # Load generator (background thread with asyncio event loop)
 # ---------------------------------------------------------------------------
 
@@ -154,19 +320,21 @@ class _LoadGenerator:
     Runs a daemon thread with an asyncio event loop.  For each model, a
     supervisor coroutine maintains `batch_size * concurrency_multiplier`
     concurrent streaming requests.  Per-token inter-token latency (ITL)
-    is measured from SSE chunk arrival times and stored in a rolling
-    deque per model.
+    is measured from SSE chunk arrival times using `usage.completion_tokens`
+    increments to correctly handle multi-token bundles.
     """
 
     def __init__(
         self,
         deployments: Sequence[OnlineModelDeployment],
-        prompts_by_model: dict[str, list[str]],
+        requests_by_model: dict[str, list[dict]],
         config: LoadGenerationConfig,
+        prometheus_poller: _PrometheusPoller | None = None,
     ) -> None:
         self._deployments = {d.model_label: d for d in deployments}
-        self._prompts = dict(prompts_by_model)
+        self._requests = dict(requests_by_model)
         self._config = config
+        self._prometheus = prometheus_poller
 
         self._lock = threading.Lock()
         self._batch_by_model: dict[str, int] = {}
@@ -174,7 +342,7 @@ class _LoadGenerator:
         for d in deployments:
             label = d.model_label
             self._batch_by_model[label] = d.spec.initial_batch_size
-            self._itl_samples[label] = collections.deque(maxlen=10_000)
+            self._itl_samples[label] = collections.deque(maxlen=100_000)
 
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
@@ -232,9 +400,19 @@ class _LoadGenerator:
             self._loop = None
 
     async def _run_async(self) -> None:
-        tasks = [asyncio.create_task(self._model_supervisor(label, dep)) for label, dep in self._deployments.items()]
+        tasks: list[asyncio.Task] = []
+
+        # Start per-model supervisors
+        for label, dep in self._deployments.items():
+            tasks.append(asyncio.create_task(self._model_supervisor(label, dep)))
+
+        # Start Prometheus poller if configured
+        if self._prometheus is not None:
+            tasks.append(asyncio.create_task(self._prometheus.run(self._stop_event)))
+
         while not self._stop_event.is_set():
             await asyncio.sleep(0.1)
+
         for t in tasks:
             t.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
@@ -242,19 +420,26 @@ class _LoadGenerator:
     async def _model_supervisor(self, label: str, dep: OnlineModelDeployment) -> None:
         """Maintain target concurrency of streaming requests for one model."""
         active: set[asyncio.Task[None]] = set()
-        prompt_idx = 0
-        prompts = self._prompts.get(label, ["Hello, how are you?"])
+        req_idx = 0
+        requests = self._requests.get(label, [])
 
-        async with httpx.AsyncClient(timeout=httpx.Timeout(300.0)) as client:
+        connector = aiohttp.TCPConnector(limit=0, ssl=False)
+        async with aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=300.0),
+            connector=connector,
+        ) as session:
             while not self._stop_event.is_set():
                 with self._lock:
                     batch = self._batch_by_model.get(label, 1)
                 target = max(1, int(batch * self._config.concurrency_multiplier))
 
                 while len(active) < target and not self._stop_event.is_set():
-                    prompt = prompts[prompt_idx % len(prompts)]
-                    prompt_idx += 1
-                    task = asyncio.create_task(self._single_request(label, dep, prompt, client))
+                    if requests:
+                        request_dict = requests[req_idx % len(requests)]
+                        req_idx += 1
+                    else:
+                        request_dict = self._default_request(dep)
+                    task = asyncio.create_task(self._single_request(label, dep, request_dict, session))
                     active.add(task)
                     task.add_done_callback(active.discard)
 
@@ -263,57 +448,97 @@ class _LoadGenerator:
                 else:
                     await asyncio.sleep(0.1)
 
+    def _default_request(self, dep: OnlineModelDeployment) -> dict:
+        """Build a minimal fallback request dict."""
+        return {
+            "model": dep.model_name,
+            "messages": [{"role": "user", "content": "Hello, how are you?"}],
+            "max_completion_tokens": self._config.max_output_tokens,
+        }
+
     async def _single_request(
         self,
         label: str,
         dep: OnlineModelDeployment,
-        prompt: str,
-        client: httpx.AsyncClient,
+        request_dict: dict,
+        session: aiohttp.ClientSession,
     ) -> None:
-        """Send one streaming chat-completion request and measure ITL."""
+        """Send one streaming chat-completion request and measure per-token ITL.
+
+        Uses `usage.completion_tokens` increments to correctly handle
+        multi-token bundles. Stores individual per-token ITL samples.
+        """
         url = f"{dep.vllm_base_url}/v1/chat/completions"
-        body = {
-            "model": dep.model_name,
-            "messages": [{"role": "user", "content": prompt}],
-            "max_tokens": self._config.max_output_tokens,
-            "stream": True,
-            "stream_options": {"include_usage": True, "continuous_usage_stats": True},
-        }
-        token_times: list[float] = []
+        body = dict(request_dict)
+        body["stream"] = True
+        body["stream_options"] = {"include_usage": True, "continuous_usage_stats": True}
+        if "max_tokens" in body and "max_completion_tokens" not in body:
+            body["max_completion_tokens"] = body.pop("max_tokens")
+
+        current_completion_tokens = 0
+        most_recent_timestamp = time.perf_counter()
+        ttft_recorded = False
+
         try:
-            async with client.stream("POST", url, json=body) as response:
-                response.raise_for_status()
-                buffer = ""
-                async for chunk in response.aiter_text():
+            async with session.post(url, json=body) as response:
+                if response.status != 200:
+                    return
+                async for chunk_bytes in response.content:
                     if self._stop_event.is_set():
                         return
-                    buffer += chunk
-                    while "\n" in buffer:
-                        line, buffer = buffer.split("\n", 1)
-                        line = line.strip()
-                        if not line or not line.startswith("data: "):
-                            continue
-                        data_str = line[6:]
-                        if data_str == "[DONE]":
-                            break
-                        try:
-                            data = json.loads(data_str)
-                        except json.JSONDecodeError:
-                            continue
-                        choices = data.get("choices", [])
-                        if choices and choices[0].get("delta", {}).get("content"):
-                            token_times.append(time.monotonic())
+                    chunk_bytes = chunk_bytes.strip()
+                    if not chunk_bytes:
+                        continue
+
+                    chunk_str = chunk_bytes.decode("utf-8")
+
+                    # Skip SSE comments (often used as pings)
+                    if chunk_str.startswith(":"):
+                        continue
+
+                    data_str = chunk_str.removeprefix("data: ")
+                    if data_str == "[DONE]":
+                        break
+
+                    try:
+                        data = json.loads(data_str)
+                    except json.JSONDecodeError:
+                        continue
+
+                    usage = data.get("usage")
+                    completion_tokens = usage and usage.get("completion_tokens")
+                    if not completion_tokens:
+                        continue
+
+                    timestamp = time.perf_counter()
+                    now_mono = time.monotonic()
+
+                    if not ttft_recorded:
+                        # First token(s)
+                        ttft_recorded = True
+                        inc = completion_tokens - current_completion_tokens
+                        current_completion_tokens = completion_tokens
+                        # Record zero ITL for bundled first tokens
+                        with self._lock:
+                            for _ in range(inc):
+                                self._itl_samples[label].append((now_mono, 0.0))
+                    else:
+                        # Decoding phase
+                        itl = timestamp - most_recent_timestamp
+                        inc = completion_tokens - current_completion_tokens
+                        current_completion_tokens = completion_tokens
+
+                        with self._lock:
+                            self._itl_samples[label].append((now_mono, itl))
+                            # Bundled tokens get zero ITL
+                            for _ in range(max(inc - 1, 0)):
+                                self._itl_samples[label].append((now_mono, 0.0))
+
+                    most_recent_timestamp = timestamp
+
         except Exception:
             if not self._stop_event.is_set():
                 logger.debug("Request to %s failed for %s", dep.vllm_base_url, label, exc_info=True)
-            return
-
-        if len(token_times) >= 3:
-            itls = [token_times[i + 1] - token_times[i] for i in range(len(token_times) - 1)]
-            avg_itl = sum(itls) / len(itls)
-            now = time.monotonic()
-            with self._lock:
-                self._itl_samples[label].append((now, avg_itl))
 
 
 # ---------------------------------------------------------------------------
@@ -325,7 +550,7 @@ class _PowerAugmenter:
     """Augments real GPU power to datacenter scale with temporal staggering.
 
     Maintains a rolling buffer of per-model measured power.  At each
-    query, K virtual server groups — each with a random time offset —
+    query, K virtual server groups -- each with a random time offset --
     read from the buffer at different historical points.  Their average
     yields a smoothed per-GPU power that is then scaled to the full
     simulated GPU count.  This spreads batch-size-change transients over
@@ -450,9 +675,14 @@ class OnlineDatacenter(LLMBatchSizeControlledDatacenter[OnlineDatacenterState]):
         power_client: Zeus `PowerStreamingClient` connected to zeusd instances.
         augmentation: Power augmentation configuration.
         load_gen: Load generation configuration.
-        prompts_by_model: Mapping of model_label -> list of prompt strings
-            used to generate saturated load.
+        requests_by_model: Mapping of model_label -> list of pre-built
+            OpenAI Chat Completion request dicts (from `data/online/build_requests.py`).
+            Each dict should contain at least `model`, `messages`, and
+            `max_completion_tokens`. Streaming fields are added automatically.
         dt_s: Simulation timestep (seconds).
+        prometheus_poll_interval_s: How often to poll vLLM /metrics (seconds).
+            Set to 0 to disable Prometheus polling.
+        health_check: If True, run health checks on start().
     """
 
     def __init__(
@@ -462,8 +692,10 @@ class OnlineDatacenter(LLMBatchSizeControlledDatacenter[OnlineDatacenterState]):
         power_client: PowerStreamingClient,
         augmentation: PowerAugmentationConfig | None = None,
         load_gen: LoadGenerationConfig | None = None,
-        prompts_by_model: dict[str, list[str]],
+        requests_by_model: dict[str, list[dict]],
         dt_s: Fraction = Fraction(1, 10),
+        prometheus_poll_interval_s: float = 0.5,
+        health_check: bool = True,
     ) -> None:
         if augmentation is None:
             augmentation = PowerAugmentationConfig()
@@ -474,8 +706,23 @@ class OnlineDatacenter(LLMBatchSizeControlledDatacenter[OnlineDatacenterState]):
         self._deployment_map = {d.model_label: d for d in deployments}
         self._power_client = power_client
         self._augmentation_config = augmentation
+        self._health_check = health_check
 
-        self._load_gen = _LoadGenerator(deployments, prompts_by_model, load_gen)
+        self._prometheus = (
+            _PrometheusPoller(
+                deployments,
+                poll_interval_s=prometheus_poll_interval_s,
+            )
+            if prometheus_poll_interval_s > 0
+            else None
+        )
+
+        self._load_gen = _LoadGenerator(
+            deployments,
+            requests_by_model,
+            load_gen,
+            prometheus_poller=self._prometheus,
+        )
         self._augmenter = _PowerAugmenter(deployments, augmentation)
 
         self._batch_by_model: dict[str, int] = {d.model_label: d.spec.initial_batch_size for d in deployments}
@@ -505,7 +752,9 @@ class OnlineDatacenter(LLMBatchSizeControlledDatacenter[OnlineDatacenterState]):
         return self._dt
 
     @property
-    def state(self) -> OnlineDatacenterState | None:
+    def state(self) -> OnlineDatacenterState:
+        if self._state is None:
+            raise RuntimeError("OnlineDatacenter.state accessed before first step().")
         return self._state
 
     def history(self, n: int | None = None) -> list[OnlineDatacenterState]:
@@ -518,22 +767,29 @@ class OnlineDatacenter(LLMBatchSizeControlledDatacenter[OnlineDatacenterState]):
     def start(self) -> None:
         """Start load generation and wait for initial readings.
 
-        The `PowerStreamingClient` is already connected (it starts on
-        construction). This method waits for readings, then starts load
-        generation.
-
         Sequence:
-            1. Wait for at least one power reading per endpoint (10 s timeout).
-            2. Set initial batch sizes on all vLLM servers.
-            3. Start load generation threads.
-            4. Wait for at least one ITL sample per model (30 s timeout).
+            1. Run health checks on all vLLM servers and zeusd instances.
+            2. Wait for at least one power reading per endpoint (10 s timeout).
+            3. Set initial batch sizes on all vLLM servers.
+            4. Start load generation threads.
+            5. Wait for at least one ITL sample per model (30 s timeout).
         """
         if self._started:
             raise RuntimeError("OnlineDatacenter already started")
 
         logger.info("Starting OnlineDatacenter with %d deployments", len(self._deployments))
 
-        # 1. Wait for power readings from all endpoints
+        # 1. Health checks
+        if self._health_check:
+            logger.info("Running health checks...")
+            for d in self._deployments:
+                _check_vllm_health(d.vllm_base_url)
+                _check_vllm_model(d.vllm_base_url, d.model_name)
+                for ep in d.gpu_endpoints:
+                    _check_zeusd_health(ep.host, ep.port)
+            logger.info("All health checks passed")
+
+        # 2. Wait for power readings from all endpoints
         all_endpoints: set[str] = set()
         for d in self._deployments:
             for ep in d.gpu_endpoints:
@@ -557,7 +813,7 @@ class OnlineDatacenter(LLMBatchSizeControlledDatacenter[OnlineDatacenterState]):
             _set_vllm_batch_size(d.vllm_base_url, batch)
             logger.info("Set initial batch size for %s: %d", d.model_label, batch)
 
-        # 4. Start load generation
+        # 4. Start load generation (and Prometheus poller)
         self._load_gen.start()
         logger.info("LoadGenerator started")
 
@@ -606,7 +862,6 @@ class OnlineDatacenter(LLMBatchSizeControlledDatacenter[OnlineDatacenterState]):
             augmentation_factor_by_model[label] = d.augmentation_factor
             active_replicas[label] = d.spec.num_replicas
 
-            # Distribute power across phases proportional to real GPU counts
             phase_gpu_counts: dict[Phase, int] = {Phase.A: 0, Phase.B: 0, Phase.C: 0}
             for ep in d.gpu_endpoints:
                 phase_gpu_counts[ep.phase] += len(ep.gpu_indices)
@@ -626,6 +881,10 @@ class OnlineDatacenter(LLMBatchSizeControlledDatacenter[OnlineDatacenterState]):
             d.model_label: self._load_gen.get_observed_itl(d.model_label) for d in self._deployments
         }
 
+        prometheus_metrics: dict[str, dict[str, float]] = {}
+        if self._prometheus is not None:
+            prometheus_metrics = self._prometheus.get_latest()
+
         state = OnlineDatacenterState(
             time_s=clock.time_s,
             power_w=ThreePhase(
@@ -644,22 +903,18 @@ class OnlineDatacenter(LLMBatchSizeControlledDatacenter[OnlineDatacenterState]):
             measured_power_w_by_model=measured_power_by_model,
             augmented_power_w_by_model=augmented_power_by_model,
             augmentation_factor_by_model=augmentation_factor_by_model,
+            prometheus_metrics_by_model=prometheus_metrics,
         )
         self._state = state
         self._history.append(state)
         return state
 
-    def apply_control(self, command: Command) -> None:
+    def apply_control(self, command: DatacenterCommand) -> None:
         """Apply batch size command by sending HTTP requests to vLLM servers."""
-        if command.kind != "set_batch_size":
-            raise ValueError(f"OnlineDatacenter does not support command kind={command.kind!r}")
-        if "batch_size_by_model" not in command.payload:
-            raise ValueError("set_batch_size requires payload['batch_size_by_model'].")
-        batch_map = command.payload["batch_size_by_model"]
-        if not isinstance(batch_map, dict):
-            raise ValueError("set_batch_size requires payload['batch_size_by_model'] as a dict.")
+        if not isinstance(command, SetBatchSize):
+            raise TypeError(f"OnlineDatacenter does not support {type(command).__name__}")
 
-        for label, b in batch_map.items():
+        for label, b in command.batch_size_by_model.items():
             label = str(label)
             b_int = int(b)
             if b_int <= 0:
@@ -669,29 +924,34 @@ class OnlineDatacenter(LLMBatchSizeControlledDatacenter[OnlineDatacenterState]):
             if old != b_int:
                 dep = self._deployment_map.get(label)
                 if dep is not None:
-                    _set_vllm_batch_size(dep.vllm_base_url, b_int)
+                    _set_vllm_batch_size(dep.vllm_base_url, b_int, ramp_up_rate=command.ramp_up_rate)
                     self._load_gen.set_batch_size(label, b_int)
                 logger.info("Batch size %s: %s -> %d", label, old, b_int)
 
         if self._events is not None:
             self._events.emit(
                 "datacenter.batch_size.updated",
-                {
-                    "kind": command.kind,
-                    "batch_size_by_model": dict(self._batch_by_model),
-                },
+                {"batch_size_by_model": dict(self._batch_by_model)},
             )
 
     def bind_event_emitter(self, emitter: EventEmitter) -> None:
         self._events = emitter
 
 
-def _set_vllm_batch_size(vllm_base_url: str, batch_size: int) -> None:
+def _set_vllm_batch_size(
+    vllm_base_url: str,
+    batch_size: int,
+    ramp_up_rate: float = 0.0,
+) -> None:
     """Send HTTP POST to set batch size on the vLLM server."""
-    url = f"{vllm_base_url}/set_max_num_seqs"
+    url = f"{vllm_base_url}/set_max_num_seqs?max_num_seqs={batch_size}"
+    if ramp_up_rate > 0:
+        url += f"&ramp_up_rate={ramp_up_rate}"
     try:
-        resp = httpx.post(url, params={"max_num_seqs": batch_size}, timeout=2.0)
-        resp.raise_for_status()
+        req = urllib.request.Request(url, method="POST", data=b"")
+        with urllib.request.urlopen(req, timeout=2.0) as resp:
+            if resp.status >= 400:
+                logger.warning("Failed to set batch size %d on %s: HTTP %d", batch_size, vllm_base_url, resp.status)
     except Exception:
         logger.warning(
             "Failed to set batch size %d on %s",

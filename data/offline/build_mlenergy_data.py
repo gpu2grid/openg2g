@@ -35,7 +35,7 @@ def _emit_trace_bank(*, tl: pd.DataFrame, dt_s: float, out_dir: Path) -> pd.Data
         series_list: list[tuple[np.ndarray, np.ndarray]] = []
         t_ends: list[float] = []
 
-        for _results_path, rg in g.groupby("results_path"):
+        for _run_index, rg in g.groupby("run_index"):
             rr = rg.sort_values("relative_time_s")
             t = rr["relative_time_s"].to_numpy(dtype=float)
             p = rr["value"].to_numpy(dtype=float)
@@ -262,11 +262,6 @@ def main() -> int:
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--itl-sample-cap-per-run", type=int, default=2048)
     parser.add_argument(
-        "--timeline-metric",
-        default="power.device_instant",
-        choices=["power.device_instant", "power.device_average", "temperature"],
-    )
-    parser.add_argument(
         "--plot",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -310,7 +305,7 @@ def main() -> int:
         label = str(entry["label"])
         batch_sizes: list[int] = [int(b) for b in entry["batch_sizes"]]
 
-        subset = all_runs.model(model_id).gpu(gpu).num_gpus(num_gpus).batch(*batch_sizes)
+        subset = all_runs.model_id(model_id).gpu_model(gpu).num_gpus(num_gpus).max_num_seqs(*batch_sizes)
         if not subset:
             raise ValueError(
                 f"Config entry matched zero runs: model_id={model_id!r}, "
@@ -319,9 +314,13 @@ def main() -> int:
             )
         subsets_by_label[label] = subset
 
-        tl = subset.timelines(metric=str(args.timeline_metric))
-        tl["model_label"] = label
-        tl_frames.append(tl)
+        for run in subset:
+            tl = run.timelines(metric="power.device_instant")
+            tl["model_label"] = label
+            tl["num_gpus"] = run.num_gpus
+            tl["max_num_seqs"] = run.max_num_seqs
+            tl["run_index"] = len(tl_frames)
+            tl_frames.append(tl)
 
         itl = subset.inter_token_latencies()
         itl["model_label"] = label
@@ -372,7 +371,7 @@ def main() -> int:
     run_summary = (
         run_df.groupby(["model_label", "num_gpus", "max_num_seqs"], dropna=False)
         .agg(
-            n_runs=("results_path", "count"),
+            n_runs=("model_label", "count"),
             avg_power_watts_median=("avg_power_watts", "median"),
             avg_itl_ms_median=("median_itl_ms", "median"),
             throughput_toks_s_median=("output_throughput_tokens_per_sec", "median"),

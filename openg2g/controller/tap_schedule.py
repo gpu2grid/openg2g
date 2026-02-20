@@ -9,7 +9,7 @@ from openg2g.controller.base import Controller
 from openg2g.datacenter.base import DatacenterBackend
 from openg2g.events import EventEmitter
 from openg2g.grid.base import GridBackend
-from openg2g.types import Command, ControlAction
+from openg2g.types import ControlAction, SetTaps
 
 
 class TapScheduleController(Controller[DatacenterBackend, GridBackend]):
@@ -55,13 +55,5 @@ class TapScheduleController(Controller[DatacenterBackend, GridBackend]):
                 break
 
         if tap_changes:
-            return ControlAction(
-                commands=[
-                    Command(
-                        target="grid",
-                        kind="set_taps",
-                        payload={"tap_changes": tap_changes},
-                    )
-                ]
-            )
+            return ControlAction(commands=[SetTaps(tap_changes=tap_changes)])
         return ControlAction(commands=[])

@@ -17,10 +17,12 @@ from openg2g.grid.base import GridBackend
 from openg2g.grid.opendss import OpenDSSGrid
 from openg2g.types import (
     BusVoltages,
-    Command,
     ControlAction,
+    DatacenterCommand,
     DatacenterState,
+    GridCommand,
     GridState,
+    SetBatchSize,
     ThreePhase,
 )
 
@@ -39,14 +41,16 @@ class _StubDC(DatacenterBackend[DatacenterState]):
         self._state: DatacenterState | None = None
         self._history: list[DatacenterState] = []
         self.step_count = 0
-        self.apply_control_calls: list[Command] = []
+        self.apply_control_calls: list[DatacenterCommand] = []
 
     @property
     def dt_s(self) -> Fraction:
         return self._dt_s
 
     @property
-    def state(self) -> DatacenterState | None:
+    def state(self) -> DatacenterState:
+        if self._state is None:
+            raise RuntimeError("No state yet")
         return self._state
 
     def history(self, n: int | None = None) -> list[DatacenterState]:
@@ -66,7 +70,7 @@ class _StubDC(DatacenterBackend[DatacenterState]):
         self._history.append(state)
         return state
 
-    def apply_control(self, command: Command) -> None:
+    def apply_control(self, command: DatacenterCommand) -> None:
         self.apply_control_calls.append(command)
 
 
@@ -85,7 +89,9 @@ class _StubGrid(GridBackend[GridState]):
         return self._dt_s
 
     @property
-    def state(self) -> GridState | None:
+    def state(self) -> GridState:
+        if self._state is None:
+            raise RuntimeError("No state yet")
         return self._state
 
     def history(self, n: int | None = None) -> list[GridState]:
@@ -121,7 +127,7 @@ class _StubGrid(GridBackend[GridState]):
     def estimate_sensitivity(self, perturbation_kw: float = 100.0) -> tuple[np.ndarray, np.ndarray]:
         return np.zeros((3, 3)), np.ones(3)
 
-    def apply_control(self, command: Command) -> None:
+    def apply_control(self, command: GridCommand) -> None:
         pass
 
 
@@ -245,15 +251,7 @@ def test_coordinator_batch_action_applied():
     dc = _StubDC(dt_s=Fraction(1))
     grid = _StubGrid(dt_s=Fraction(1))
 
-    action_with_batch = ControlAction(
-        commands=[
-            Command(
-                target="datacenter",
-                kind="set_batch_size",
-                payload={"batch_size_by_model": {"model_a": 64}},
-            )
-        ]
-    )
+    action_with_batch = ControlAction(commands=[SetBatchSize(batch_size_by_model={"model_a": 64})])
     ctrl = _StubController(dt_s=Fraction(1), action=action_with_batch)
 
     coord = Coordinator(dc, grid, [ctrl], total_duration_s=1, dc_bus="671")
@@ -303,7 +301,9 @@ def test_batch_history_is_populated_from_datacenter_events():
             return self._dt_s
 
         @property
-        def state(self) -> DatacenterState | None:
+        def state(self) -> DatacenterState:
+            if self._state is None:
+                raise RuntimeError("No state yet")
             return self._state
 
         def history(self, n: int | None = None) -> list[DatacenterState]:
@@ -322,7 +322,7 @@ def test_batch_history_is_populated_from_datacenter_events():
             self._history.append(state)
             return state
 
-        def apply_control(self, command: Command) -> None:
+        def apply_control(self, command: DatacenterCommand) -> None:
             assert self._events is not None
             self._events.emit(
                 "datacenter.batch_size.updated",
@@ -333,15 +333,7 @@ def test_batch_history_is_populated_from_datacenter_events():
     grid = _StubGrid(dt_s=Fraction(1))
     ctrl = _StubController(
         dt_s=Fraction(1),
-        action=ControlAction(
-            commands=[
-                Command(
-                    target="datacenter",
-                    kind="set_batch_size",
-                    payload={"batch_size_by_model": {"model_a": 64}},
-                )
-            ]
-        ),
+        action=ControlAction(commands=[SetBatchSize(batch_size_by_model={"model_a": 64})]),
     )
 
     coord = Coordinator(dc, grid, [ctrl], total_duration_s=1, dc_bus="671")
@@ -379,7 +371,9 @@ def test_controller_datacenter_mismatch_error_has_underlined_generic_snippet():
             return Fraction(1)
 
         @property
-        def state(self) -> DatacenterState | None:
+        def state(self) -> DatacenterState:
+            if self._state is None:
+                raise RuntimeError("No state yet")
             return self._state
 
         def history(self, n: int | None = None) -> list[DatacenterState]:
@@ -391,7 +385,7 @@ def test_controller_datacenter_mismatch_error_has_underlined_generic_snippet():
             self._state = state
             return state
 
-        def apply_control(self, command: Command) -> None:
+        def apply_control(self, command: DatacenterCommand) -> None:
             pass
 
     class _OtherDC(DatacenterBackend[DatacenterState]):
@@ -403,7 +397,9 @@ def test_controller_datacenter_mismatch_error_has_underlined_generic_snippet():
             return Fraction(1)
 
         @property
-        def state(self) -> DatacenterState | None:
+        def state(self) -> DatacenterState:
+            if self._state is None:
+                raise RuntimeError("No state yet")
             return self._state
 
         def history(self, n: int | None = None) -> list[DatacenterState]:
@@ -415,7 +411,7 @@ def test_controller_datacenter_mismatch_error_has_underlined_generic_snippet():
             self._state = state
             return state
 
-        def apply_control(self, command: Command) -> None:
+        def apply_control(self, command: DatacenterCommand) -> None:
             pass
 
     class _NeedsExpectedDC(Controller[_ExpectedDC, OpenDSSGrid]):

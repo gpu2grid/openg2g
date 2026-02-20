@@ -6,7 +6,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import TypeVar
 
 import numpy as np
 
@@ -54,24 +54,38 @@ class BusVoltages:
 
 @dataclass(frozen=True)
 class DatacenterState:
-    """State emitted by a datacenter backend each timestep."""
+    """State emitted by a datacenter backend each timestep.
+
+    Contains only universally applicable fields. LLM-inference-specific
+    fields (batch sizes, replicas, latency) live on `LLMDatacenterState`.
+    """
 
     time_s: float
     power_w: ThreePhase
+
+
+@dataclass(frozen=True)
+class LLMDatacenterState(DatacenterState):
+    """State from a datacenter serving LLM inference workloads.
+
+    Extends `DatacenterState` with per-model batch size, replica count,
+    and observed inter-token latency fields used by LLM controllers.
+    """
+
     batch_size_by_model: dict[str, int] = field(default_factory=dict)
     active_replicas_by_model: dict[str, int] = field(default_factory=dict)
     observed_itl_s_by_model: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
-class OfflineDatacenterState(DatacenterState):
+class OfflineDatacenterState(LLMDatacenterState):
     """Extended state from the offline (trace-based) backend."""
 
     power_by_model_w: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
-class OnlineDatacenterState(DatacenterState):
+class OnlineDatacenterState(LLMDatacenterState):
     """Extended state from the online (live GPU) backend.
 
     The base `power_w` field carries the augmented three-phase power
@@ -87,12 +101,17 @@ class OnlineDatacenterState(DatacenterState):
             is the power fed to the grid for each model after scaling up.
         augmentation_factor_by_model: Per-model augmentation multiplier
             (virtual replicas / real replicas).
+        prometheus_metrics_by_model: Per-model Prometheus metrics snapshot.
+            Keys are model labels, values are dicts with metric names like
+            `num_requests_running`, `num_requests_waiting`,
+            `kv_cache_usage_perc`, `num_preemptions_total`.
     """
 
     measured_power_w: ThreePhase = field(default_factory=lambda: ThreePhase(a=0.0, b=0.0, c=0.0))
     measured_power_w_by_model: dict[str, float] = field(default_factory=dict)
     augmented_power_w_by_model: dict[str, float] = field(default_factory=dict)
     augmentation_factor_by_model: dict[str, float] = field(default_factory=dict)
+    prometheus_metrics_by_model: dict[str, dict[str, float]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -108,6 +127,49 @@ DCStateT = TypeVar("DCStateT", bound=DatacenterState)
 GridStateT = TypeVar("GridStateT", bound=GridState)
 
 
+class DatacenterCommand:
+    """Base for commands targeting the datacenter backend.
+
+    Subclass this for each concrete datacenter command kind.
+    The coordinator routes commands to backends based on this type hierarchy.
+    """
+
+
+class GridCommand:
+    """Base for commands targeting the grid backend.
+
+    Subclass this for each concrete grid command kind.
+    The coordinator routes commands to backends based on this type hierarchy.
+    """
+
+
+@dataclass(frozen=True)
+class SetBatchSize(DatacenterCommand):
+    """Set batch sizes for one or more models.
+
+    Attributes:
+        batch_size_by_model: Mapping of model label to target batch size.
+        ramp_up_rate: Requests/second ramp-up rate. 0 means immediate.
+    """
+
+    batch_size_by_model: dict[str, int]
+    ramp_up_rate: float = 0.0
+
+
+@dataclass(frozen=True)
+class SetTaps(GridCommand):
+    """Set regulator tap positions.
+
+    Attributes:
+        tap_changes: Mapping of regulator control name to tap ratio (pu).
+    """
+
+    tap_changes: dict[str, float]
+
+
+Command = DatacenterCommand | GridCommand
+
+
 @dataclass(frozen=True)
 class ControlAction:
     """Collection of control commands emitted by a controller.
@@ -115,27 +177,7 @@ class ControlAction:
     Use an empty `commands` list for a no-op action.
     """
 
-    commands: list[Command] = field(default_factory=list)
-
-
-@dataclass(frozen=True)
-class Command:
-    """Single command envelope routed by target and kind."""
-
-    target: CommandTarget | str
-    kind: str
-    payload: dict[str, Any] = field(default_factory=dict)
-    metadata: dict[str, Any] = field(default_factory=dict)
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "target", CommandTarget(self.target))
-
-
-class CommandTarget(str, Enum):
-    """Command routing target."""
-
-    DATACENTER = "datacenter"
-    GRID = "grid"
+    commands: list[DatacenterCommand | GridCommand] = field(default_factory=list)
 
 
 class Phase(str, Enum):
@@ -228,6 +270,66 @@ class TapSchedule:
             if p.c is not None:
                 fields.append(f"c={p.c}")
             parts.append(f"TapPosition({', '.join(fields)}).at(t={t})")
+        return " | ".join(parts)
+
+
+@dataclass(frozen=True)
+class BatchSizeChange:
+    """A batch size change event, optionally with gradual ramp-up.
+
+    Args:
+        batch_size: Target batch size (max_num_seqs).
+        ramp_up_rate: Requests/second ramp-up rate. 0 means immediate.
+    """
+
+    batch_size: int
+    ramp_up_rate: float = 0.0
+
+    def __post_init__(self) -> None:
+        if self.batch_size <= 0:
+            raise ValueError(f"batch_size must be positive, got {self.batch_size}.")
+        if self.ramp_up_rate < 0:
+            raise ValueError(f"ramp_up_rate must be >= 0, got {self.ramp_up_rate}.")
+
+    def at(self, t: float) -> BatchSizeSchedule:
+        """Schedule this change at time *t* seconds."""
+        return BatchSizeSchedule(((t, self),))
+
+
+class BatchSizeSchedule:
+    """Ordered sequence of batch size changes, built with `|` operator.
+
+    Example:
+
+        schedule = (
+            BatchSizeChange(48).at(40)
+            | BatchSizeChange(32).at(60)
+            | BatchSizeChange(48, ramp_up_rate=4).at(280)
+        )
+    """
+
+    __slots__ = ("_entries",)
+
+    def __init__(self, entries: tuple[tuple[float, BatchSizeChange], ...]) -> None:
+        self._entries = tuple(sorted(entries, key=lambda e: e[0]))
+
+    def __or__(self, other: BatchSizeSchedule) -> BatchSizeSchedule:
+        return BatchSizeSchedule(self._entries + other._entries)
+
+    def __iter__(self) -> Iterator[tuple[float, BatchSizeChange]]:
+        return iter(self._entries)
+
+    def __len__(self) -> int:
+        return len(self._entries)
+
+    def __bool__(self) -> bool:
+        return bool(self._entries)
+
+    def __repr__(self) -> str:
+        parts: list[str] = []
+        for t, c in self._entries:
+            ramp = f", ramp_up_rate={c.ramp_up_rate}" if c.ramp_up_rate > 0 else ""
+            parts.append(f"BatchSizeChange({c.batch_size}{ramp}).at(t={t})")
         return " | ".join(parts)
 
 

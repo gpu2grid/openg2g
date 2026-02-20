@@ -4,7 +4,7 @@ OpenG2G is designed for extensibility. You can implement your own datacenter bac
 
 ## Custom Controller
 
-Controllers implement the `Controller` ABC from `openg2g.controller.base`:
+Controllers implement the `Controller` ABC from `openg2g.controller.base`. The `Controller` class is generic over its compatible datacenter and grid backend types:
 
 ```python
 from __future__ import annotations
@@ -14,10 +14,10 @@ from openg2g.controller.base import Controller
 from openg2g.datacenter.base import DatacenterBackend
 from openg2g.events import EventEmitter
 from openg2g.grid.base import GridBackend
-from openg2g.types import Command, ControlAction
+from openg2g.types import Command, ControlAction, DatacenterState, GridState
 
 
-class MyController(Controller[DatacenterBackend, GridBackend]):
+class MyController(Controller[DatacenterBackend[DatacenterState], GridBackend[GridState]]):
     """A controller that reduces batch size when any voltage is below a threshold."""
 
     def __init__(self, v_threshold: float = 0.96, dt_s: float = 1.0):
@@ -31,8 +31,8 @@ class MyController(Controller[DatacenterBackend, GridBackend]):
     def step(
         self,
         clock: SimulationClock,
-        datacenter: DatacenterBackend,
-        grid: GridBackend,
+        datacenter: DatacenterBackend[DatacenterState],
+        grid: GridBackend[GridState],
         events: EventEmitter,
     ) -> ControlAction:
         if grid.state is None:
@@ -77,9 +77,19 @@ class MyController(Controller[DatacenterBackend, GridBackend]):
 - Use `clock.time_s` for time-dependent logic.
 - Use `events.emit(topic, data)` to log controller-side events.
 
+### Controller Generic Parameters
+
+The two type parameters in `Controller[DC, Grid]` declare which backend types the controller is compatible with. The coordinator checks these at construction time. Common patterns:
+
+- `Controller[DatacenterBackend[DatacenterState], GridBackend[GridState]]` -- works with any backend.
+- `Controller[LLMBatchSizeControlledDatacenter[OfflineDatacenterState], OpenDSSGrid]` -- only works with the offline datacenter and OpenDSS grid.
+- `Controller[LLMBatchSizeControlledDatacenter[DatacenterState], GridBackend[GridState]]` -- works with any LLM datacenter and any grid.
+
+If your controller inherits from a typed parent, the generic parameters are inherited automatically -- no need to re-specify them.
+
 ## Custom Datacenter Backend
 
-Datacenter backends implement the `DatacenterBackend` ABC from `openg2g.datacenter.base`:
+Datacenter backends implement the `DatacenterBackend` ABC from `openg2g.datacenter.base`. The ABC is generic over the state type it emits -- parameterize it with the state dataclass your backend returns from `step()`:
 
 ```python
 from __future__ import annotations
@@ -91,7 +101,7 @@ from openg2g.datacenter.base import DatacenterBackend
 from openg2g.types import Command, DatacenterState, ThreePhase
 
 
-class SyntheticDatacenter(DatacenterBackend):
+class SyntheticDatacenter(DatacenterBackend[DatacenterState]):
     """A datacenter that generates sinusoidal power profiles."""
 
     def __init__(self, dt_s: float = 0.1, base_kw: float = 1000.0):
@@ -135,6 +145,20 @@ class SyntheticDatacenter(DatacenterBackend):
         if isinstance(batch_map, dict):
             self._batch.update({str(k): int(v) for k, v in batch_map.items()})
 ```
+
+If your backend needs richer state (e.g. per-model power breakdowns), define a `DatacenterState` subclass and use it as the type parameter:
+
+```python
+@dataclass(frozen=True)
+class MyState(DatacenterState):
+    per_gpu_power_w: dict[int, float] = field(default_factory=dict)
+
+class MyDatacenter(DatacenterBackend[MyState]):
+    def step(self, clock: SimulationClock) -> MyState:
+        ...
+```
+
+The state type propagates through the `Coordinator` to the `SimulationLog`, so `log.dc_states` will be correctly typed as `list[MyState]`.
 
 ### Datacenter Guidelines
 

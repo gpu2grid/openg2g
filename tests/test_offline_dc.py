@@ -5,6 +5,7 @@ from __future__ import annotations
 from fractions import Fraction
 
 import numpy as np
+import pytest
 from mlenergy_data.modeling import ITLMixtureModel
 
 from openg2g.clock import SimulationClock
@@ -14,7 +15,7 @@ from openg2g.datacenter.offline import (
     build_periodic_per_gpu_template,
 )
 from openg2g.models.spec import LLMInferenceModelSpec
-from openg2g.types import Command, OfflineDatacenterState
+from openg2g.types import DatacenterCommand, OfflineDatacenterState, SetBatchSize
 
 
 def _make_simple_cache(dt: float = 0.1, T: float = 100.0) -> TraceByBatchCache:
@@ -121,13 +122,7 @@ def test_batch_change_takes_effect_at_chunk_boundary():
         clock.advance()
 
     # Change batch size, recorded but deferred
-    dc.apply_control(
-        Command(
-            target="datacenter",
-            kind="set_batch_size",
-            payload={"batch_size_by_model": {"TestModel": 64}},
-        )
-    )
+    dc.apply_control(SetBatchSize(batch_size_by_model={"TestModel": 64}))
     assert dc.batch_by_model["TestModel"] == 64
 
     # Remaining steps in the current chunk still report old batch
@@ -186,3 +181,27 @@ def test_offline_datacenter_emits_observed_itl_when_latency_fits_is_set():
     state = dc.step(SimulationClock(tick_s=Fraction(1, 10)))
     assert "TestModel" in state.observed_itl_s_by_model
     assert np.isfinite(state.observed_itl_s_by_model["TestModel"])
+
+
+def test_apply_control_rejects_unknown_command():
+    """apply_control raises TypeError for unsupported command types."""
+
+    class _CustomCommand(DatacenterCommand):
+        pass
+
+    cache = _make_simple_cache()
+    model = LLMInferenceModelSpec(model_label="TestModel", num_replicas=10, gpus_per_replica=1, initial_batch_size=128)
+    dc = OfflineDatacenter(
+        trace_cache=cache,
+        models=[model],
+        timestep_s=Fraction(1, 10),
+        gpus_per_server=8,
+        seed=0,
+        chunk_steps=10,
+        ramp_t_start=9999,
+        ramp_t_end=9999,
+        ramp_floor=1.0,
+    )
+
+    with pytest.raises(TypeError, match="OfflineDatacenter does not support"):
+        dc.apply_control(_CustomCommand())

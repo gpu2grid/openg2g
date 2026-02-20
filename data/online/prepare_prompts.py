@@ -25,7 +25,7 @@ logger = logging.getLogger("prepare_prompts")
 
 
 def main(args: argparse.Namespace) -> None:
-    from datasets import load_dataset  # type: ignore[unresolved-import]
+    from datasets import load_dataset
 
     logger.info("Loading dataset %s (split=%s)...", args.dataset, args.split)
 

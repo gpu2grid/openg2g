@@ -21,8 +21,9 @@ from openg2g.events import EventEmitter
 from openg2g.grid.opendss import OpenDSSGrid
 from openg2g.models.spec import LLMInferenceModelSpec, LLMInferenceWorkload
 from openg2g.types import (
-    Command,
     ControlAction,
+    LLMDatacenterState,
+    SetBatchSize,
 )
 
 logger = logging.getLogger(__name__)
@@ -303,7 +304,7 @@ class PrimalBatchOptimizer:
         return batch_next
 
 
-class OFOBatchController(Controller[LLMBatchSizeControlledDatacenter, OpenDSSGrid]):
+class OFOBatchController(Controller[LLMBatchSizeControlledDatacenter[LLMDatacenterState], OpenDSSGrid]):
     """Online Feedback Optimization controller for batch-size regulation.
 
     Reads grid voltage and datacenter state, updates voltage and latency
@@ -459,7 +460,7 @@ class OFOBatchController(Controller[LLMBatchSizeControlledDatacenter, OpenDSSGri
     def step(
         self,
         clock: SimulationClock,
-        datacenter: LLMBatchSizeControlledDatacenter,
+        datacenter: LLMBatchSizeControlledDatacenter[LLMDatacenterState],
         grid: OpenDSSGrid,
         events: EventEmitter,
     ) -> ControlAction:
@@ -476,54 +477,45 @@ class OFOBatchController(Controller[LLMBatchSizeControlledDatacenter, OpenDSSGri
             )
 
         # 2. Update voltage duals from grid state
-        if grid.state is not None:
-            observed_voltages = grid.voltages_vector()
-            self._voltage_dual.update(observed_voltages)
+        observed_voltages = grid.voltages_vector()
+        self._voltage_dual.update(observed_voltages)
 
         voltage_dual_diff = self._voltage_dual.dual_difference()  # η = λ̄ − λ
 
         # 3. Read observed latency from datacenter and update latency duals
         dc_state = datacenter.state
-        if dc_state is not None:
-            missing_replicas = [
-                ms.model_label for ms in self._models if ms.model_label not in dc_state.active_replicas_by_model
-            ]
-            if missing_replicas:
-                miss = ", ".join(sorted(missing_replicas))
-                raise RuntimeError(
-                    f"OFOBatchController requires active_replicas_by_model for all models. Missing: {miss}."
-                )
-            missing_itl = [
-                ms.model_label for ms in self._models if ms.model_label not in dc_state.observed_itl_s_by_model
-            ]
-            if missing_itl:
-                miss = ", ".join(sorted(missing_itl))
-                raise RuntimeError(
-                    f"OFOBatchController requires observed_itl_s_by_model for all models. Missing: {miss}."
-                )
-            for ms in self._models:
-                label = ms.model_label
-                num_replicas = max(int(dc_state.active_replicas_by_model.get(label, 0)), 0)
-                observed_itl = float(dc_state.observed_itl_s_by_model.get(label, float("nan")))
-                if num_replicas <= 0:
-                    logger.debug("Model %s has 0 replicas, skipping latency dual update", label)
-                    observed_itl = float("nan")
+        missing_replicas = [
+            ms.model_label for ms in self._models if ms.model_label not in dc_state.active_replicas_by_model
+        ]
+        if missing_replicas:
+            miss = ", ".join(sorted(missing_replicas))
+            raise RuntimeError(f"OFOBatchController requires active_replicas_by_model for all models. Missing: {miss}.")
+        missing_itl = [ms.model_label for ms in self._models if ms.model_label not in dc_state.observed_itl_s_by_model]
+        if missing_itl:
+            miss = ", ".join(sorted(missing_itl))
+            raise RuntimeError(f"OFOBatchController requires observed_itl_s_by_model for all models. Missing: {miss}.")
+        for ms in self._models:
+            label = ms.model_label
+            num_replicas = max(int(dc_state.active_replicas_by_model.get(label, 0)), 0)
+            observed_itl = float(dc_state.observed_itl_s_by_model.get(label, float("nan")))
+            if num_replicas <= 0:
+                logger.debug("Model %s has 0 replicas, skipping latency dual update", label)
+                observed_itl = float("nan")
 
-                deadline = float(self._itl_deadline_by_model.get(label, 0.1))
-                if np.isfinite(observed_itl):
-                    self._latency_dual_by_model[label] = max(
-                        self._latency_dual_by_model[label] + self._latency_dual_step_size * (observed_itl - deadline),
-                        0.0,
-                    )
-                else:
-                    self._latency_dual_by_model[label] = max(self._latency_dual_by_model[label], 0.0)
+            deadline = float(self._itl_deadline_by_model.get(label, 0.1))
+            if np.isfinite(observed_itl):
+                self._latency_dual_by_model[label] = max(
+                    self._latency_dual_by_model[label] + self._latency_dual_step_size * (observed_itl - deadline),
+                    0.0,
+                )
+            else:
+                self._latency_dual_by_model[label] = max(self._latency_dual_by_model[label], 0.0)
 
         # 4. Compute replica counts
         replica_count_by_model: dict[str, float] = {}
-        if dc_state is not None:
-            for ms in self._models:
-                label = ms.model_label
-                replica_count_by_model[label] = float(dc_state.active_replicas_by_model.get(label, 0))
+        for ms in self._models:
+            label = ms.model_label
+            replica_count_by_model[label] = float(dc_state.active_replicas_by_model.get(label, 0))
 
         # 5. Primal update -> next batch sizes
         assert self._sensitivity_matrix is not None
@@ -542,12 +534,4 @@ class OFOBatchController(Controller[LLMBatchSizeControlledDatacenter, OpenDSSGri
             clock.time_s,
             batch_next,
         )
-        return ControlAction(
-            commands=[
-                Command(
-                    target="datacenter",
-                    kind="set_batch_size",
-                    payload={"batch_size_by_model": batch_next},
-                )
-            ]
-        )
+        return ControlAction(commands=[SetBatchSize(batch_size_by_model=batch_next)])

@@ -2,7 +2,7 @@
 
 Faithfully ports the matplotlib code from ``baseline_wo_control.py`` and
 ``final_ofo_test.py`` (the paper reference scripts), adapted to read data
-from the library's ``SimulationLog`` and ``DatacenterState`` objects.
+from the library's ``SimulationLog`` and ``LLMDatacenterState`` objects.
 
 This module lives outside the ``openg2g`` library on purpose: the library
 exports simulation state and metrics, while all matplotlib-dependent
@@ -24,7 +24,7 @@ import numpy as np
 from matplotlib.axes import Axes
 from matplotlib.patches import Patch
 
-from openg2g.types import DatacenterState, GridState, OfflineDatacenterState
+from openg2g.types import GridState, LLMDatacenterState, OfflineDatacenterState, OnlineDatacenterState
 
 Figure = matplotlib.figure.Figure
 
@@ -67,9 +67,9 @@ class PerModelTimeSeries:
 
 
 def extract_per_model_timeseries(
-    dc_states: Sequence[DatacenterState],
+    dc_states: Sequence[LLMDatacenterState],
 ) -> PerModelTimeSeries:
-    """Build per-model arrays from a list of ``DatacenterState`` objects.
+    """Build per-model arrays from a list of ``LLMDatacenterState`` objects.
 
     ``power_w`` is populated only when states are ``OfflineDatacenterState``
     (which carries ``power_by_model_w``).
@@ -770,6 +770,179 @@ def plot_per_model_power(
     ax.grid(True, alpha=0.25)
     ax.legend(ncol=2, fontsize=8)
     fig.tight_layout()
+    if save_path is not None:
+        fig.savefig(save_path, bbox_inches="tight")
+        plt.close(fig)
+    return fig
+
+
+# ══════════════════════════════════════════════════════════════════════
+# Online multi-panel: GPU power, batch size, ITL, KV cache
+# (ported from g2g/analyze.py, adapted for SimulationLog)
+# ══════════════════════════════════════════════════════════════════════
+
+
+@dataclass
+class OnlinePerModelTimeSeries:
+    """Per-model time series extracted from online datacenter states."""
+
+    time_s: np.ndarray
+    measured_power_w: dict[str, np.ndarray] = field(default_factory=dict)
+    batch_size: dict[str, np.ndarray] = field(default_factory=dict)
+    itl_s: dict[str, np.ndarray] = field(default_factory=dict)
+    kv_cache_pct: dict[str, np.ndarray] = field(default_factory=dict)
+    num_requests_running: dict[str, np.ndarray] = field(default_factory=dict)
+
+
+def extract_online_per_model_timeseries(
+    dc_states: Sequence[OnlineDatacenterState],
+) -> OnlinePerModelTimeSeries:
+    """Build per-model arrays from a list of `OnlineDatacenterState` objects."""
+    if not dc_states:
+        raise ValueError("dc_states is empty.")
+
+    time_s = np.array([s.time_s for s in dc_states])
+    model_labels = sorted(dc_states[0].batch_size_by_model.keys())
+
+    measured_power_w: dict[str, np.ndarray] = {}
+    batch_size: dict[str, np.ndarray] = {}
+    itl_s: dict[str, np.ndarray] = {}
+    kv_cache_pct: dict[str, np.ndarray] = {}
+    num_requests_running: dict[str, np.ndarray] = {}
+
+    for label in model_labels:
+        measured_power_w[label] = np.array([s.measured_power_w_by_model.get(label, 0.0) for s in dc_states])
+        batch_size[label] = np.array([s.batch_size_by_model.get(label, 0) for s in dc_states])
+        itl_s[label] = np.array([s.observed_itl_s_by_model.get(label, float("nan")) for s in dc_states])
+        kv_cache_pct[label] = np.array(
+            [
+                s.prometheus_metrics_by_model.get(label, {}).get("kv_cache_usage_perc", float("nan")) * 100.0
+                for s in dc_states
+            ]
+        )
+        num_requests_running[label] = np.array(
+            [s.prometheus_metrics_by_model.get(label, {}).get("num_requests_running", float("nan")) for s in dc_states]
+        )
+
+    return OnlinePerModelTimeSeries(
+        time_s=time_s,
+        measured_power_w=measured_power_w,
+        batch_size=batch_size,
+        itl_s=itl_s,
+        kv_cache_pct=kv_cache_pct,
+        num_requests_running=num_requests_running,
+    )
+
+
+def plot_online_timeseries(
+    per_model: OnlinePerModelTimeSeries,
+    model_labels: list[str],
+    *,
+    schedule_times_s: list[float] | None = None,
+    figsize: tuple[float, float] = (14, 12),
+    dpi: int = 200,
+    save_path: Path | str | None = None,
+) -> Figure:
+    """Multi-panel online time series: GPU power, batch size, ITL, KV cache.
+
+    Args:
+        per_model: Extracted per-model time series from online states.
+        model_labels: Ordered model labels for consistent color assignment.
+        schedule_times_s: Optional list of batch size change times (seconds)
+            to draw as vertical lines on all panels.
+        figsize: Figure size in inches.
+        dpi: Figure resolution.
+        save_path: If given, save figure to this path.
+
+    Returns:
+        The matplotlib Figure object.
+    """
+    color_cycle = plt.rcParams["axes.prop_cycle"].by_key().get("color", [])
+    if not color_cycle:
+        cmap = plt.get_cmap("tab10")
+        color_cycle = [cmap(i) for i in range(10)]
+    model_to_color = {lab: color_cycle[i % len(color_cycle)] for i, lab in enumerate(model_labels)}
+
+    t_s = per_model.time_s
+    label_fs = 10
+    tick_fs = 9
+    legend_fs = 8
+
+    fig, axes = plt.subplots(4, 1, sharex=True, figsize=figsize, dpi=dpi, constrained_layout=True)
+
+    def _draw_schedule_lines(ax: Axes) -> None:
+        if schedule_times_s:
+            for t in schedule_times_s:
+                ax.axvline(t, color="gray", alpha=0.3, linewidth=0.7, linestyle=":")
+
+    # (a) GPU Power (measured, per model)
+    ax = axes[0]
+    for lab in model_labels:
+        if lab in per_model.measured_power_w:
+            ax.plot(t_s, per_model.measured_power_w[lab], lw=0.8, color=model_to_color[lab], label=lab)
+    ax.set_ylabel("Measured GPU Power (W)", fontsize=label_fs)
+    ax.set_title("(a) Per-model measured GPU power")
+    ax.set_ylim(bottom=0)
+    ax.grid(True, alpha=0.25)
+    ax.legend(fontsize=legend_fs, ncol=4, loc="upper right")
+    ax.tick_params(labelsize=tick_fs)
+    _draw_schedule_lines(ax)
+
+    # (b) Batch size (from prometheus num_requests_running or state)
+    ax = axes[1]
+    for lab in model_labels:
+        if lab in per_model.num_requests_running:
+            y = per_model.num_requests_running[lab]
+            if not np.all(np.isnan(y)):
+                ax.step(t_s, y, where="post", lw=1.2, color=model_to_color[lab], label=f"{lab} (running)")
+        if lab in per_model.batch_size:
+            ax.step(
+                t_s,
+                per_model.batch_size[lab],
+                where="post",
+                lw=0.8,
+                color=model_to_color[lab],
+                linestyle="--",
+                alpha=0.6,
+                label=f"{lab} (set)",
+            )
+    ax.set_ylabel("Requests / Batch Size", fontsize=label_fs)
+    ax.set_title("(b) Batch size and requests running")
+    ax.set_ylim(bottom=0)
+    ax.grid(True, alpha=0.25)
+    ax.legend(fontsize=legend_fs, ncol=4, loc="upper right")
+    ax.tick_params(labelsize=tick_fs)
+    _draw_schedule_lines(ax)
+
+    # (c) ITL
+    ax = axes[2]
+    for lab in model_labels:
+        if lab in per_model.itl_s:
+            ax.plot(t_s, per_model.itl_s[lab] * 1e3, lw=0.8, color=model_to_color[lab], label=lab)
+    ax.set_ylabel("ITL (ms)", fontsize=label_fs)
+    ax.set_title("(c) Per-model average ITL")
+    ax.set_ylim(bottom=0)
+    ax.grid(True, alpha=0.25)
+    ax.legend(fontsize=legend_fs, ncol=4, loc="upper right")
+    ax.tick_params(labelsize=tick_fs)
+    _draw_schedule_lines(ax)
+
+    # (d) KV cache usage
+    ax = axes[3]
+    for lab in model_labels:
+        if lab in per_model.kv_cache_pct:
+            y = per_model.kv_cache_pct[lab]
+            if not np.all(np.isnan(y)):
+                ax.plot(t_s, y, lw=1.0, color=model_to_color[lab], label=lab)
+    ax.set_ylabel("KV Cache Usage (%)", fontsize=label_fs)
+    ax.set_title("(d) KV cache usage")
+    ax.set_ylim(bottom=0)
+    ax.grid(True, alpha=0.25)
+    ax.legend(fontsize=legend_fs, ncol=4, loc="upper right")
+    ax.tick_params(labelsize=tick_fs)
+    ax.set_xlabel("Time (s)", fontsize=label_fs)
+    _draw_schedule_lines(ax)
+
     if save_path is not None:
         fig.savefig(save_path, bbox_inches="tight")
         plt.close(fig)
