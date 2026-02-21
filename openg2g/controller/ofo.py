@@ -390,6 +390,14 @@ class OFOBatchController(Controller[LLMBatchSizeControlledDatacenter[LLMDatacent
             feasible_batch_sizes,
         )
 
+    def reset(self) -> None:
+        self._voltage_dual = None
+        self._latency_dual_by_model = {ms.model_label: 0.0 for ms in self._models}
+        self._optimizer.init_from_batches({ms.model_label: ms.initial_batch_size for ms in self._models})
+        self._sensitivity_matrix = None
+        self._baseline_voltages = None
+        self._control_step_count = 0
+
     @classmethod
     def from_workload(
         cls,

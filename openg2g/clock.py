@@ -65,6 +65,11 @@ class SimulationClock:
                 )
         return self.time_s
 
+    def reset(self) -> None:
+        """Reset clock to initial state (tick 0)."""
+        self._step = 0
+        self._wall_t0 = None
+
     def is_due(self, period_s: Fraction) -> bool:
         """Check if an event with the given period should fire on this tick.
 

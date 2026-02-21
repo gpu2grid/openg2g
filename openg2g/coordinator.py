@@ -181,6 +181,28 @@ class Coordinator(Generic[DCStateT, GridStateT]):
 
         self.clock = SimulationClock(tick_s=tick, live=live)
 
+    def reset(self) -> None:
+        """Reset coordinator and all sub-components for a fresh run."""
+        self.clock.reset()
+        self.datacenter.reset()
+        self.grid.reset()
+        for ctrl in self.controllers:
+            ctrl.reset()
+
+    def start(self) -> None:
+        """Acquire resources on all sub-components."""
+        self.datacenter.start()
+        self.grid.start()
+        for ctrl in self.controllers:
+            ctrl.start()
+
+    def stop(self) -> None:
+        """Release resources on all sub-components (LIFO order)."""
+        for ctrl in reversed(self.controllers):
+            ctrl.stop()
+        self.grid.stop()
+        self.datacenter.stop()
+
     def _validate_controller_compatibility(self) -> None:
         for ctrl in self.controllers:
             sig = ctrl.__class__.compatibility_signature()
@@ -215,13 +237,10 @@ class Coordinator(Generic[DCStateT, GridStateT]):
 
         self._validate_controller_compatibility()
 
-        self.datacenter.start()
-        self.grid.start()
-        for ctrl in self.controllers:
-            ctrl.start()
+        self.reset()
+        self.start()
 
         dc_buffer: list[ThreePhase] = []
-        interval_start_power: ThreePhase | None = None
 
         ratio = Fraction(self.total_duration_s) / self.clock.tick_s
         if ratio.denominator != 1:
@@ -250,25 +269,11 @@ class Coordinator(Generic[DCStateT, GridStateT]):
 
                 # 2. Grid step (if due). Pass full sub-trace since last grid step.
                 if self.clock.is_due(self.grid.dt_s):
+                    grid_state = self.grid.step(self.clock, list(dc_buffer))
                     if dc_buffer:
-                        grid_state = self.grid.step(
-                            self.clock,
-                            list(dc_buffer),
-                            interval_start_power_w=interval_start_power,
-                        )
-                        last_power = dc_buffer[-1]
-                        log.record_power(last_power)
-                        interval_start_power = last_power
-                        dc_buffer.clear()
-                        log.record_grid(grid_state, dc_bus=self.dc_bus)
-                    elif interval_start_power is not None:
-                        grid_state = self.grid.step(
-                            self.clock,
-                            [interval_start_power],
-                            interval_start_power_w=None,
-                        )
-                        log.record_power(interval_start_power)
-                        log.record_grid(grid_state, dc_bus=self.dc_bus)
+                        log.record_power(dc_buffer[-1])
+                    dc_buffer.clear()
+                    log.record_grid(grid_state, dc_bus=self.dc_bus)
 
                 # 3. Controllers (if due). In order, actions applied immediately.
                 for ctrl in self.controllers:
@@ -287,10 +292,7 @@ class Coordinator(Generic[DCStateT, GridStateT]):
 
                 self.clock.advance()
         finally:
-            for ctrl in reversed(self.controllers):
-                ctrl.stop()
-            self.grid.stop()
-            self.datacenter.stop()
+            self.stop()
 
         logger.info(
             "Simulation complete: %d grid steps, %d DC steps, %d control actions",

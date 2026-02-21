@@ -126,15 +126,13 @@ class GridBackend(Generic[GridStateT], ABC):
         self,
         clock: SimulationClock,
         power_samples_w: list[ThreePhase],
-        *,
-        interval_start_power_w: ThreePhase | None = None,
     ) -> GridStateT: ...
     def apply_control(self, command: Command) -> None: ...
     def voltages_vector(self) -> np.ndarray: ...
     def estimate_sensitivity(self, perturbation_kw: float = 100.0) -> tuple[np.ndarray, np.ndarray]: ...
 ```
 
-The grid receives a list of power samples accumulated since the last grid step. When the grid runs at a coarser rate than the datacenter, `interval_start_power_w` provides the last sample from the previous grid step so the grid can interpolate the full interval.
+The grid receives a list of power samples accumulated since the last grid step. When the grid runs at a coarser rate than the datacenter, the grid internally caches the last sample from the previous step to prepend for interpolation.
 
 The grid returns a state dataclass containing per-bus, per-phase voltages and (optionally) current regulator tap positions.
 
@@ -156,6 +154,40 @@ Current built-in command kinds:
 - `target=CommandTarget.GRID` (`"grid"` also accepted), `kind="set_taps"` with `payload["tap_changes"]`
 
 Multiple controllers compose in order within the coordinator.
+
+## Component Lifecycle
+
+Each component follows a defined lifecycle managed by the coordinator:
+
+```
+__init__() ──> reset() ──> start() ──> step() / apply_control() ──> stop()
+                 ^                                                     │
+                 └─────────────── (repeat from reset) ─────────────────┘
+```
+
+What belongs in each method:
+
+- **`__init__()`**: Store configuration and do expensive one-time setup that is reusable across runs (e.g., build power templates, parse config). Does NOT acquire per-run resources.
+- **`reset()`**: Clear simulation state -- history, counters, RNG seeds, cached values. Configuration is not affected. **Abstract** on all ABCs.
+- **`start()`**: Acquire per-run resources -- compile DSS circuits, start threads. **Concrete no-op** by default.
+- **`stop()`**: Release per-run resources. State is preserved for post-run inspection. Concrete no-op by default.
+
+The coordinator sequences these for every `run()` call: `reset()` all -> `start()` all -> simulation loop -> `stop()` all. This means calling `run()` twice on the same coordinator produces identical results.
+
+`reset()` and `start()` are separate because they have different forcing properties. `reset()` is abstract: every implementation must explicitly enumerate what state it clears. A forgotten field silently corrupts the second run, so the compiler catches missing implementations. `start()` is a concrete no-op: most components (5 of 7) have state to clear but no resources to acquire, so they only need to implement `reset()`.
+
+### Reuse pattern
+
+Expensive objects (like `OpenDSSGrid`, which compiles a DSS circuit) can be reused across configuration sweeps:
+
+```python
+grid = OpenDSSGrid(...)  # stores config only (cheap)
+for config in sweep_configs:
+    dc = OfflineDatacenter(**config)  # builds power templates (expensive, reusable)
+    ctrl = OFOBatchController(...)
+    coord = Coordinator(dc, grid, [ctrl], total_duration_s=3600)
+    log = coord.run()  # reset -> start (compile DSS) -> loop -> stop
+```
 
 ## The Datacenter Model
 

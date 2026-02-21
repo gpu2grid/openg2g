@@ -21,6 +21,14 @@ log = coord.run()
 
 The coordinator computes the base tick as the GCD of all component periods. In this example, if the datacenter runs at 0.1s and the grid at 1.0s, the tick is 0.1s.
 
+## Component Lifecycle
+
+Every `run()` call follows the sequence: `reset()` all -> `start()` all -> simulation loop -> `stop()` all. Calling `run()` twice produces identical results.
+
+- **`reset()`** (abstract) clears simulation state (history, RNGs, counters). Configuration is not affected.
+- **`start()`** (no-op by default) acquires per-run resources. `OpenDSSGrid` compiles its DSS circuit here; most offline components don't override this.
+- **`stop()`** (no-op by default) releases per-run resources. Simulation state is preserved for inspection.
+
 ## Setting Up the Datacenter
 
 ### Offline (Trace Replay)
@@ -101,22 +109,47 @@ dc = OfflineDatacenter.from_config(
 
 ### Online (Live GPU)
 
-The `OnlineDatacenter` reads real-time GPU power via Zeus:
+The `OnlineDatacenter` connects to real vLLM servers for load generation and ITL measurement, and to zeusd instances for live GPU power monitoring. Power readings from a small number of real GPUs are augmented to datacenter scale using temporal staggering.
 
 ```python
-from openg2g.datacenter.online import OnlineDatacenter
+from zeus.monitor.power_streaming import PowerStreamingClient
+from openg2g.datacenter.online import (
+    OnlineDatacenter,
+    OnlineModelDeployment,
+    GPUEndpointMapping,
+    PowerAugmentationConfig,
+    LoadGenerationConfig,
+)
+from openg2g.models.spec import LLMInferenceModelSpec
+
+deployments = [
+    OnlineModelDeployment(
+        spec=LLMInferenceModelSpec(
+            model_label="Llama-3.1-8B", num_replicas=720,
+            gpus_per_replica=1, initial_batch_size=128,
+        ),
+        vllm_base_url="http://node1:8000",
+        model_name="meta-llama/Llama-3.1-8B-Instruct",
+        gpu_endpoints=(
+            GPUEndpointMapping(host="node1", gpu_indices=(0, 1, 2, 3)),
+        ),
+    ),
+]
+
+power_client = PowerStreamingClient(
+    gpu_endpoints={ep.endpoint_key: list(ep.gpu_indices) for d in deployments for ep in d.gpu_endpoints}
+)
 
 dc = OnlineDatacenter(
-    gpu_indices=[0, 1, 2, 3],
-    dt_s=0.1,
-    batch_control_callback=my_batch_setter,
-    replica_count_provider=my_replica_counter,
+    deployments=deployments,
+    power_client=power_client,
+    requests_by_model={"Llama-3.1-8B": [...]},
+    augmentation=PowerAugmentationConfig(base_kw_per_phase=500.0),
+    load_gen=LoadGenerationConfig(max_output_tokens=512),
 )
 ```
 
-The `batch_control_callback` is called with a `{model_label: batch_size}` dict whenever the controller changes batch sizes.
-If you plan to use OFO with an online backend, provide `replica_count_provider` so
-`active_replicas_by_model` is populated each step.
+The coordinator calls `start()` to run health checks, wait for power readings, set initial batch sizes, and start load generation. `stop()` shuts everything down.
 
 ## Setting Up the Grid
 
@@ -233,3 +266,23 @@ plot_power_3ph(
     save_path="power.png",
 )
 ```
+
+## Configuration Sweeps
+
+Since `run()` calls `reset()` on all components before each run, you can reuse expensive objects across a parameter sweep:
+
+```python
+from openg2g.coordinator import Coordinator
+from openg2g.grid.opendss import OpenDSSGrid
+
+grid = OpenDSSGrid(...)  # stores config only (cheap)
+
+for batch_init in [64, 128, 256, 512]:
+    dc = OfflineDatacenter(trace_cache=cache, models=models, ...)
+    ctrl = OFOBatchController(models=models, ...)
+    coord = Coordinator(dc, grid, [ctrl], total_duration_s=3600)
+    log = coord.run()  # reset -> start (compile DSS) -> loop -> stop
+    print(f"batch_init={batch_init}: violation={stats.integral_violation:.2f}")
+```
+
+Each `run()` resets simulation state, then `start()` compiles a fresh DSS circuit, so every iteration starts clean despite reusing the same `OpenDSSGrid` instance.

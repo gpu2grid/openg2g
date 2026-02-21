@@ -108,31 +108,21 @@ class OpenDSSGrid(GridBackend[GridState]):
         self._tap_schedule: list[tuple[float, dict[str, float]]] = [
             (t, pos.as_reg_dict()) for t, pos in (tap_schedule or ())
         ]
-        self._tap_idx = 0
         self._reg_map: dict[str, tuple[str, int]] | None = None
         self._events: EventEmitter | None = None
+        self._exclude_buses = tuple(str(b) for b in exclude_buses)
+
+        # Simulation state (cleared by reset)
+        self._tap_idx = 0
         self._state: GridState | None = None
         self._history: list[GridState] = []
+        self._prev_power: ThreePhase | None = None
 
-        # Populated during _init_dss
+        # DSS-derived data (populated by start)
+        self._started = False
         self.all_buses: list[str] = []
         self.buses_with_phase: dict[int, list[str]] = {}
         self._v_index: list[tuple[str, int]] = []
-
-        self._exclude_buses = tuple(str(b) for b in exclude_buses)
-        self._init_dss()
-        self._v_index = self._build_v_index()
-        self._build_vmag_indices()
-
-        logger.info(
-            "OpenDSSGrid: case=%s, dc_bus=%s, dt=%s s, controls_off=%s, %d buses, %d bus-phase pairs",
-            self._master,
-            self._dc_bus,
-            self._dt_s,
-            self._controls_off,
-            len(self.all_buses),
-            len(self._v_index),
-        )
 
     @property
     def dt_s(self) -> Fraction:
@@ -153,14 +143,14 @@ class OpenDSSGrid(GridBackend[GridState]):
 
     @property
     def v_index(self) -> list[tuple[str, int]]:
+        if not self._started:
+            raise RuntimeError("OpenDSSGrid.v_index accessed before start().")
         return list(self._v_index)
 
     def step(
         self,
         clock: SimulationClock,
         power_samples_w: list[ThreePhase],
-        *,
-        interval_start_power_w: ThreePhase | None = None,
     ) -> GridState:
         """Advance one grid period and return the resulting voltage state.
 
@@ -169,20 +159,24 @@ class OpenDSSGrid(GridBackend[GridState]):
         avoid unnecessary solves.  When a single sample is provided
         (``dt_grid == dt_dc``), it is solved directly.
 
+        When resampling, the grid prepends the last power sample from the
+        previous step so the interpolation covers the full interval
+        [previous_end, current_end].
+
         Args:
             clock: Current simulation clock.
             power_samples_w: List of ``ThreePhase`` power samples (Watts)
                 accumulated since the last grid step.
-            interval_start_power_w: Optional power at the start of the
-                interval (saved from the previous grid step).  When the
-                buffer contains multiple samples, it is prepended so that
-                the resampled trace covers the full grid period including
-                the starting boundary.
 
         Returns:
             GridState with voltages from the solve.
         """
         self.apply_taps_if_needed(clock.time_s)
+
+        if not power_samples_w:
+            if self._prev_power is None:
+                raise RuntimeError("OpenDSSGrid.step() called with no power samples and no previous power.")
+            power_samples_w = [self._prev_power]
 
         pf = max(min(self._power_factor, 0.999999), 1e-6)
         tanphi = math.tan(math.acos(pf))
@@ -190,11 +184,13 @@ class OpenDSSGrid(GridBackend[GridState]):
         resampled = len(power_samples_w) > 1
         if resampled:
             trace = list(power_samples_w)
-            if interval_start_power_w is not None:
-                trace.insert(0, interval_start_power_w)
+            if self._prev_power is not None:
+                trace.insert(0, self._prev_power)
             samples = self._resample_power_to_grid_points(trace)
         else:
             samples = power_samples_w
+
+        self._prev_power = power_samples_w[-1]
 
         first_solve_voltages: BusVoltages | None = None
         for power in samples:
@@ -244,6 +240,27 @@ class OpenDSSGrid(GridBackend[GridState]):
                 {"tap_changes": dict(tap_map)},
             )
 
+    def reset(self) -> None:
+        self._state = None
+        self._history = []
+        self._prev_power = None
+        self._tap_idx = 0
+
+    def start(self) -> None:
+        self._init_dss()
+        self._v_index = self._build_v_index()
+        self._build_vmag_indices()
+        self._started = True
+        logger.info(
+            "OpenDSSGrid: case=%s, dc_bus=%s, dt=%s s, controls_off=%s, %d buses, %d bus-phase pairs",
+            self._master,
+            self._dc_bus,
+            self._dt_s,
+            self._controls_off,
+            len(self.all_buses),
+            len(self._v_index),
+        )
+
     def bind_event_emitter(self, emitter: EventEmitter) -> None:
         self._events = emitter
 
@@ -266,6 +283,8 @@ class OpenDSSGrid(GridBackend[GridState]):
 
     def voltages_vector(self) -> np.ndarray:
         """Return voltage magnitudes (pu) in the fixed v_index ordering."""
+        if not self._started:
+            raise RuntimeError("OpenDSSGrid.voltages_vector() called before start().")
         vmag = np.asarray(dss.Circuit.AllBusMagPu())
         return vmag[self._v_index_to_vmag]
 
@@ -376,7 +395,6 @@ class OpenDSSGrid(GridBackend[GridState]):
             dss.Text.Command("Set ControlMode=Off")
 
         if self._tap_schedule:
-            self._tap_idx = 0
             self.apply_taps_if_needed(0.0)
 
         self._solve()

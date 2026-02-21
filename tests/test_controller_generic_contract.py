@@ -34,8 +34,10 @@ class _DC(DatacenterBackend[DatacenterState]):
         raise RuntimeError("No state yet")
 
     def history(self, n: int | None = None):
-
         return []
+
+    def reset(self) -> None:
+        pass
 
     def step(self, clock: SimulationClock) -> DatacenterState:
         return DatacenterState(time_s=clock.time_s, power_w=ThreePhase(a=1.0, b=1.0, c=1.0))
@@ -54,8 +56,10 @@ class _Grid(GridBackend[GridState]):
         raise RuntimeError("No state yet")
 
     def history(self, n: int | None = None):
-
         return []
+
+    def reset(self) -> None:
+        pass
 
     @property
     def v_index(self) -> list[tuple[str, int]]:
@@ -65,10 +69,7 @@ class _Grid(GridBackend[GridState]):
         self,
         clock: SimulationClock,
         power_samples_w: list[ThreePhase],
-        *,
-        interval_start_power_w: ThreePhase | None = None,
     ) -> GridState:
-
         return GridState(
             time_s=clock.time_s,
             voltages=BusVoltages({"671": ThreePhase(1.0, 1.0, 1.0)}),
@@ -158,6 +159,9 @@ def test_controller_inherits_compatibility_from_typed_parent():
         def dt_s(self) -> Fraction:
             return Fraction(1)
 
+        def reset(self) -> None:
+            pass
+
         def step(
             self,
             clock: SimulationClock,
@@ -165,7 +169,6 @@ def test_controller_inherits_compatibility_from_typed_parent():
             grid: _Grid,
             events: EventEmitter,
         ) -> ControlAction:
-
             return ControlAction(commands=[])
 
     class _Child(_BaseTyped):
@@ -182,6 +185,9 @@ def test_controller_accepts_parameterized_backend_generics():
         @property
         def dt_s(self) -> Fraction:
             return Fraction(1)
+
+        def reset(self) -> None:
+            pass
 
         def step(
             self,

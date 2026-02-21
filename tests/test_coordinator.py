@@ -60,6 +60,12 @@ class _StubDC(DatacenterBackend[DatacenterState]):
             return []
         return list(self._history[-int(n) :])
 
+    def reset(self) -> None:
+        self._state = None
+        self._history = []
+        self.step_count = 0
+        self.apply_control_calls = []
+
     def step(self, clock: SimulationClock) -> DatacenterState:
         self.step_count += 1
         state = DatacenterState(
@@ -100,6 +106,12 @@ class _StubGrid(GridBackend[GridState]):
         if n <= 0:
             return []
         return list(self._history[-int(n) :])
+
+    def reset(self) -> None:
+        self._state = None
+        self._history = []
+        self.step_count = 0
+        self.step_calls = []
 
     def step(
         self,
@@ -147,6 +159,9 @@ class _StubController(Controller[DatacenterBackend, GridBackend]):
         self._dt_s = dt_s
         self._action = action or ControlAction(commands=[])
         self._on_step = on_step
+        self.call_count = 0
+
+    def reset(self) -> None:
         self.call_count = 0
 
     @property
@@ -313,6 +328,10 @@ def test_batch_history_is_populated_from_datacenter_events():
                 return []
             return list(self._history[-int(n) :])
 
+        def reset(self) -> None:
+            self._state = None
+            self._history = []
+
         def bind_event_emitter(self, emitter: EventEmitter) -> None:
             self._events = emitter
 
@@ -347,6 +366,9 @@ def test_controller_generic_types_auto_extracted():
         def dt_s(self) -> Fraction:
             return Fraction(1)
 
+        def reset(self) -> None:
+            pass
+
         def step(
             self,
             clock: SimulationClock,
@@ -377,8 +399,10 @@ def test_controller_datacenter_mismatch_error_has_underlined_generic_snippet():
             return self._state
 
         def history(self, n: int | None = None) -> list[DatacenterState]:
-
             return []
+
+        def reset(self) -> None:
+            pass
 
         def step(self, clock: SimulationClock) -> DatacenterState:
             state = DatacenterState(time_s=clock.time_s, power_w=ThreePhase(a=1.0, b=1.0, c=1.0))
@@ -403,8 +427,10 @@ def test_controller_datacenter_mismatch_error_has_underlined_generic_snippet():
             return self._state
 
         def history(self, n: int | None = None) -> list[DatacenterState]:
-
             return []
+
+        def reset(self) -> None:
+            pass
 
         def step(self, clock: SimulationClock) -> DatacenterState:
             state = DatacenterState(time_s=clock.time_s, power_w=ThreePhase(a=1.0, b=1.0, c=1.0))
@@ -418,6 +444,9 @@ def test_controller_datacenter_mismatch_error_has_underlined_generic_snippet():
         @property
         def dt_s(self) -> Fraction:
             return Fraction(1)
+
+        def reset(self) -> None:
+            pass
 
         def step(
             self,
@@ -455,7 +484,7 @@ def test_coordinator_grid_uses_stale_power_when_dc_buffer_empty():
     log = coord.run()
 
     # Grid fires at tick 0 (dc_buffer has 1 sample) and tick 5 (dc_buffer empty,
-    # falls back to interval_start_power).
+    # grid reuses its internally cached previous power).
     assert grid.step_count == 2
     # Both grid steps should produce log entries
     assert len(log.grid_states) == 2
@@ -485,3 +514,20 @@ def test_coordinator_warns_ctrl_dt_lt_grid_dt():
         )
     msgs = [str(x.message) for x in w]
     assert any("stale voltages" in m for m in msgs)
+
+
+def test_coordinator_run_twice_identical():
+    """Calling run() twice on the same coordinator produces identical results."""
+    dc = _StubDC(dt_s=Fraction(1, 10))
+    grid = _StubGrid(dt_s=Fraction(1))
+    ctrl = _StubController(dt_s=Fraction(1))
+    coord = Coordinator(dc, grid, [ctrl], total_duration_s=2, dc_bus="671")
+
+    log1 = coord.run()
+    log2 = coord.run()
+
+    assert len(log1.dc_states) == len(log2.dc_states)
+    assert len(log1.grid_states) == len(log2.grid_states)
+    assert [s.time_s for s in log1.grid_states] == [s.time_s for s in log2.grid_states]
+    assert dc.step_count == 20  # 20 per run, reset between
+    assert grid.step_count == 2  # 2 per run, reset between

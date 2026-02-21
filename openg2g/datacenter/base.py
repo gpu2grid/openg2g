@@ -41,11 +41,34 @@ class DatacenterBackend(Generic[DCStateT], ABC):
     def apply_control(self, command: DatacenterCommand) -> None:
         """Apply one command. Takes effect on next step() call."""
 
+    @abstractmethod
+    def reset(self) -> None:
+        """Reset simulation state to initial conditions.
+
+        Called by the coordinator before each `start()`. Must clear all
+        simulation state: history, counters, RNG seeds, cached values.
+        Configuration (dt_s, models, templates) is not affected.
+
+        Abstract so every implementation explicitly enumerates its state.
+        A forgotten field is a bug -- not clearing it silently corrupts
+        the second run.
+        """
+
     def start(self) -> None:
-        """Acquire resources before simulation. No-op by default."""
+        """Acquire per-run resources (threads, solver circuits).
+
+        Called after `reset()`, before the simulation loop. Override for
+        backends that need resource acquisition (e.g., `OpenDSSGrid`
+        compiles its DSS circuit here). No-op by default because most
+        offline components have no resources to acquire.
+        """
 
     def stop(self) -> None:
-        """Release resources after simulation. No-op by default."""
+        """Release per-run resources. Simulation state is preserved.
+
+        Called after the simulation loop in LIFO order. Override for
+        backends that acquired resources in `start()`. No-op by default.
+        """
 
     def bind_event_emitter(self, emitter: EventEmitter) -> None:
         """Attach a clock-bound emitter for backend-originated events."""

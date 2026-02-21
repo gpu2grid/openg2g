@@ -20,6 +20,10 @@ class _GridStub(OpenDSSGrid):
         self._state: GridState | None = None
         self._history: list[GridState] = []
 
+    def reset(self) -> None:
+        self._state = None
+        self._history = []
+
     @property
     def dt_s(self) -> Fraction:
         return Fraction(1)
@@ -53,10 +57,7 @@ class _GridStub(OpenDSSGrid):
         self,
         clock: SimulationClock,
         power_samples_w: list[ThreePhase],
-        *,
-        interval_start_power_w: ThreePhase | None = None,
     ) -> GridState:
-
         self._state = GridState(
             time_s=clock.time_s,
             voltages=BusVoltages({"671": ThreePhase(a=0.94, b=0.96, c=1.01)}),
@@ -74,6 +75,9 @@ class _GridStub(OpenDSSGrid):
 class _DCStub(LLMBatchSizeControlledDatacenter):
     def __init__(self):
         self._state: LLMDatacenterState | None = None
+
+    def reset(self) -> None:
+        self._state = None
 
     @property
     def dt_s(self) -> Fraction:

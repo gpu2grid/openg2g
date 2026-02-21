@@ -12,7 +12,7 @@ An optional batch size schedule can drive controlled batch size changes
 via `BatchSizeScheduleController`.
 
 Usage:
-    python examples/online/run_baseline.py --config examples/online/online_config.example.json --mode no-tap
+    python examples/online/run_baseline.py --config examples/online/online_config.example.yaml --mode no-tap
 """
 
 from __future__ import annotations
@@ -23,6 +23,7 @@ import logging
 from fractions import Fraction
 from pathlib import Path
 
+import yaml
 from zeus.monitor.power_streaming import PowerStreamingClient, ZeusdTcpConfig
 
 from openg2g.controller.batch_size_schedule import BatchSizeScheduleController
@@ -73,7 +74,7 @@ def _parse_phase(s: str) -> Phase:
 def _build_deployments_from_config(
     config: dict,
 ) -> list[OnlineModelDeployment]:
-    """Build OnlineModelDeployment list from JSON config."""
+    """Build OnlineModelDeployment list from config."""
     deployments: list[OnlineModelDeployment] = []
 
     for m in config["models"]:
@@ -172,7 +173,7 @@ def main(args: argparse.Namespace) -> None:
     logging.getLogger().addHandler(file_handler)
 
     with open(args.config) as f:
-        config = json.load(f)
+        config = yaml.safe_load(f)
 
     v_min = config.get("v_min", 0.95)
     v_max = config.get("v_max", 1.05)
@@ -289,7 +290,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--config",
         required=True,
-        help="Path to JSON config file with deployment details.",
+        help="Path to YAML config file with deployment details.",
     )
     parser.add_argument(
         "--mode",

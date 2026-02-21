@@ -707,6 +707,8 @@ class OnlineDatacenter(LLMBatchSizeControlledDatacenter[OnlineDatacenterState]):
         self._deployment_map = {d.model_label: d for d in deployments}
         self._power_client = power_client
         self._augmentation_config = augmentation
+        self._load_gen_config = load_gen
+        self._requests_by_model = dict(requests_by_model)
         self._health_check = health_check
 
         self._prometheus = (
@@ -764,6 +766,21 @@ class OnlineDatacenter(LLMBatchSizeControlledDatacenter[OnlineDatacenterState]):
         if n <= 0:
             return []
         return list(self._history[-int(n) :])
+
+    def reset(self) -> None:
+        if self._started:
+            self._load_gen.stop()
+        self._load_gen = _LoadGenerator(
+            self._deployments,
+            self._requests_by_model,
+            self._load_gen_config,
+            prometheus_poller=self._prometheus,
+        )
+        self._augmenter = _PowerAugmenter(self._deployments, self._augmentation_config)
+        self._batch_by_model = {d.model_label: d.spec.initial_batch_size for d in self._deployments}
+        self._state = None
+        self._history = []
+        self._started = False
 
     def start(self) -> None:
         """Start load generation and wait for initial readings.

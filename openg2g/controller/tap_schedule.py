@@ -31,6 +31,9 @@ class TapScheduleController(Controller[DatacenterBackend, GridBackend]):
         self._schedule = sorted(list(schedule), key=lambda x: float(x[0]))
         self._idx = 0
 
+    def reset(self) -> None:
+        self._idx = 0
+
     @property
     def dt_s(self) -> Fraction:
         return self._dt_s

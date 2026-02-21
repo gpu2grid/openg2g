@@ -111,11 +111,31 @@ class Controller(Generic[DCBackendT, GridBackendT], ABC):
     def dt_s(self) -> Fraction:
         """Control interval as a Fraction (seconds)."""
 
+    @abstractmethod
+    def reset(self) -> None:
+        """Reset simulation state to initial conditions.
+
+        Called by the coordinator before each `start()`. Must clear all
+        simulation state: dual variables, counters, cached matrices.
+        Configuration (dt_s, fits, step sizes) is not affected.
+
+        Abstract so every implementation explicitly enumerates its state.
+        A forgotten field is a bug -- not clearing it silently corrupts
+        the second run.
+        """
+
     def start(self) -> None:
-        """Acquire resources before simulation. No-op by default."""
+        """Acquire per-run resources.
+
+        Called after `reset()`, before the simulation loop. No-op by
+        default because most controllers have no resources to acquire.
+        """
 
     def stop(self) -> None:
-        """Release resources after simulation. No-op by default."""
+        """Release per-run resources. Simulation state is preserved.
+
+        Called after the simulation loop in LIFO order. No-op by default.
+        """
 
     @abstractmethod
     def step(

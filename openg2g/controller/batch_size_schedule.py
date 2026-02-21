@@ -33,6 +33,9 @@ class BatchSizeScheduleController(Controller[DatacenterBackend, GridBackend]):
         self._schedules = dict(schedules)
         self._indices: dict[str, int] = {label: 0 for label in schedules}
 
+    def reset(self) -> None:
+        self._indices = {label: 0 for label in self._schedules}
+
     @property
     def dt_s(self) -> Fraction:
         return self._dt_s

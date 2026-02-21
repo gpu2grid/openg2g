@@ -296,9 +296,10 @@ class OfflineDatacenter(LLMBatchSizeControlledDatacenter[OfflineDatacenterState]
         self._trace_cache = trace_cache
         self._models = list(models)
         self._gpus_per_server = int(gpus_per_server)
+        self._seed = int(seed)
 
-        self._layout_rng = np.random.default_rng(int(seed))
-        self._rng = np.random.default_rng(int(seed) + 12345)
+        self._layout_rng = np.random.default_rng(self._seed)
+        self._rng = np.random.default_rng(self._seed + 12345)
 
         self._ramp_t_start = float(ramp_t_start)
         self._ramp_t_end = float(ramp_t_end)
@@ -324,8 +325,8 @@ class OfflineDatacenter(LLMBatchSizeControlledDatacenter[OfflineDatacenterState]
 
         # Step counter for global time tracking
         self._global_step: int = 0
-        seed_latency = int(seed) + 54321 if latency_seed is None else int(latency_seed)
-        self._latency_rng = np.random.default_rng(seed_latency)
+        self._latency_seed = int(seed) + 54321 if latency_seed is None else int(latency_seed)
+        self._latency_rng = np.random.default_rng(self._latency_seed)
         self._events: EventEmitter | None = None
         self._state: OfflineDatacenterState | None = None
         self._history: list[OfflineDatacenterState] = []
@@ -525,6 +526,16 @@ class OfflineDatacenter(LLMBatchSizeControlledDatacenter[OfflineDatacenterState]
                 "datacenter.batch_size.updated",
                 {"batch_size_by_model": dict(self._batch_by_model)},
             )
+
+    def reset(self) -> None:
+        self._state = None
+        self._history = []
+        self._global_step = 0
+        self._batch_by_model = {ms.model_label: ms.initial_batch_size for ms in self._models}
+        self._layout = {}
+        self._layout_rng = np.random.default_rng(self._seed)
+        self._rng = np.random.default_rng(self._seed + 12345)
+        self._latency_rng = np.random.default_rng(self._latency_seed)
 
     def bind_event_emitter(self, emitter: EventEmitter) -> None:
         self._events = emitter
