@@ -1,4 +1,4 @@
-"""Tests for OfflineDatacenter: chunk buffer, batch change invalidation."""
+"""Tests for OfflineDatacenter: step-by-step generation, batch changes."""
 
 from __future__ import annotations
 
@@ -51,7 +51,6 @@ def test_step_returns_offline_state():
         timestep_s=Fraction(1, 10),
         gpus_per_server=8,
         seed=0,
-        chunk_steps=10,
         ramp_t_start=9999,
         ramp_t_end=9999,
         ramp_floor=1.0,
@@ -70,7 +69,7 @@ def test_step_returns_offline_state():
 
 
 def test_step_produces_correct_number_of_states():
-    """Stepping through a chunk should produce chunk_steps states."""
+    """Stepping produces one state per call with monotonically increasing times."""
     cache = _make_simple_cache()
     model = LLMInferenceModelSpec(model_label="TestModel", num_replicas=10, gpus_per_replica=1, initial_batch_size=128)
     dc = OfflineDatacenter(
@@ -79,7 +78,6 @@ def test_step_produces_correct_number_of_states():
         timestep_s=Fraction(1, 10),
         gpus_per_server=8,
         seed=0,
-        chunk_steps=5,
         ramp_t_start=9999,
         ramp_t_end=9999,
         ramp_floor=1.0,
@@ -98,8 +96,8 @@ def test_step_produces_correct_number_of_states():
         assert times[i] > times[i - 1]
 
 
-def test_batch_change_takes_effect_at_chunk_boundary():
-    """Batch change is recorded immediately but applied at the next chunk."""
+def test_batch_change_takes_effect_immediately():
+    """Batch size change via apply_control takes effect on the very next step."""
     cache = _make_simple_cache()
     model = LLMInferenceModelSpec(model_label="TestModel", num_replicas=10, gpus_per_replica=1, initial_batch_size=128)
     dc = OfflineDatacenter(
@@ -108,7 +106,6 @@ def test_batch_change_takes_effect_at_chunk_boundary():
         timestep_s=Fraction(1, 10),
         gpus_per_server=8,
         seed=0,
-        chunk_steps=10,
         ramp_t_start=9999,
         ramp_t_end=9999,
         ramp_floor=1.0,
@@ -118,24 +115,15 @@ def test_batch_change_takes_effect_at_chunk_boundary():
 
     # Step a few times at batch=128
     for _ in range(5):
-        dc.step(clock)
+        state = dc.step(clock)
+        assert state.batch_size_by_model["TestModel"] == 128
         clock.advance()
 
-    # Change batch size, recorded but deferred
+    # Change batch size
     dc.apply_control(SetBatchSize(batch_size_by_model={"TestModel": 64}))
     assert dc.batch_by_model["TestModel"] == 64
 
-    # Remaining steps in the current chunk still report old batch
-    state = dc.step(clock)
-    assert state.batch_size_by_model["TestModel"] == 128
-    clock.advance()
-
-    # Consume rest of chunk (steps 6..9)
-    for _ in range(4):
-        dc.step(clock)
-        clock.advance()
-
-    # Next step triggers new chunk and now uses batch=64
+    # Very next step uses new batch size
     state = dc.step(clock)
     assert state.batch_size_by_model["TestModel"] == 64
 
@@ -171,7 +159,6 @@ def test_offline_datacenter_emits_observed_itl_when_latency_fits_is_set():
         timestep_s=Fraction(1, 10),
         gpus_per_server=8,
         seed=0,
-        chunk_steps=10,
         ramp_t_start=9999,
         ramp_t_end=9999,
         ramp_floor=1.0,
@@ -197,7 +184,6 @@ def test_apply_control_rejects_unknown_command():
         timestep_s=Fraction(1, 10),
         gpus_per_server=8,
         seed=0,
-        chunk_steps=10,
         ramp_t_start=9999,
         ramp_t_end=9999,
         ramp_floor=1.0,

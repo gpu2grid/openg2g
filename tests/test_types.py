@@ -120,6 +120,21 @@ class TestTapSchedule:
         assert "b=" not in r
         assert "c=" not in r
 
+    def test_duplicate_timestamps_raises(self) -> None:
+        """Constructing a schedule with duplicate timestamps should raise ValueError."""
+        with pytest.raises(ValueError, match="duplicate timestamps"):
+            TapPosition(a=1.0).at(t=0) | TapPosition(a=1.1).at(t=0)
+
+    def test_duplicate_timestamps_three_entries(self) -> None:
+        """Two of three entries sharing a timestamp should raise ValueError."""
+        with pytest.raises(ValueError, match="duplicate timestamps"):
+            TapPosition(a=1.0).at(t=0) | TapPosition(a=1.1).at(t=100) | TapPosition(a=1.05).at(t=0)
+
+    def test_duplicate_timestamps_direct_construction(self) -> None:
+        """Direct TapSchedule construction with duplicates should also raise."""
+        with pytest.raises(ValueError, match="duplicate timestamps"):
+            TapSchedule(((0.0, TapPosition(a=1.0)), (0.0, TapPosition(a=1.1))))
+
 
 class TestServerRamp:
     def test_basic(self) -> None:

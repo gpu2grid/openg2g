@@ -240,12 +240,20 @@ class TapSchedule:
             TapPosition(a=1.0 + 14 * TAP_STEP, b=1.0 + 6 * TAP_STEP, c=1.0 + 15 * TAP_STEP).at(t=0)
             | TapPosition(a=1.0 + 16 * TAP_STEP).at(t=25 * 60)
         )
+
+    Raises:
+        ValueError: If two entries share the same timestamp.
     """
 
     __slots__ = ("_entries",)
 
     def __init__(self, entries: tuple[tuple[float, TapPosition], ...]) -> None:
         self._entries = tuple(sorted(entries, key=lambda e: e[0]))
+        times = [t for t, _ in self._entries]
+        if len(times) != len(set(times)):
+            seen: set[float] = set()
+            dupes = sorted({t for t in times if t in seen or seen.add(t)})
+            raise ValueError(f"TapSchedule has duplicate timestamps: {dupes}")
 
     def __or__(self, other: TapSchedule) -> TapSchedule:
         return TapSchedule(self._entries + other._entries)
@@ -306,12 +314,20 @@ class BatchSizeSchedule:
             | BatchSizeChange(32).at(60)
             | BatchSizeChange(48, ramp_up_rate=4).at(280)
         )
+
+    Raises:
+        ValueError: If two entries share the same timestamp.
     """
 
     __slots__ = ("_entries",)
 
     def __init__(self, entries: tuple[tuple[float, BatchSizeChange], ...]) -> None:
         self._entries = tuple(sorted(entries, key=lambda e: e[0]))
+        times = [t for t, _ in self._entries]
+        if len(times) != len(set(times)):
+            seen: set[float] = set()
+            dupes = sorted({t for t in times if t in seen or seen.add(t)})
+            raise ValueError(f"BatchSizeSchedule has duplicate timestamps: {dupes}")
 
     def __or__(self, other: BatchSizeSchedule) -> BatchSizeSchedule:
         return BatchSizeSchedule(self._entries + other._entries)

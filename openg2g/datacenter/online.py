@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import collections
 import contextlib
+import functools
 import json
 import logging
 import re
@@ -909,11 +910,14 @@ class OnlineDatacenter(LLMBatchSizeControlledDatacenter[OnlineDatacenterState]):
         self._history.append(state)
         return state
 
+    @functools.singledispatchmethod
     def apply_control(self, command: DatacenterCommand) -> None:
-        """Apply batch size command by sending HTTP requests to vLLM servers."""
-        if not isinstance(command, SetBatchSize):
-            raise TypeError(f"OnlineDatacenter does not support {type(command).__name__}")
+        """Apply a control command. Dispatches on command type."""
+        raise TypeError(f"OnlineDatacenter does not support {type(command).__name__}")
 
+    @apply_control.register
+    def _(self, command: SetBatchSize) -> None:
+        """Apply batch size command by sending HTTP requests to vLLM servers."""
         for label, b in command.batch_size_by_model.items():
             label = str(label)
             b_int = int(b)

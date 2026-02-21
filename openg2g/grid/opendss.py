@@ -5,6 +5,7 @@ Requires ``pip install opendssdirect.py`` (optional dependency).
 
 from __future__ import annotations
 
+import functools
 import logging
 import math
 from fractions import Fraction
@@ -228,10 +229,13 @@ class OpenDSSGrid(GridBackend[GridState]):
         self._history.append(state)
         return state
 
+    @functools.singledispatchmethod
     def apply_control(self, command: GridCommand) -> None:
-        """Apply one command to the OpenDSS grid backend."""
-        if not isinstance(command, SetTaps):
-            raise TypeError(f"OpenDSSGrid does not support {type(command).__name__}")
+        """Apply a control command. Dispatches on command type."""
+        raise TypeError(f"OpenDSSGrid does not support {type(command).__name__}")
+
+    @apply_control.register
+    def _(self, command: SetTaps) -> None:
         tap_map = {str(k): float(v) for k, v in command.tap_changes.items()}
         self._set_reg_taps(tap_map)
         if self._events is not None:

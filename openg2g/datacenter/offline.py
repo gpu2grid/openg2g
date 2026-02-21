@@ -5,6 +5,7 @@ Loads power-trace CSVs and serves per-timestep OfflineDatacenterState objects vi
 
 from __future__ import annotations
 
+import functools
 import logging
 import math
 from dataclasses import dataclass
@@ -201,74 +202,27 @@ class TraceByBatchCache:
         return self._templates[key]
 
 
-def _servers_active_over_time(
-    time_s: np.ndarray,
+def _server_count_at_time(
+    t: float,
     *,
     initial_server_count: int,
     t_start: float,
     t_end: float,
     floor: float,
-) -> np.ndarray:
-    """Discrete shutoff schedule (monotone non-increasing)."""
-    t = np.asarray(time_s, float)
+) -> int:
+    """Number of active servers at time *t* (monotone non-increasing ramp)."""
     s0 = int(initial_server_count)
     if s0 < 0:
         raise ValueError("initial_server_count must be >= 0.")
-    if t_end < t_start:
-        raise ValueError("t_end must be >= t_start.")
-
     floor_n = int(math.ceil(max(float(floor), 0.0) * s0))
     floor_n = max(min(floor_n, s0), 0)
 
-    count = np.full(t.shape, float(s0), dtype=float)
-
-    if t_end == t_start:
-        count[t >= t_start] = float(floor_n)
-    else:
-        mask = (t >= t_start) & (t <= t_end)
-        alpha = (t[mask] - float(t_start)) / (float(t_end) - float(t_start))
-        count[mask] = float(s0) + (float(floor_n) - float(s0)) * alpha
-        count[t > t_end] = float(floor_n)
-
-    count_int = np.rint(count).astype(int)
-    count_int = np.clip(count_int, floor_n, s0)
-
-    for i in range(1, len(count_int)):
-        if count_int[i] > count_int[i - 1]:
-            count_int[i] = count_int[i - 1]
-    return count_int
-
-
-def _random_restart_profile(
-    template: np.ndarray,
-    *,
-    rng: np.random.Generator,
-    n_steps: int,
-) -> np.ndarray:
-    """Walk through *template* and restart from a random index at the end.
-
-    Fills the output in segments: each segment copies ``template[idx:L]``,
-    then draws a new random start index.  The RNG call sequence is
-    identical to the scalar loop it replaces.
-    """
-    template = np.asarray(template, float)
-    L = int(template.size)
-    if L <= 0:
-        return np.zeros(int(n_steps), dtype=float)
-    if L == 1:
-        return np.full(int(n_steps), float(template[0]), dtype=float)
-
-    out = np.empty(int(n_steps), dtype=float)
-    pos = 0
-    idx = int(rng.integers(0, L))
-
-    while pos < n_steps:
-        seg_len = min(L - idx, n_steps - pos)
-        out[pos : pos + seg_len] = template[idx : idx + seg_len]
-        pos += seg_len
-        if pos < n_steps:
-            idx = int(rng.integers(0, L))
-    return out
+    if t < t_start:
+        return s0
+    if t_end <= t_start or t >= t_end:
+        return floor_n
+    alpha = (t - t_start) / (t_end - t_start)
+    return max(floor_n, min(s0, round(s0 + (floor_n - s0) * alpha)))
 
 
 @dataclass
@@ -289,9 +243,12 @@ class ServerLayout:
 class OfflineDatacenter(LLMBatchSizeControlledDatacenter[OfflineDatacenterState]):
     """Trace-based datacenter simulation with step-by-step interface.
 
-    Generates power-trace chunks and serves one sample per ``step()`` call.
-    When the chunk buffer is depleted or batch sizes change, a new chunk is
-    generated.
+    Each ``step()`` call computes one timestep of power output by indexing
+    into pre-built per-GPU templates, applying per-server amplitude jitter
+    and noise, and summing across active servers per phase.
+
+    Batch size changes via ``apply_control()`` take effect on the next
+    ``step()`` call.
 
     Args:
         trace_cache: Pre-built ``TraceByBatchCache`` with templates for all
@@ -300,7 +257,6 @@ class OfflineDatacenter(LLMBatchSizeControlledDatacenter[OfflineDatacenterState]
         timestep_s: Simulation timestep (seconds).
         gpus_per_server: Number of GPUs per physical server rack.
         seed: Random seed for layout generation and noise.
-        chunk_steps: Number of timesteps to pre-generate per chunk.
         ramp_t_start: Server shutoff ramp start time (global time).
         ramp_t_end: Server shutoff ramp end time (global time).
         ramp_floor: Fraction of servers remaining after ramp.
@@ -324,7 +280,6 @@ class OfflineDatacenter(LLMBatchSizeControlledDatacenter[OfflineDatacenterState]
         timestep_s: Fraction,
         gpus_per_server: int = 8,
         seed: int = 0,
-        chunk_steps: int = 600,
         ramp_t_start: float = 2500.0,
         ramp_t_end: float = 3000.0,
         ramp_floor: float = 0.2,
@@ -341,7 +296,6 @@ class OfflineDatacenter(LLMBatchSizeControlledDatacenter[OfflineDatacenterState]
         self._trace_cache = trace_cache
         self._models = list(models)
         self._gpus_per_server = int(gpus_per_server)
-        self._chunk_steps = int(chunk_steps)
 
         self._layout_rng = np.random.default_rng(int(seed))
         self._rng = np.random.default_rng(int(seed) + 12345)
@@ -368,10 +322,6 @@ class OfflineDatacenter(LLMBatchSizeControlledDatacenter[OfflineDatacenterState]
         # Persistent per-model layout (frozen after first build)
         self._layout: dict[str, ServerLayout] = {}
 
-        # Chunk buffer
-        self._chunk: list[OfflineDatacenterState] = []
-        self._chunk_idx: int = 0
-
         # Step counter for global time tracking
         self._global_step: int = 0
         seed_latency = int(seed) + 54321 if latency_seed is None else int(latency_seed)
@@ -381,10 +331,9 @@ class OfflineDatacenter(LLMBatchSizeControlledDatacenter[OfflineDatacenterState]
         self._history: list[OfflineDatacenterState] = []
 
         logger.info(
-            "OfflineDatacenter: %d models, dt=%s s, chunk=%d steps, seed=%d",
+            "OfflineDatacenter: %d models, dt=%s s, seed=%d",
             len(models),
             timestep_s,
-            chunk_steps,
             seed,
         )
         for ms in models:
@@ -427,19 +376,142 @@ class OfflineDatacenter(LLMBatchSizeControlledDatacenter[OfflineDatacenterState]
         return list(self._history[-int(n) :])
 
     def step(self, clock: SimulationClock) -> OfflineDatacenterState:
-        if self._chunk_idx >= len(self._chunk):
-            self._generate_chunk(clock.time_s)
-        state = self._chunk[self._chunk_idx]
-        self._chunk_idx += 1
+        t_now = clock.time_s
+
+        phase_power = np.zeros(3, dtype=float)
+        if self._base_W_per_phase > 0:
+            phase_power[:] += self._base_W_per_phase
+
+        power_by_model: dict[str, float] = {}
+        active_replicas_by_model: dict[str, int] = {}
+
+        for ms in self._models:
+            label = ms.model_label
+            num_replicas = int(ms.num_replicas)
+            gpus_per_replica = int(ms.gpus_per_replica)
+            if label not in self._batch_by_model:
+                raise KeyError(f"Missing required batch size for model {label!r}")
+            batch = int(self._batch_by_model[label])
+
+            if num_replicas <= 0:
+                power_by_model[label] = 0.0
+                active_replicas_by_model[label] = 0
+                continue
+
+            layout = self._get_or_build_layout(ms)
+            template = self._trace_cache.template(label, batch)
+            L = len(template)
+
+            # Vectorized per-server power: index into template with per-server offsets
+            indices = (self._global_step + layout.template_offsets) % L
+            per_gpu_values = template[indices]
+            server_powers = per_gpu_values * layout.gpus_per_server_list * layout.amplitude_scales
+            if layout.noise_std_frac > 0:
+                levels = np.maximum(server_powers, 1.0)
+                server_powers = (
+                    server_powers + self._rng.normal(0.0, 1.0, size=layout.num_servers) * layout.noise_std_frac * levels
+                )
+            server_powers = np.maximum(server_powers, 0.0)
+
+            # Active server count at this timestep
+            if self._ramp_schedule is not None:
+                frac = float(self._ramp_schedule.fraction_at(t_now))
+                k = int(round(frac * layout.num_servers))
+                k = max(0, min(k, layout.num_servers))
+            else:
+                k = _server_count_at_time(
+                    t_now,
+                    initial_server_count=layout.num_servers,
+                    t_start=self._ramp_t_start,
+                    t_end=self._ramp_t_end,
+                    floor=self._ramp_floor,
+                )
+
+            # Sum power by phase for the first k servers in shutdown order
+            active_indices = layout.shutdown_order[:k]
+            active_powers = server_powers[active_indices]
+            active_phases = layout.phase_list[active_indices]
+            model_phase_power = np.zeros(3, dtype=float)
+            np.add.at(model_phase_power, active_phases, active_powers)
+
+            phase_power += model_phase_power
+            power_by_model[label] = float(np.sum(active_powers))
+
+            active_gpus = int(np.sum(layout.gpus_per_server_list[active_indices]))
+            active_replicas_by_model[label] = active_gpus // gpus_per_replica
+
+        # Training overlay
+        t_arr = np.asarray(t_now, dtype=float)
+        if self._training_overlays:
+            for overlay, tr in self._training_overlays:
+                training_power_w = float(
+                    overlay.eval_total_on_grid(
+                        t_arr,
+                        t_add_start=tr.t_start,
+                        t_add_end=tr.t_end,
+                        n_train_gpus=tr.n_gpus,
+                    )
+                )
+                phase_power += training_power_w / 3.0
+        elif self._training_overlay is not None:
+            training_power_w = float(
+                self._training_overlay.eval_total_on_grid(
+                    t_arr,
+                    t_add_start=self._training_t_add_start,
+                    t_add_end=self._training_t_add_end,
+                    n_train_gpus=self._training_n_train_gpus,
+                )
+            )
+            phase_power += training_power_w / 3.0
+
+        # ITL sampling
+        observed_itl_s_by_model: dict[str, float] = {}
+        for ms in self._models:
+            label = ms.model_label
+            n_rep = active_replicas_by_model.get(label, 0)
+            if self._itl_distributions is None or n_rep <= 0:
+                observed_itl_s_by_model[label] = float("nan")
+                continue
+            batch = int(self._batch_by_model[label])
+            model_dists = self._itl_distributions.get(label)
+            if model_dists is None:
+                raise KeyError(f"No ITL distributions for model={label!r}")
+            params = model_dists.get(batch)
+            if params is None:
+                raise KeyError(
+                    f"No ITL distributions for model={label!r}, batch={batch}. Available={sorted(model_dists.keys())}"
+                )
+            observed_itl_s_by_model[label] = params.sample_avg(
+                n_replicas=n_rep,
+                rng=self._latency_rng,
+                exact_threshold=self._latency_exact_threshold,
+            )
+
+        state = OfflineDatacenterState(
+            time_s=float(t_now),
+            power_w=ThreePhase(
+                a=float(phase_power[0]),
+                b=float(phase_power[1]),
+                c=float(phase_power[2]),
+            ),
+            power_by_model_w=power_by_model,
+            active_replicas_by_model=active_replicas_by_model,
+            batch_size_by_model=dict(self._batch_by_model),
+            observed_itl_s_by_model=observed_itl_s_by_model,
+        )
         self._global_step += 1
         self._state = state
         self._history.append(state)
         return state
 
+    @functools.singledispatchmethod
     def apply_control(self, command: DatacenterCommand) -> None:
-        """Record new batch sizes. Changes take effect at the next chunk."""
-        if not isinstance(command, SetBatchSize):
-            raise TypeError(f"OfflineDatacenter does not support {type(command).__name__}")
+        """Apply a control command. Dispatches on command type."""
+        raise TypeError(f"OfflineDatacenter does not support {type(command).__name__}")
+
+    @apply_control.register
+    def _(self, command: SetBatchSize) -> None:
+        """Record new batch sizes. Changes take effect on the next step."""
         for label, b in command.batch_size_by_model.items():
             b_int = int(b)
             if b_int <= 0:
@@ -466,7 +538,6 @@ class OfflineDatacenter(LLMBatchSizeControlledDatacenter[OfflineDatacenterState]
         trace_cache: TraceByBatchCache,
         timestep_s: Fraction,
         seed: int = 0,
-        chunk_steps: int = 600,
         itl_distributions: dict[str, dict[int, ITLMixtureModel]] | None = None,
         latency_seed: int | None = None,
         latency_exact_threshold: int = 30,
@@ -479,7 +550,6 @@ class OfflineDatacenter(LLMBatchSizeControlledDatacenter[OfflineDatacenterState]
             trace_cache: Pre-built trace cache.
             timestep_s: Simulation timestep (seconds).
             seed: Random seed for layout generation and noise.
-            chunk_steps: Number of timesteps to pre-generate per chunk.
             itl_distributions: Optional per-model ITL mixture distributions.
             latency_seed: Optional seed for latency RNG.
             latency_exact_threshold: Exact-sampling threshold for latency averaging.
@@ -534,7 +604,6 @@ class OfflineDatacenter(LLMBatchSizeControlledDatacenter[OfflineDatacenterState]
             timestep_s=timestep_s,
             gpus_per_server=datacenter.gpus_per_server,
             seed=seed,
-            chunk_steps=chunk_steps,
             ramp_t_start=ramp_t_start,
             ramp_t_end=ramp_t_end,
             ramp_floor=ramp_floor,
@@ -563,173 +632,7 @@ class OfflineDatacenter(LLMBatchSizeControlledDatacenter[OfflineDatacenterState]
 
         return instance
 
-    def _generate_chunk(self, t0_s: float) -> None:
-        """Generate a chunk of power-trace samples starting at *t0_s*."""
-        logger.debug("Generating chunk at t=%.1f s, batches=%s", t0_s, self._batch_by_model)
-        dt = float(self._timestep_s)
-        n = self._chunk_steps
-        # Generate n+1 internal steps (endpoint-inclusive), serving the first n.
-        n_internal = n + 1
-        time_global = np.arange(n_internal, dtype=float) * dt + t0_s
-
-        phase_power_w = np.zeros((3, n_internal), dtype=float)
-        if self._base_W_per_phase > 0:
-            phase_power_w[:] += self._base_W_per_phase
-
-        power_by_model: dict[str, np.ndarray] = {}
-        active_replicas_arr: dict[str, np.ndarray] = {}
-        active_gpus_arr: dict[str, np.ndarray] = {}
-
-        for ms in self._models:
-            label = ms.model_label
-            num_replicas = int(ms.num_replicas)
-            gpus_per_replica = int(ms.gpus_per_replica)
-            if label not in self._batch_by_model:
-                raise KeyError(f"Missing required batch size for model {label!r}")
-            batch = int(self._batch_by_model[label])
-
-            if num_replicas <= 0:
-                power_by_model[label] = np.zeros(n_internal, dtype=float)
-                active_replicas_arr[label] = np.zeros(n_internal, dtype=int)
-                active_gpus_arr[label] = np.zeros(n_internal, dtype=int)
-                continue
-
-            layout = self._get_or_build_layout(ms, n_internal)
-            num_servers = layout.num_servers
-            gpus_per_server_list = layout.gpus_per_server_list
-            phase_list = layout.phase_list
-            shutdown_order = layout.shutdown_order
-            template_offsets = layout.template_offsets
-            amplitude_scales = layout.amplitude_scales
-            noise_std_frac = layout.noise_std_frac
-
-            base_per_gpu = self._trace_cache.template(label, batch)[:n_internal]
-
-            # Per-server power profiles
-            server_power = np.empty((num_servers, n_internal), dtype=float)
-            for s in range(num_servers):
-                gpus_s = float(gpus_per_server_list[s])
-                tpl_shifted = np.roll(base_per_gpu, int(template_offsets[s]))
-                per_gpu_profile = _random_restart_profile(tpl_shifted, rng=self._rng, n_steps=n_internal)
-                server_profile = per_gpu_profile * (gpus_s * float(amplitude_scales[s]))
-                if noise_std_frac > 0:
-                    level = max(float(np.mean(server_profile)), 1.0)
-                    server_profile = server_profile + self._rng.normal(
-                        0.0, noise_std_frac * level, size=server_profile.shape
-                    )
-                server_power[s] = np.clip(server_profile, 0.0, None)
-
-            # Prefix sums per phase in shutoff order
-            phase_power_prefix = np.zeros((3, num_servers + 1, n_internal), dtype=float)
-            for k in range(1, num_servers + 1):
-                s_idx = int(shutdown_order[k - 1])
-                ph = int(phase_list[s_idx])
-                phase_power_prefix[:, k, :] = phase_power_prefix[:, k - 1, :]
-                phase_power_prefix[ph, k, :] += server_power[s_idx]
-
-            if self._ramp_schedule is not None:
-                frac = self._ramp_schedule.fraction_at(time_global)
-                active_server_f = np.rint(frac * num_servers).astype(int)
-                active_server_count = np.clip(active_server_f, 0, num_servers)
-            else:
-                active_server_count = _servers_active_over_time(
-                    time_global,
-                    initial_server_count=num_servers,
-                    t_start=self._ramp_t_start,
-                    t_end=self._ramp_t_end,
-                    floor=self._ramp_floor,
-                )
-
-            model_phase_power_w = np.zeros((3, n_internal), dtype=float)
-            for i in range(n_internal):
-                k = int(active_server_count[i])
-                model_phase_power_w[0, i] = phase_power_prefix[0, k, i]
-                model_phase_power_w[1, i] = phase_power_prefix[1, k, i]
-                model_phase_power_w[2, i] = phase_power_prefix[2, k, i]
-
-            phase_power_w += model_phase_power_w
-            power_by_model[label] = model_phase_power_w.sum(axis=0)
-
-            # Active GPUs + replicas
-            gpus_in_order = np.array([gpus_per_server_list[int(s)] for s in shutdown_order], dtype=int)
-            gpus_prefix = np.zeros(num_servers + 1, dtype=int)
-            gpus_prefix[1:] = np.cumsum(gpus_in_order)
-
-            active_gpu_count = np.array(
-                [int(gpus_prefix[int(active_server_count[i])]) for i in range(n_internal)],
-                dtype=int,
-            )
-            active_gpus_arr[label] = active_gpu_count
-            active_replicas_arr[label] = active_gpu_count // gpus_per_replica
-
-        # Training overlay
-        if self._training_overlays:
-            for overlay, tr in self._training_overlays:
-                training_power_w = overlay.eval_total_on_grid(
-                    time_global,
-                    t_add_start=tr.t_start,
-                    t_add_end=tr.t_end,
-                    n_train_gpus=tr.n_gpus,
-                )
-                phase_power_w[0] += training_power_w / 3.0
-                phase_power_w[1] += training_power_w / 3.0
-                phase_power_w[2] += training_power_w / 3.0
-        elif self._training_overlay is not None:
-            training_power_w = self._training_overlay.eval_total_on_grid(
-                time_global,
-                t_add_start=self._training_t_add_start,
-                t_add_end=self._training_t_add_end,
-                n_train_gpus=self._training_n_train_gpus,
-            )
-            phase_power_w[0] += training_power_w / 3.0
-            phase_power_w[1] += training_power_w / 3.0
-            phase_power_w[2] += training_power_w / 3.0
-
-        # Build state objects
-        self._chunk = []
-        for i in range(n):
-            observed_itl_s_by_model: dict[str, float] = {}
-            for ms in self._models:
-                label = ms.model_label
-                n_rep = int(active_replicas_arr[label][i])
-                if self._itl_distributions is None or n_rep <= 0:
-                    observed_itl_s_by_model[label] = float("nan")
-                    continue
-                if label not in self._batch_by_model:
-                    raise KeyError(f"Missing required batch size for model {label!r}")
-                batch = int(self._batch_by_model[label])
-                model_dists = self._itl_distributions.get(label)
-                if model_dists is None:
-                    raise KeyError(f"No ITL distributions for model={label!r}")
-                params = model_dists.get(batch)
-                if params is None:
-                    raise KeyError(
-                        f"No ITL distributions for model={label!r}, batch={batch}. "
-                        f"Available={sorted(model_dists.keys())}"
-                    )
-                observed_itl_s_by_model[label] = params.sample_avg(
-                    n_replicas=n_rep,
-                    rng=self._latency_rng,
-                    exact_threshold=self._latency_exact_threshold,
-                )
-
-            state = OfflineDatacenterState(
-                time_s=float(time_global[i]),
-                power_w=ThreePhase(
-                    a=float(phase_power_w[0, i]),
-                    b=float(phase_power_w[1, i]),
-                    c=float(phase_power_w[2, i]),
-                ),
-                power_by_model_w={label: float(power_by_model[label][i]) for label in power_by_model},
-                active_replicas_by_model={label: int(active_replicas_arr[label][i]) for label in active_replicas_arr},
-                batch_size_by_model=dict(self._batch_by_model),
-                observed_itl_s_by_model=observed_itl_s_by_model,
-            )
-            self._chunk.append(state)
-
-        self._chunk_idx = 0
-
-    def _get_or_build_layout(self, ms: LLMInferenceModelSpec, n_steps: int) -> ServerLayout:
+    def _get_or_build_layout(self, ms: LLMInferenceModelSpec) -> ServerLayout:
         """Get or build a frozen per-model server layout."""
         label = ms.model_label
         num_replicas = int(ms.num_replicas)
@@ -769,7 +672,10 @@ class OfflineDatacenter(LLMBatchSizeControlledDatacenter[OfflineDatacenterState]
         amp_lo, amp_hi = tr0["amp_jitter"]
         noise_std_frac = float(tr0["noise_std_frac"])
 
-        template_offsets = self._layout_rng.integers(low=0, high=max(n_steps, 1), size=num_servers)
+        # Use any template's length for offset range (length is invariant to batch size)
+        any_batch = next(iter(self._trace_cache.traces_by_batch))
+        tpl_len = len(self._trace_cache.template(label, int(any_batch)))
+        template_offsets = self._layout_rng.integers(low=0, high=max(tpl_len, 1), size=num_servers)
         amplitude_scales = self._layout_rng.uniform(float(amp_lo), float(amp_hi), size=num_servers)
 
         layout = ServerLayout(

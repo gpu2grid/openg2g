@@ -134,7 +134,6 @@ def main(args: argparse.Namespace) -> None:
         trace_cache=cache,
         timestep_s=dt_dc,
         seed=0,
-        chunk_steps=int(t_total_s / dt_dc),
         itl_distributions=itl_fits,
         latency_exact_threshold=30,
         latency_seed=0,

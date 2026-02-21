@@ -66,6 +66,18 @@ class TestBatchSizeSchedule:
         assert "BatchSizeChange(48)" in r
         assert "ramp_up_rate=4" in r
 
+    def test_duplicate_timestamps_raises(self) -> None:
+        with pytest.raises(ValueError, match="duplicate timestamps"):
+            BatchSizeChange(48).at(40) | BatchSizeChange(32).at(40)
+
+    def test_duplicate_timestamps_three_entries(self) -> None:
+        with pytest.raises(ValueError, match="duplicate timestamps"):
+            BatchSizeChange(48).at(40) | BatchSizeChange(32).at(60) | BatchSizeChange(64).at(40)
+
+    def test_duplicate_timestamps_direct_construction(self) -> None:
+        with pytest.raises(ValueError, match="duplicate timestamps"):
+            BatchSizeSchedule(((40.0, BatchSizeChange(48)), (40.0, BatchSizeChange(32))))
+
 
 class TestBatchSizeScheduleController:
     def _make_clock(self, time_s: float) -> MagicMock:

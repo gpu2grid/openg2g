@@ -206,7 +206,6 @@ def main(args: argparse.Namespace) -> None:
         trace_cache=cache,
         timestep_s=dt_dc,
         seed=0,
-        chunk_steps=int(dt_ctrl / dt_dc),
         itl_distributions=itl_fits,
         latency_exact_threshold=30,
         latency_seed=0,
@@ -274,7 +273,7 @@ def main(args: argparse.Namespace) -> None:
 
     stats = compute_allbus_voltage_stats(log.grid_states, v_min=v_min, v_max=v_max)
     logger.info("=== Voltage Statistics (all-bus) ===")
-    logger.info("  voltage_violation_time = %.2f min", stats.violation_time_s / 60)
+    logger.info("  voltage_violation_time = %.1f s", stats.violation_time_s)
     logger.info("  worst_vmin             = %.6f", stats.worst_vmin)
     logger.info("  worst_vmax             = %.6f", stats.worst_vmax)
     logger.info("  integral_violation     = %.5f pu·s", stats.integral_violation_pu_s)
