@@ -113,6 +113,8 @@ class ServerRampSchedule:
     the previous level to `target`.  Between ramps, the fraction holds
     at the last target.
 
+    An empty schedule means all servers are active (fraction = 1.0) at all times.
+
     Example:
 
         ramps = (

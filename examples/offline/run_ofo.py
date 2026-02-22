@@ -40,10 +40,10 @@ from openg2g.datacenter.offline import (
     TraceByBatchCache,
     load_traces_by_batch_from_dir,
 )
-from openg2g.grid.base import TapPosition, TapSchedule
 from openg2g.grid.opendss import OpenDSSGrid
 from openg2g.metrics.voltage import compute_allbus_voltage_stats
 from openg2g.models.spec import LLMInferenceModelSpec, LLMInferenceWorkload
+from openg2g.types import TapPosition, TapSchedule
 
 logger = logging.getLogger("run_ofo")
 
@@ -231,9 +231,7 @@ def main(args: argparse.Namespace) -> None:
         power_factor=0.95,
         dt_s=Fraction(1, 10),
         connection_type="wye",
-        controls_off=True,
         initial_tap_position=initial_taps,
-        freeze_regcontrols=True,
     )
 
     tap_ctrl = TapScheduleController(schedule=TapSchedule(()), dt_s=dt_ctrl)

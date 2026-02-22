@@ -145,8 +145,7 @@ class ScheduleActivationPolicy(ServerActivationPolicy):
     At time *t*, the top-*k* servers (by random priority) are active, where
     `k = round(schedule.fraction_at(t) * num_servers)`.
 
-    This is the default policy used by `OfflineDatacenter`. It reproduces the
-    previous `shutdown_order[:k]` behavior exactly.
+    This is the default policy used by `OfflineDatacenter`.
 
     Args:
         schedule: Temporal ramp schedule mapping time to active-server fraction.
@@ -332,31 +331,6 @@ class TraceByBatchCache:
         return self._templates[key]
 
 
-class _AllActivePolicy(BoundActivationPolicy):
-    """All servers always active (no ramp schedule).
-
-    Consumes one RNG shuffle to keep `_layout_rng` consumption order
-    consistent with `ScheduleActivationPolicy`, so that downstream
-    RNG calls (template offsets, amplitude scales) produce identical
-    values regardless of which policy is used. The shuffled priority
-    array is stored to preserve summation order in `active_indices`.
-    """
-
-    __slots__ = ("_mask", "_priority")
-
-    def __init__(self, num_servers: int, rng: np.random.Generator) -> None:
-        priority = np.arange(num_servers, dtype=int)
-        rng.shuffle(priority)
-        self._priority = priority
-        self._mask = np.ones(num_servers, dtype=bool)
-
-    def active_mask(self, t: float) -> np.ndarray:
-        return self._mask
-
-    def active_indices(self, t: float) -> np.ndarray:
-        return self._priority.copy()
-
-
 @dataclass
 class ServerLayout:
     """Per-model server layout for the offline datacenter."""
@@ -438,8 +412,9 @@ class OfflineDatacenter(LLMBatchSizeControlledDatacenter[OfflineDatacenterState]
         # Current batch sizes
         self._batch_by_model: dict[str, int] = {ms.model_label: ms.initial_batch_size for ms in models}
 
-        # Persistent per-model layout (frozen after first build)
+        # Per-model server layouts (built eagerly, rebuilt on reset)
         self._layout: dict[str, ServerLayout] = {}
+        self._build_all_layouts()
 
         # Step counter for global time tracking
         self._global_step: int = 0
@@ -517,7 +492,7 @@ class OfflineDatacenter(LLMBatchSizeControlledDatacenter[OfflineDatacenterState]
                 active_replicas_by_model[label] = 0
                 continue
 
-            layout = self._get_or_build_layout(ms)
+            layout = self._layout[label]
             template = self._trace_cache.template(label, batch)
             L = len(template)
 
@@ -630,8 +605,9 @@ class OfflineDatacenter(LLMBatchSizeControlledDatacenter[OfflineDatacenterState]
         self._history = []
         self._global_step = 0
         self._batch_by_model = {ms.model_label: ms.initial_batch_size for ms in self._models}
-        self._layout = {}
         self._layout_rng = np.random.default_rng(self._seed)
+        self._layout = {}
+        self._build_all_layouts()
         self._rng = np.random.default_rng(self._seed + 12345)
         self._latency_rng = np.random.default_rng(self._latency_seed)
 
@@ -707,18 +683,37 @@ class OfflineDatacenter(LLMBatchSizeControlledDatacenter[OfflineDatacenterState]
             latency_seed=latency_seed,
         )
 
-    def _get_or_build_layout(self, ms: LLMInferenceModelSpec) -> ServerLayout:
-        """Get or build a frozen per-model server layout."""
+    def _build_all_layouts(self) -> None:
+        """Eagerly build layouts for all models with replicas > 0."""
+        for ms in self._models:
+            if ms.num_replicas > 0:
+                self._layout[ms.model_label] = self._build_layout(ms)
+
+    @property
+    def phase_share_by_model(self) -> dict[str, np.ndarray]:
+        """Per-model phase share vectors derived from server placement.
+
+        Returns:
+            Mapping of model label to a 3-element array `[frac_A, frac_B, frac_C]`
+            representing the fraction of servers on each phase.
+        """
+        shares: dict[str, np.ndarray] = {}
+        for label, layout in self._layout.items():
+            counts = np.bincount(layout.phase_list, minlength=3).astype(float)
+            total = counts.sum()
+            if total > 0:
+                shares[label] = counts / total
+            else:
+                shares[label] = np.array([1 / 3, 1 / 3, 1 / 3], dtype=float)
+        return shares
+
+    def _build_layout(self, ms: LLMInferenceModelSpec) -> ServerLayout:
+        """Build a frozen per-model server layout."""
         label = ms.model_label
         num_replicas = int(ms.num_replicas)
         gpus_per_replica = int(ms.gpus_per_replica)
         total_gpus = num_replicas * gpus_per_replica
         num_servers = int(math.ceil(total_gpus / self._gpus_per_server))
-
-        if label in self._layout:
-            existing = self._layout[label]
-            if existing.num_servers == num_servers and existing.total_gpus == total_gpus:
-                return existing
 
         gpus_per_server_list = np.full(num_servers, self._gpus_per_server, dtype=int)
         tail = total_gpus - (num_servers - 1) * self._gpus_per_server
@@ -731,14 +726,12 @@ class OfflineDatacenter(LLMBatchSizeControlledDatacenter[OfflineDatacenterState]
         # Bind the activation policy to this model's topology.
         # The policy consumes _layout_rng here (e.g., ScheduleActivationPolicy
         # shuffles a priority array), preserving RNG consumption order.
-        if self._activation_policy is not None:
-            bound_policy = self._activation_policy.for_model(
-                num_servers=num_servers,
-                phase_list=phase_list,
-                rng=self._layout_rng,
-            )
-        else:
-            bound_policy = _AllActivePolicy(num_servers, self._layout_rng)
+        policy = self._activation_policy or ScheduleActivationPolicy(ServerRampSchedule(entries=()))
+        bound_policy = policy.for_model(
+            num_servers=num_servers,
+            phase_list=phase_list,
+            rng=self._layout_rng,
+        )
 
         # Read jitter/noise params from any available trace
         tr0 = None

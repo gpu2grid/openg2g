@@ -16,8 +16,8 @@ import numpy as np
 
 from openg2g.clock import SimulationClock
 from openg2g.events import EventEmitter
-from openg2g.grid.base import BusVoltages, GridBackend, GridState, TapPosition
-from openg2g.types import GridCommand, SetTaps, ThreePhase
+from openg2g.grid.base import BusVoltages, GridBackend, GridState
+from openg2g.types import GridCommand, SetTaps, TapPosition, ThreePhase
 
 if TYPE_CHECKING:
     import opendssdirect as dss
@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 
 _PHASES = (1, 2, 3)
 _PHASE_NAME = {1: "A", 2: "B", 3: "C"}
-_PHASE_REG_NAMES = ("reg1", "reg2", "reg3")  # A, B, C
+_PHASE_TO_ATTR = {1: "a", 2: "b", 3: "c"}
 
 
 def _require_dss() -> None:
@@ -41,6 +41,21 @@ def _require_dss() -> None:
 
 class OpenDSSGrid(GridBackend[GridState]):
     """OpenDSS-based grid simulator for distribution-level voltage analysis.
+
+    This component uses OpenDSS purely as a power flow solver. The user's DSS
+    case file defines the network topology and any built-in controls (voltage
+    regulators, capacitor banks, etc.). The `dss_controls` flag determines
+    whether OpenDSS iterates those controls during each solve:
+
+    - `dss_controls=False` (default): Uses `SolveNoControl()`. OpenDSS runs
+      a single power flow without iterating any built-in control loops.
+      RegControls are disabled after initial tap setting. All voltage
+      regulation is managed externally through `apply_control()` commands
+      (e.g., from `TapScheduleController` or `OFOBatchController`).
+
+    - `dss_controls=True`: Uses `Solve()`. OpenDSS iterates its built-in
+      control loops (RegControls, CapControls, etc.) as defined in the case
+      file. Use this when you want DSS-native control automation.
 
     Args:
         dss_case_dir: Absolute path to the directory containing OpenDSS case
@@ -54,10 +69,10 @@ class OpenDSSGrid(GridBackend[GridState]):
         power_factor: Power factor of the datacenter loads.
         dt_s: Grid simulation timestep (seconds).
         connection_type: Connection type for DC loads (default `"wye"`).
-        controls_off: If True, disable OpenDSS voltage regulators / controls.
+        dss_controls: Whether to let OpenDSS iterate its built-in control
+            loops during each solve. Default False.
         initial_tap_position: Initial regulator tap position applied before
             the first solve. Each field is a per-unit tap ratio.
-        freeze_regcontrols: If True, disable regcontrols after setting taps.
         exclude_buses: Buses to exclude from voltage indexing (e.g., source bus).
     """
 
@@ -71,9 +86,8 @@ class OpenDSSGrid(GridBackend[GridState]):
         power_factor: float,
         dt_s: Fraction = Fraction(1),
         connection_type: str = "wye",
-        controls_off: bool = True,
+        dss_controls: bool = False,
         initial_tap_position: TapPosition | None = None,
-        freeze_regcontrols: bool = True,
         exclude_buses: tuple[str, ...] = ("rg60",),
     ) -> None:
         _require_dss()
@@ -85,11 +99,11 @@ class OpenDSSGrid(GridBackend[GridState]):
         self._power_factor = float(power_factor)
         self._dt_s = dt_s
         self._connection_type = str(connection_type)
-        self._controls_off = bool(controls_off)
-        self._freeze_regcontrols = bool(freeze_regcontrols)
+        self._dss_controls = bool(dss_controls)
 
         self._initial_tap_position = initial_tap_position
-        self._reg_map: dict[str, tuple[str, int]] | None = None
+        self._reg_map: dict[str, tuple[str, int, int]] | None = None
+        self._phase_to_reg: dict[int, str] | None = None
         self._events: EventEmitter | None = None
         self._exclude_buses = tuple(str(b) for b in exclude_buses)
 
@@ -210,12 +224,12 @@ class OpenDSSGrid(GridBackend[GridState]):
 
     @apply_control.register
     def _(self, command: SetTaps) -> None:
-        tap_map = {str(k): float(v) for k, v in command.tap_changes.items()}
+        tap_map = self._tap_position_to_reg_dict(command.tap_position)
         self._set_reg_taps(tap_map)
         if self._events is not None:
             self._events.emit(
                 "grid.taps.updated",
-                {"tap_changes": dict(tap_map)},
+                {"tap_position": command.tap_position},
             )
 
     def reset(self) -> None:
@@ -230,11 +244,11 @@ class OpenDSSGrid(GridBackend[GridState]):
         self._build_vmag_indices()
         self._started = True
         logger.info(
-            "OpenDSSGrid: case=%s, dc_bus=%s, dt=%s s, controls_off=%s, %d buses, %d bus-phase pairs",
+            "OpenDSSGrid: case=%s, dc_bus=%s, dt=%s s, dss_controls=%s, %d buses, %d bus-phase pairs",
             self._master,
             self._dc_bus,
             self._dt_s,
-            self._controls_off,
+            self._dss_controls,
             len(self.all_buses),
             len(self._v_index),
         )
@@ -339,6 +353,7 @@ class OpenDSSGrid(GridBackend[GridState]):
         dss.Text.Command(f'Compile "{master_path}"')
 
         self._reg_map = self._cache_regcontrol_map()
+        self._phase_to_reg = self._build_phase_to_reg_map(self._reg_map)
 
         # Add 3 single-phase DC loads
         kv_ln = self._dc_bus_kv / math.sqrt(3.0)
@@ -351,22 +366,23 @@ class OpenDSSGrid(GridBackend[GridState]):
         dss.Text.Command("Reset")
         dss.Text.Command("Set Mode=Time")
         dss.Text.Command(f"Set Stepsize={float(self._dt_s)}s")
-        dss.Text.Command("Set ControlMode=Time")
-        if self._controls_off:
+        if self._dss_controls:
+            dss.Text.Command("Set ControlMode=Time")
+        else:
             dss.Text.Command("Set ControlMode=Off")
 
         if self._initial_tap_position is not None:
-            self._set_reg_taps(self._initial_tap_position.as_reg_dict())
+            self._set_reg_taps(self._tap_position_to_reg_dict(self._initial_tap_position))
 
         self._solve()
         self._cache_buses_with_phases()
         self._cache_node_map()
 
     def _solve(self) -> None:
-        if self._controls_off:
-            dss.Solution.SolveNoControl()
-        else:
+        if self._dss_controls:
             dss.Solution.Solve()
+        else:
+            dss.Solution.SolveNoControl()
 
     def _cache_buses_with_phases(self) -> None:
         self.all_buses = list(dss.Circuit.AllBusNames())
@@ -431,8 +447,15 @@ class OpenDSSGrid(GridBackend[GridState]):
         return v_index
 
     @staticmethod
-    def _cache_regcontrol_map() -> dict[str, tuple[str, int]]:
-        reg_map: dict[str, tuple[str, int]] = {}
+    def _cache_regcontrol_map() -> dict[str, tuple[str, int, int]]:
+        """Enumerate RegControls and discover their transformer, winding, and phase.
+
+        Returns:
+            Mapping of `rc_name -> (transformer_name, winding, phase)` where
+            phase is 1/2/3 for A/B/C. Phase is determined from the transformer's
+            bus connections (e.g., `"650.1"` → phase 1).
+        """
+        reg_map: dict[str, tuple[str, int, int]] = {}
         i = dss.RegControls.First()
         if i == 0:
             return reg_map
@@ -440,9 +463,52 @@ class OpenDSSGrid(GridBackend[GridState]):
             rc = dss.RegControls.Name().lower()
             xf = dss.RegControls.Transformer()
             w = int(dss.RegControls.Winding())
-            reg_map[rc] = (xf, w)
+
+            # Discover phase from transformer bus connections
+            dss.Transformers.Name(xf)
+            bus_names = list(dss.CktElement.BusNames())
+            phase = 0
+            for bus_str in bus_names:
+                parts = str(bus_str).split(".")
+                if len(parts) >= 2:
+                    phase = int(parts[1])
+                    break
+            if phase not in (1, 2, 3):
+                raise RuntimeError(
+                    f"Cannot determine phase for RegControl '{rc}' "
+                    f"(transformer={xf}, buses={bus_names}). "
+                    f"Expected bus format 'name.phase' with phase in {{1,2,3}}."
+                )
+
+            reg_map[rc] = (xf, w, phase)
             i = dss.RegControls.Next()
         return reg_map
+
+    @staticmethod
+    def _build_phase_to_reg_map(reg_map: dict[str, tuple[str, int, int]]) -> dict[int, str]:
+        """Build reverse mapping from phase (1/2/3) to RegControl name."""
+        phase_to_reg: dict[int, str] = {}
+        for rc_name, (_xf, _wdg, phase) in reg_map.items():
+            if phase in phase_to_reg:
+                logger.warning(
+                    "Multiple RegControls on phase %s: '%s' and '%s'. Using '%s'.",
+                    _PHASE_NAME[phase],
+                    phase_to_reg[phase],
+                    rc_name,
+                    rc_name,
+                )
+            phase_to_reg[phase] = rc_name
+        return phase_to_reg
+
+    def _tap_position_to_reg_dict(self, pos: TapPosition) -> dict[str, float]:
+        """Map phase tap ratios to OpenDSS RegControl names using discovered mapping."""
+        assert self._phase_to_reg is not None
+        d: dict[str, float] = {}
+        for phase, attr in _PHASE_TO_ATTR.items():
+            val = getattr(pos, attr)
+            if val is not None and phase in self._phase_to_reg:
+                d[self._phase_to_reg[phase]] = val
+        return d
 
     def _set_reg_taps(self, tap_map: dict[str, float]) -> tuple[int, int]:
         if self._reg_map is None:
@@ -451,7 +517,7 @@ class OpenDSSGrid(GridBackend[GridState]):
         tap_map_lc = {str(k).lower(): float(v) for k, v in tap_map.items()}
         applied, skipped = 0, 0
 
-        for rc_key, (xfmr, wdg) in self._reg_map.items():
+        for rc_key, (xfmr, wdg, _phase) in self._reg_map.items():
             if rc_key in tap_map_lc:
                 tap_pu = tap_map_lc[rc_key]
             else:
@@ -459,7 +525,7 @@ class OpenDSSGrid(GridBackend[GridState]):
                 continue
 
             dss.Text.Command(f"Edit Transformer.{xfmr} Wdg={wdg} Tap={tap_pu:.6f}")
-            if self._freeze_regcontrols:
+            if not self._dss_controls:
                 dss.Text.Command(f"Edit RegControl.{rc_key} Enabled=false")
             applied += 1
         return applied, skipped
@@ -468,15 +534,19 @@ class OpenDSSGrid(GridBackend[GridState]):
         """Read current regulator tap positions from OpenDSS."""
         if self._reg_map is None:
             self._reg_map = self._cache_regcontrol_map()
+        if self._phase_to_reg is None:
+            self._phase_to_reg = self._build_phase_to_reg_map(self._reg_map)
 
-        taps: dict[str, float] = {}
-        for rc_key, (xfmr, wdg) in self._reg_map.items():
+        phase_taps: dict[str, float | None] = {"a": None, "b": None, "c": None}
+        for _rc_key, (xfmr, wdg, phase) in self._reg_map.items():
             dss.Transformers.Name(xfmr)
             dss.Transformers.Wdg(wdg)
-            taps[rc_key] = float(dss.Transformers.Tap())
+            attr = _PHASE_TO_ATTR.get(phase)
+            if attr is not None:
+                phase_taps[attr] = float(dss.Transformers.Tap())
 
         return TapPosition(
-            a=taps.get("reg1"),
-            b=taps.get("reg2"),
-            c=taps.get("reg3"),
+            a=phase_taps["a"],
+            b=phase_taps["b"],
+            c=phase_taps["c"],
         )

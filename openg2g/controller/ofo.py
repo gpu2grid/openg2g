@@ -111,17 +111,6 @@ class VoltageDualVariables:
         return self.dual_overvoltage - self.dual_undervoltage
 
 
-def phase_share_from_placement(placement: dict[str, int]) -> np.ndarray:
-    """Convert server placement counts to a normalized 3-phase share vector."""
-    a = float(placement.get("servers_A", 0))
-    b = float(placement.get("servers_B", 0))
-    c = float(placement.get("servers_C", 0))
-    s = a + b + c
-    if s <= 0:
-        return np.array([1 / 3, 1 / 3, 1 / 3], dtype=float)
-    return np.array([a / s, b / s, c / s], dtype=float)
-
-
 class PrimalBatchOptimizer:
     """Primal batch-size optimizer operating in log2 space.
 
@@ -373,11 +362,6 @@ class OFOBatchController(Controller[LLMBatchSizeControlledDatacenter[LLMDatacent
         self._sensitivity_matrix: np.ndarray | None = None
         self._control_step_count: int = 0
 
-        # Phase share cache (from datacenter placement)
-        self._phase_share_by_model: dict[str, np.ndarray] = {
-            ms.model_label: np.array([1 / 3, 1 / 3, 1 / 3], dtype=float) for ms in models
-        }
-
         logger.info(
             "OFOBatchController: %d models, dt=%s s, feasible_batches=%s",
             len(models),
@@ -455,10 +439,6 @@ class OFOBatchController(Controller[LLMBatchSizeControlledDatacenter[LLMDatacent
     def latency_dual_by_model(self) -> dict[str, float]:
         return dict(self._latency_dual_by_model)
 
-    def set_phase_share(self, phase_share_by_model: dict[str, np.ndarray]) -> None:
-        """Update per-model phase share vectors (from datacenter placement)."""
-        self._phase_share_by_model.update(phase_share_by_model)
-
     def step(
         self,
         clock: SimulationClock,
@@ -521,7 +501,7 @@ class OFOBatchController(Controller[LLMBatchSizeControlledDatacenter[LLMDatacent
         batch_next = self._optimizer.step(
             voltage_dual_diff=voltage_dual_diff,
             sensitivity_matrix=self._sensitivity_matrix,
-            phase_share_by_model=self._phase_share_by_model,
+            phase_share_by_model=datacenter.phase_share_by_model,
             latency_dual_by_model=self._latency_dual_by_model,
             replica_count_by_model=replica_count_by_model,
         )

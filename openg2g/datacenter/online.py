@@ -789,6 +789,22 @@ class OnlineDatacenter(LLMBatchSizeControlledDatacenter[OnlineDatacenterState]):
             raise RuntimeError("OnlineDatacenter.state accessed before first step().")
         return self._state
 
+    @property
+    def phase_share_by_model(self) -> dict[str, np.ndarray]:
+        """Per-model phase share vectors derived from GPU endpoint placement."""
+        _PHASE_INDEX = {Phase.A: 0, Phase.B: 1, Phase.C: 2}
+        shares: dict[str, np.ndarray] = {}
+        for d in self._deployments:
+            counts = np.zeros(3, dtype=float)
+            for ep in d.gpu_endpoints:
+                counts[_PHASE_INDEX[ep.phase]] += len(ep.gpu_indices)
+            total = counts.sum()
+            if total > 0:
+                shares[d.model_label] = counts / total
+            else:
+                shares[d.model_label] = np.array([1 / 3, 1 / 3, 1 / 3], dtype=float)
+        return shares
+
     def history(self, n: int | None = None) -> list[OnlineDatacenterState]:
         if n is None:
             return list(self._history)

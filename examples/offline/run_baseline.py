@@ -32,10 +32,10 @@ from openg2g.datacenter.offline import (
     TraceByBatchCache,
     load_traces_by_batch_from_dir,
 )
-from openg2g.grid.base import TapPosition, TapSchedule
 from openg2g.grid.opendss import OpenDSSGrid
 from openg2g.metrics.voltage import compute_allbus_voltage_stats
 from openg2g.models.spec import LLMInferenceModelSpec, LLMInferenceWorkload
+from openg2g.types import TapPosition, TapSchedule
 
 logger = logging.getLogger("run_baseline")
 
@@ -111,7 +111,7 @@ def main(args: argparse.Namespace) -> None:
     )
 
     cache = TraceByBatchCache(traces_by_batch)
-    cache.build_templates(duration_s=t_total_s, timestep_s=dt_dc)
+    cache.build_templates(duration_s=600.0, timestep_s=dt_dc)
 
     logger.info("Loading latency fits...")
     if data_dir is not None:
@@ -153,9 +153,7 @@ def main(args: argparse.Namespace) -> None:
         power_factor=0.95,
         dt_s=Fraction(1, 10),
         connection_type="wye",
-        controls_off=False,
         initial_tap_position=INITIAL_TAPS,
-        freeze_regcontrols=True,
     )
 
     tap_ctrl_schedule = TAP_CHANGE_SCHEDULE if mode == "tap-change" else TapSchedule(())

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from openg2g.types import DatacenterCommand, GridCommand, SetBatchSize, SetTaps
+from openg2g.types import DatacenterCommand, GridCommand, SetBatchSize, SetTaps, TapPosition
 
 
 def test_set_batch_size_is_datacenter_command() -> None:
@@ -16,13 +16,14 @@ def test_set_batch_size_with_ramp() -> None:
 
 
 def test_set_taps_is_grid_command() -> None:
-    cmd = SetTaps(tap_changes={"reg1": 1.05, "reg2": 1.0})
+    cmd = SetTaps(tap_position=TapPosition(a=1.05, b=1.0))
     assert isinstance(cmd, GridCommand)
-    assert cmd.tap_changes == {"reg1": 1.05, "reg2": 1.0}
+    assert cmd.tap_position.a == 1.05
+    assert cmd.tap_position.b == 1.0
 
 
 def test_command_types_are_disjoint() -> None:
     dc_cmd = SetBatchSize(batch_size_by_model={"a": 1})
-    grid_cmd = SetTaps(tap_changes={"reg1": 1.0})
+    grid_cmd = SetTaps(tap_position=TapPosition(a=1.0))
     assert not isinstance(dc_cmd, GridCommand)
     assert not isinstance(grid_cmd, DatacenterCommand)

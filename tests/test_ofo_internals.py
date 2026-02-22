@@ -1,5 +1,4 @@
-"""Tests for OFO controller internals — PrimalBatchOptimizer, VoltageDualVariables,
-phase_share_from_placement.
+"""Tests for OFO controller internals — PrimalBatchOptimizer, VoltageDualVariables.
 
 Focuses on edge cases, projections, NaN handling, and shape validation —
 not trivial arithmetic."""
@@ -17,7 +16,6 @@ from openg2g.controller.ofo import (
     PrimalConfig,
     VoltageDualConfig,
     VoltageDualVariables,
-    phase_share_from_placement,
 )
 from openg2g.models.spec import LLMInferenceModelSpec
 
@@ -122,23 +120,6 @@ class TestVoltageDualUpdate:
         vd = VoltageDualVariables(3, VoltageDualConfig())
         with pytest.raises(ValueError, match="len 2 but duals have len 3"):
             vd.update(np.array([1.0, 1.0]))
-
-
-class TestPhaseShareFromPlacement:
-    def test_unbalanced(self) -> None:
-        """Unequal server counts should produce proportional phase shares."""
-        share = phase_share_from_placement({"servers_A": 6, "servers_B": 3, "servers_C": 1})
-        np.testing.assert_allclose(share, [0.6, 0.3, 0.1])
-
-    def test_all_zero_returns_uniform(self) -> None:
-        """Zero servers on all phases should fall back to uniform 1/3 share."""
-        share = phase_share_from_placement({"servers_A": 0, "servers_B": 0, "servers_C": 0})
-        np.testing.assert_allclose(share, [1 / 3, 1 / 3, 1 / 3])
-
-    def test_empty_dict_returns_uniform(self) -> None:
-        """Missing placement keys should fall back to uniform 1/3 share."""
-        share = phase_share_from_placement({})
-        np.testing.assert_allclose(share, [1 / 3, 1 / 3, 1 / 3])
 
 
 class TestPrimalStep:

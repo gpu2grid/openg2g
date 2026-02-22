@@ -184,9 +184,8 @@ grid = OpenDSSGrid(
     power_factor=0.95,
     dt_s=0.1,
     connection_type="wye",
-    controls_off=False,       # True for OFO (SolveNoControl)
-    tap_schedule=tap_schedule,
-    freeze_regcontrols=True,
+    # dss_controls=False (default): OpenDSS is a passive power flow solver.
+    # All voltage regulation is managed by our controllers.
 )
 ```
 

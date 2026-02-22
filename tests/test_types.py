@@ -11,8 +11,8 @@ import pytest
 from openg2g.datacenter.config import ServerRamp, ServerRampSchedule, TrainingRun, TrainingSchedule
 from openg2g.datacenter.offline import ScheduleActivationPolicy, ServerActivationPolicy
 from openg2g.datacenter.online import OnlineDatacenterState
-from openg2g.grid.base import BusVoltages, GridState, TapPosition, TapSchedule
-from openg2g.types import ThreePhase
+from openg2g.grid.base import BusVoltages, GridState
+from openg2g.types import TapPosition, TapSchedule, ThreePhase
 
 
 class TestTapPosition:
@@ -41,26 +41,6 @@ class TestTapPosition:
         """Constructing with no phases should raise ValueError."""
         with pytest.raises(ValueError, match="at least one phase"):
             TapPosition()
-
-    def test_as_reg_dict_full(self) -> None:
-        """as_reg_dict with all phases should map a/b/c to reg1/reg2/reg3."""
-        pos = TapPosition(a=1.0, b=1.05, c=1.1)
-        d = pos.as_reg_dict()
-        assert d == {"reg1": 1.0, "reg2": 1.05, "reg3": 1.1}
-
-    def test_as_reg_dict_partial(self) -> None:
-        """as_reg_dict with only phase A should omit reg2 and reg3."""
-        pos = TapPosition(a=1.1)
-        d = pos.as_reg_dict()
-        assert d == {"reg1": 1.1}
-        assert "reg2" not in d
-        assert "reg3" not in d
-
-    def test_as_reg_dict_two_phases(self) -> None:
-        """as_reg_dict with B and C should omit reg1."""
-        pos = TapPosition(b=1.0375, c=1.09375)
-        d = pos.as_reg_dict()
-        assert d == {"reg2": 1.0375, "reg3": 1.09375}
 
     def test_at_returns_schedule(self) -> None:
         """Calling .at(t) should wrap the position in a single-entry TapSchedule."""

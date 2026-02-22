@@ -8,6 +8,8 @@ from dataclasses import dataclass, field
 from fractions import Fraction
 from typing import Generic, TypeVar
 
+import numpy as np
+
 from openg2g.clock import SimulationClock
 from openg2g.events import EventEmitter
 from openg2g.types import DatacenterCommand, ThreePhase
@@ -111,3 +113,12 @@ class LLMBatchSizeControlledDatacenter(DatacenterBackend[DCStateT]):
     `active_replicas_by_model` / `observed_itl_s_by_model` from state
     should bind their generic to this class.
     """
+
+    @property
+    def phase_share_by_model(self) -> dict[str, np.ndarray]:
+        """Per-model phase share vectors `[frac_A, frac_B, frac_C]`.
+
+        Default: uniform `[1/3, 1/3, 1/3]` for all models. Override in
+        subclasses that know actual server-to-phase placement.
+        """
+        return {}
