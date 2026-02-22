@@ -37,7 +37,7 @@ from openg2g.datacenter.online import (
     OnlineModelDeployment,
     PowerAugmentationConfig,
 )
-from openg2g.grid.base import Phase, TapPosition
+from openg2g.grid.base import Phase, TapPosition, TapSchedule
 from openg2g.grid.opendss import OpenDSSGrid
 from openg2g.metrics.voltage import compute_allbus_voltage_stats
 from openg2g.models.spec import LLMInferenceModelSpec
@@ -85,7 +85,7 @@ def _build_deployments_from_config(
             gpus_per_replica=m["gpus_per_replica"],
             feasible_batch_sizes=tuple(m.get("feasible_batch_sizes", BATCH_SET)),
             initial_batch_size=m.get("initial_batch_size", 128),
-            itl_deadline_s=m.get("itl_deadline_s"),
+            itl_deadline_s=m["itl_deadline_s"],
         )
 
         endpoints = tuple(
@@ -120,23 +120,20 @@ def _build_initial_taps(config: dict) -> TapPosition:
     )
 
 
-def _build_tap_ctrl_schedule(config: dict, mode: str) -> list[tuple[float, dict[str, float]]]:
+def _build_tap_ctrl_schedule(config: dict, mode: str) -> TapSchedule:
     """Build tap controller schedule from config and mode."""
     if mode == "no-tap":
-        return []
+        return TapSchedule(())
 
     tap_changes = config.get("tap_changes", [])
-    return [
-        (
-            entry["t"],
-            TapPosition(
-                a=1.0 + entry["a"] * TAP_STEP,
-                b=1.0 + entry["b"] * TAP_STEP,
-                c=1.0 + entry["c"] * TAP_STEP,
-            ).as_reg_dict(),
-        )
-        for entry in tap_changes
-    ]
+    schedule = TapSchedule(())
+    for entry in tap_changes:
+        schedule = schedule | TapPosition(
+            a=1.0 + entry["a"] * TAP_STEP,
+            b=1.0 + entry["b"] * TAP_STEP,
+            c=1.0 + entry["c"] * TAP_STEP,
+        ).at(t=entry["t"])
+    return schedule
 
 
 def _build_batch_schedule(config: dict) -> dict[str, BatchSizeSchedule]:

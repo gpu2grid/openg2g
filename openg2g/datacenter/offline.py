@@ -143,10 +143,10 @@ class ScheduleActivationPolicy(ServerActivationPolicy):
     """Activate servers by fixed random priority, following a `ServerRampSchedule`.
 
     At time *t*, the top-*k* servers (by random priority) are active, where
-    ``k = round(schedule.fraction_at(t) * num_servers)``.
+    `k = round(schedule.fraction_at(t) * num_servers)`.
 
     This is the default policy used by `OfflineDatacenter`. It reproduces the
-    previous ``shutdown_order[:k]`` behavior exactly.
+    previous `shutdown_order[:k]` behavior exactly.
 
     Args:
         schedule: Temporal ramp schedule mapping time to active-server fraction.
@@ -221,7 +221,7 @@ def load_traces_by_batch_from_dir(
 ) -> dict[int, dict[str, dict[str, Any]]]:
     """Load per-(batch, model) power-trace CSVs into memory.
 
-    Returns ``traces_by_batch[batch][model_label] -> {t, p, measured_gpus, ...}``.
+    Returns `traces_by_batch[batch][model_label] -> {t, p, measured_gpus, ...}`.
     """
     import pandas as pd
 
@@ -394,12 +394,10 @@ class OfflineDatacenter(LLMBatchSizeControlledDatacenter[OfflineDatacenterState]
             spatial strategy (which servers to activate/deactivate). Subclass
             `ServerActivationPolicy` for custom strategies (e.g., phase-aware
             load balancing). If `None`, all servers are always active.
-        base_kW_per_phase: Constant base load per phase (kW).
-        training_overlay: Optional `TrainingOverlayCache` for training
-            workload.
-        training_t_add_start: Global time when training overlay starts.
-        training_t_add_end: Global time when training overlay ends.
-        training_n_train_gpus: Number of GPUs running training.
+        base_kw_per_phase: Constant base load per phase (kW).
+        training_overlays: List of `(TrainingOverlayCache, TrainingRun)` pairs
+            for training workloads. Each pair's overlay is evaluated during
+            `step()` between the run's `t_start` and `t_end`.
         itl_distributions: Optional per-model ITL mixture distributions:
             `model_label -> batch_size -> ITLMixtureModel`.
         latency_exact_threshold: Exact-sampling threshold for latency averaging.
@@ -415,11 +413,8 @@ class OfflineDatacenter(LLMBatchSizeControlledDatacenter[OfflineDatacenterState]
         gpus_per_server: int = 8,
         seed: int = 0,
         activation_policy: ServerActivationPolicy | None = None,
-        base_kW_per_phase: float = 0.0,
-        training_overlay: TrainingOverlayCache | None = None,
-        training_t_add_start: float = 1000.0,
-        training_t_add_end: float = 2000.0,
-        training_n_train_gpus: int = 2400,
+        base_kw_per_phase: float = 0.0,
+        training_overlays: list[tuple[TrainingOverlayCache, TrainingRun]] | None = None,
         itl_distributions: dict[str, dict[int, ITLMixtureModel]] | None = None,
         latency_exact_threshold: int = 30,
         latency_seed: int | None = None,
@@ -434,17 +429,11 @@ class OfflineDatacenter(LLMBatchSizeControlledDatacenter[OfflineDatacenterState]
         self._rng = np.random.default_rng(self._seed + 12345)
 
         self._activation_policy = activation_policy
-        self._base_W_per_phase = float(base_kW_per_phase) * 1e3
+        self._base_W_per_phase = float(base_kw_per_phase) * 1e3
 
-        self._training_overlay = training_overlay
-        self._training_t_add_start = float(training_t_add_start)
-        self._training_t_add_end = float(training_t_add_end)
-        self._training_n_train_gpus = int(training_n_train_gpus)
+        self._training_overlays: list[tuple[TrainingOverlayCache, TrainingRun]] = list(training_overlays or [])
         self._itl_distributions = itl_distributions
         self._latency_exact_threshold = int(latency_exact_threshold)
-
-        # Multi-training support (set by from_config)
-        self._training_overlays: list[tuple[TrainingOverlayCache, TrainingRun]] = []
 
         # Current batch sizes
         self._batch_by_model: dict[str, int] = {ms.model_label: ms.initial_batch_size for ms in models}
@@ -558,24 +547,13 @@ class OfflineDatacenter(LLMBatchSizeControlledDatacenter[OfflineDatacenterState]
 
         # Training overlay
         t_arr = np.asarray(t_now, dtype=float)
-        if self._training_overlays:
-            for overlay, tr in self._training_overlays:
-                training_power_w = float(
-                    overlay.eval_total_on_grid(
-                        t_arr,
-                        t_add_start=tr.t_start,
-                        t_add_end=tr.t_end,
-                        n_train_gpus=tr.n_gpus,
-                    )
-                )
-                phase_power += training_power_w / 3.0
-        elif self._training_overlay is not None:
+        for overlay, tr in self._training_overlays:
             training_power_w = float(
-                self._training_overlay.eval_total_on_grid(
+                overlay.eval_total_on_grid(
                     t_arr,
-                    t_add_start=self._training_t_add_start,
-                    t_add_end=self._training_t_add_end,
-                    n_train_gpus=self._training_n_train_gpus,
+                    t_add_start=tr.t_start,
+                    t_add_end=tr.t_end,
+                    n_train_gpus=tr.n_gpus,
                 )
             )
             phase_power += training_power_w / 3.0
@@ -628,6 +606,11 @@ class OfflineDatacenter(LLMBatchSizeControlledDatacenter[OfflineDatacenterState]
     @apply_control.register
     def _(self, command: SetBatchSize) -> None:
         """Record new batch sizes. Changes take effect on the next step."""
+        if command.ramp_up_rate > 0:
+            raise ValueError(
+                f"OfflineDatacenter does not support ramp_up_rate (got {command.ramp_up_rate}). "
+                f"Batch size changes are always immediate in trace-based simulation."
+            )
         for label, b in command.batch_size_by_model.items():
             b_int = int(b)
             if b_int <= 0:
@@ -701,49 +684,28 @@ class OfflineDatacenter(LLMBatchSizeControlledDatacenter[OfflineDatacenterState]
         elif isinstance(workload.server_ramps, ServerRampSchedule):
             activation_policy = ScheduleActivationPolicy(workload.server_ramps)
 
-        # Use the first training run's params for the legacy fields, or defaults
-        if training_runs:
-            first_tr = training_runs[0]
-            training_overlay = TrainingOverlayCache(
-                first_tr.trace_csv,
-                target_peak_W_per_gpu=first_tr.target_peak_W_per_gpu,
+        # Build training overlays
+        training_overlays: list[tuple[TrainingOverlayCache, TrainingRun]] = []
+        for tr in training_runs:
+            overlay = TrainingOverlayCache(
+                tr.trace_csv,
+                target_peak_W_per_gpu=tr.target_peak_W_per_gpu,
             )
-            t_add_start = first_tr.t_start
-            t_add_end = first_tr.t_end
-            n_train_gpus = first_tr.n_gpus
-        else:
-            training_overlay = None
-            t_add_start = 0.0
-            t_add_end = 0.0
-            n_train_gpus = 0
+            training_overlays.append((overlay, tr))
 
-        instance = cls(
+        return cls(
             trace_cache=trace_cache,
             models=models,
             timestep_s=timestep_s,
             gpus_per_server=datacenter.gpus_per_server,
             seed=seed,
             activation_policy=activation_policy,
-            base_kW_per_phase=datacenter.base_kW_per_phase,
-            training_overlay=training_overlay,
-            training_t_add_start=t_add_start,
-            training_t_add_end=t_add_end,
-            training_n_train_gpus=n_train_gpus,
+            base_kw_per_phase=datacenter.base_kw_per_phase,
+            training_overlays=training_overlays,
             itl_distributions=itl_distributions,
             latency_exact_threshold=latency_exact_threshold,
             latency_seed=latency_seed,
         )
-
-        # Set up multi-training overlays
-        instance._training_overlays = []
-        for tr in training_runs:
-            overlay = TrainingOverlayCache(
-                tr.trace_csv,
-                target_peak_W_per_gpu=tr.target_peak_W_per_gpu,
-            )
-            instance._training_overlays.append((overlay, tr))
-
-        return instance
 
     def _get_or_build_layout(self, ms: LLMInferenceModelSpec) -> ServerLayout:
         """Get or build a frozen per-model server layout."""

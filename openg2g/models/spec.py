@@ -18,15 +18,15 @@ class LLMInferenceModelSpec:
         feasible_batch_sizes: Allowed batch sizes for OFO control.  Baseline
             mode only uses the first (or only) entry.
         itl_deadline_s: Per-model inter-token latency deadline for the OFO
-            latency dual (seconds).  Ignored in baseline mode.
+            latency dual (seconds).
     """
 
     model_label: str
     num_replicas: int
     gpus_per_replica: int
     initial_batch_size: int
+    itl_deadline_s: float
     feasible_batch_sizes: tuple[int, ...] = (128,)
-    itl_deadline_s: float | None = None
 
     def __post_init__(self) -> None:
         if not self.feasible_batch_sizes:
@@ -37,6 +37,8 @@ class LLMInferenceModelSpec:
             raise ValueError(f"gpus_per_replica must be >= 1, got {self.gpus_per_replica}.")
         if self.initial_batch_size <= 0:
             raise ValueError(f"initial_batch_size must be > 0, got {self.initial_batch_size}.")
+        if self.itl_deadline_s <= 0:
+            raise ValueError(f"itl_deadline_s must be > 0, got {self.itl_deadline_s}.")
 
 
 @dataclass(frozen=True)
@@ -73,17 +75,8 @@ class LLMInferenceWorkload:
 
     @property
     def itl_deadline_by_model(self) -> dict[str, float]:
-        """Per-model ITL deadlines (seconds).
-
-        Raises:
-            ValueError: If any model has `itl_deadline_s = None`.
-        """
-        result: dict[str, float] = {}
-        for m in self.models:
-            if m.itl_deadline_s is None:
-                raise ValueError(f"Model {m.model_label!r} has no itl_deadline_s set.")
-            result[m.model_label] = m.itl_deadline_s
-        return result
+        """Per-model ITL deadlines (seconds)."""
+        return {m.model_label: m.itl_deadline_s for m in self.models}
 
     @property
     def required_measured_gpus(self) -> dict[str, int]:

@@ -16,8 +16,6 @@ class SimEvent:
 
     tick: int
     t_s: float
-    t_min: float
-    t_hr: float
     source: EventSource
     topic: str
     data: dict[str, Any] = field(default_factory=dict)
@@ -45,8 +43,6 @@ class EventEmitter:
             SimEvent(
                 tick=int(self.clock.step),
                 t_s=t_s,
-                t_min=t_s / 60.0,
-                t_hr=t_s / 3600.0,
                 source=self.source,
                 topic=str(topic),
                 data={} if data is None else dict(data),

@@ -184,11 +184,11 @@ class DatacenterConfig:
 
     Attributes:
         gpus_per_server: Number of GPUs per physical server rack.
-        base_kW_per_phase: Constant base load per phase (kW).
+        base_kw_per_phase: Constant base load per phase (kW).
     """
 
     gpus_per_server: int = 8
-    base_kW_per_phase: float = 0.0
+    base_kw_per_phase: float = 0.0
 
     def __post_init__(self) -> None:
         if self.gpus_per_server < 1:

@@ -134,8 +134,9 @@ def _build_controller() -> OFOBatchController:
         model_label="M1",
         num_replicas=10,
         gpus_per_replica=1,
-        feasible_batch_sizes=(8, 16, 32, 64, 128),
         initial_batch_size=64,
+        itl_deadline_s=0.1,
+        feasible_batch_sizes=(8, 16, 32, 64, 128),
     )
     power_fits, latency_fits, throughput_fits = _make_fits()
     return OFOBatchController(

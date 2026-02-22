@@ -290,8 +290,6 @@ def test_coordinator_exposes_clock_stamped_controller_events():
     assert ev.topic == "controller.test"
     assert ev.tick == 0
     assert abs(ev.t_s - 0.0) < 1e-12
-    assert abs(ev.t_min - 0.0) < 1e-12
-    assert abs(ev.t_hr - 0.0) < 1e-12
 
 
 def test_batch_history_is_populated_from_datacenter_events():

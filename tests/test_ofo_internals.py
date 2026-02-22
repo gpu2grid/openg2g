@@ -37,7 +37,7 @@ def _make_primal(
         feasible_batch_sizes = [8, 16, 32, 64, 128]
     if config is None:
         config = PrimalConfig()
-    model = LLMInferenceModelSpec("M", num_replicas=10, gpus_per_replica=1, initial_batch_size=128)
+    model = LLMInferenceModelSpec("M", num_replicas=10, gpus_per_replica=1, initial_batch_size=128, itl_deadline_s=0.1)
     fit = _trivial_logistic()
     return PrimalBatchOptimizer(
         models=[model],

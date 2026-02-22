@@ -45,7 +45,9 @@ def _make_simple_cache(dt: float = 0.1, T: float = 100.0) -> TraceByBatchCache:
 
 def test_step_returns_offline_state():
     cache = _make_simple_cache()
-    model = LLMInferenceModelSpec(model_label="TestModel", num_replicas=10, gpus_per_replica=1, initial_batch_size=128)
+    model = LLMInferenceModelSpec(
+        model_label="TestModel", num_replicas=10, gpus_per_replica=1, initial_batch_size=128, itl_deadline_s=0.1
+    )
     dc = OfflineDatacenter(
         trace_cache=cache,
         models=[model],
@@ -53,7 +55,7 @@ def test_step_returns_offline_state():
         gpus_per_server=8,
         seed=0,
         activation_policy=None,
-        base_kW_per_phase=0.0,
+        base_kw_per_phase=0.0,
     )
 
     clock = SimulationClock(tick_s=Fraction(1, 10))
@@ -70,7 +72,9 @@ def test_step_returns_offline_state():
 def test_step_produces_correct_number_of_states():
     """Stepping produces one state per call with monotonically increasing times."""
     cache = _make_simple_cache()
-    model = LLMInferenceModelSpec(model_label="TestModel", num_replicas=10, gpus_per_replica=1, initial_batch_size=128)
+    model = LLMInferenceModelSpec(
+        model_label="TestModel", num_replicas=10, gpus_per_replica=1, initial_batch_size=128, itl_deadline_s=0.1
+    )
     dc = OfflineDatacenter(
         trace_cache=cache,
         models=[model],
@@ -96,7 +100,9 @@ def test_step_produces_correct_number_of_states():
 def test_batch_change_takes_effect_immediately():
     """Batch size change via apply_control takes effect on the very next step."""
     cache = _make_simple_cache()
-    model = LLMInferenceModelSpec(model_label="TestModel", num_replicas=10, gpus_per_replica=1, initial_batch_size=128)
+    model = LLMInferenceModelSpec(
+        model_label="TestModel", num_replicas=10, gpus_per_replica=1, initial_batch_size=128, itl_deadline_s=0.1
+    )
     dc = OfflineDatacenter(
         trace_cache=cache,
         models=[model],
@@ -137,7 +143,9 @@ def test_build_periodic_template_shape():
 
 def test_offline_datacenter_emits_observed_itl_when_latency_fits_is_set():
     cache = _make_simple_cache()
-    model = LLMInferenceModelSpec(model_label="TestModel", num_replicas=10, gpus_per_replica=1, initial_batch_size=128)
+    model = LLMInferenceModelSpec(
+        model_label="TestModel", num_replicas=10, gpus_per_replica=1, initial_batch_size=128, itl_deadline_s=0.1
+    )
     fake_params = ITLMixtureModel(
         loc=0.01,
         pi_steady=0.8,
@@ -170,7 +178,9 @@ def test_apply_control_rejects_unknown_command():
         pass
 
     cache = _make_simple_cache()
-    model = LLMInferenceModelSpec(model_label="TestModel", num_replicas=10, gpus_per_replica=1, initial_batch_size=128)
+    model = LLMInferenceModelSpec(
+        model_label="TestModel", num_replicas=10, gpus_per_replica=1, initial_batch_size=128, itl_deadline_s=0.1
+    )
     dc = OfflineDatacenter(
         trace_cache=cache,
         models=[model],

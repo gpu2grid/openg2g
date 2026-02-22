@@ -197,7 +197,7 @@ class GridBackend(Generic[GridStateT], ABC):
 
     @abstractmethod
     def estimate_sensitivity(self, perturbation_kw: float = 100.0) -> tuple[np.ndarray, np.ndarray]:
-        """Estimate voltage sensitivity matrix (H = dv/dp) and return ``(H, v0)``."""
+        """Estimate voltage sensitivity matrix (H = dv/dp) and return `(H, v0)`."""
 
     @abstractmethod
     def reset(self) -> None:

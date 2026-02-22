@@ -10,14 +10,16 @@ from openg2g.models.spec import LLMInferenceModelSpec, LLMInferenceWorkload
 class TestLLMInferenceModelSpec:
     def test_basic(self) -> None:
         """Constructor should store label, replica count, and GPUs per replica."""
-        m = LLMInferenceModelSpec("TestModel", num_replicas=10, gpus_per_replica=4, initial_batch_size=128)
+        m = LLMInferenceModelSpec(
+            "TestModel", num_replicas=10, gpus_per_replica=4, initial_batch_size=128, itl_deadline_s=0.1
+        )
         assert m.model_label == "TestModel"
         assert m.num_replicas == 10
         assert m.gpus_per_replica == 4
 
     def test_default_batch_sizes(self) -> None:
         """Default feasible_batch_sizes should be (128,)."""
-        m = LLMInferenceModelSpec("M", num_replicas=1, gpus_per_replica=1, initial_batch_size=128)
+        m = LLMInferenceModelSpec("M", num_replicas=1, gpus_per_replica=1, initial_batch_size=128, itl_deadline_s=0.1)
         assert m.feasible_batch_sizes == (128,)
 
     def test_custom_batch_sizes(self) -> None:
@@ -26,12 +28,13 @@ class TestLLMInferenceModelSpec:
             num_replicas=1,
             gpus_per_replica=1,
             initial_batch_size=16,
+            itl_deadline_s=0.1,
             feasible_batch_sizes=(8, 16, 32, 64),
         )
         assert m.initial_batch_size == 16
 
     def test_itl_deadline(self) -> None:
-        """Optional ITL deadline should be stored as given."""
+        """ITL deadline should be stored as given."""
         m = LLMInferenceModelSpec("M", num_replicas=1, gpus_per_replica=1, initial_batch_size=128, itl_deadline_s=0.08)
         assert m.itl_deadline_s == 0.08
 
@@ -39,23 +42,33 @@ class TestLLMInferenceModelSpec:
         """Empty feasible_batch_sizes tuple should raise ValueError."""
         with pytest.raises(ValueError, match="feasible_batch_sizes must not be empty"):
             LLMInferenceModelSpec(
-                "M", num_replicas=1, gpus_per_replica=1, initial_batch_size=128, feasible_batch_sizes=()
+                "M",
+                num_replicas=1,
+                gpus_per_replica=1,
+                initial_batch_size=128,
+                itl_deadline_s=0.1,
+                feasible_batch_sizes=(),
             )
 
     def test_negative_replicas_raises(self) -> None:
         """Negative num_replicas should raise ValueError."""
         with pytest.raises(ValueError, match="num_replicas must be >= 0"):
-            LLMInferenceModelSpec("M", num_replicas=-1, gpus_per_replica=1, initial_batch_size=128)
+            LLMInferenceModelSpec("M", num_replicas=-1, gpus_per_replica=1, initial_batch_size=128, itl_deadline_s=0.1)
 
     def test_zero_gpus_per_replica_raises(self) -> None:
         """Zero gpus_per_replica should raise ValueError."""
         with pytest.raises(ValueError, match="gpus_per_replica must be >= 1"):
-            LLMInferenceModelSpec("M", num_replicas=1, gpus_per_replica=0, initial_batch_size=128)
+            LLMInferenceModelSpec("M", num_replicas=1, gpus_per_replica=0, initial_batch_size=128, itl_deadline_s=0.1)
 
     def test_zero_initial_batch_raises(self) -> None:
         """Zero initial_batch_size should raise ValueError."""
         with pytest.raises(ValueError, match="initial_batch_size must be > 0"):
-            LLMInferenceModelSpec("M", num_replicas=1, gpus_per_replica=1, initial_batch_size=0)
+            LLMInferenceModelSpec("M", num_replicas=1, gpus_per_replica=1, initial_batch_size=0, itl_deadline_s=0.1)
+
+    def test_zero_itl_deadline_raises(self) -> None:
+        """Zero itl_deadline_s should raise ValueError."""
+        with pytest.raises(ValueError, match="itl_deadline_s must be > 0"):
+            LLMInferenceModelSpec("M", num_replicas=1, gpus_per_replica=1, initial_batch_size=128, itl_deadline_s=0.0)
 
 
 class TestLLMInferenceWorkload:
@@ -101,14 +114,6 @@ class TestLLMInferenceWorkload:
         deadlines = w.itl_deadline_by_model
         assert deadlines == {"M1": 0.08, "M2": 0.10}
 
-    def test_itl_deadline_missing_raises(self) -> None:
-        """Accessing itl_deadline_by_model when a model has no deadline
-        should raise ValueError."""
-        models = (LLMInferenceModelSpec("M1", num_replicas=1, gpus_per_replica=1, initial_batch_size=128),)
-        w = LLMInferenceWorkload(models=models)
-        with pytest.raises(ValueError, match="no itl_deadline_s"):
-            _ = w.itl_deadline_by_model
-
     def test_required_measured_gpus(self) -> None:
         """required_measured_gpus should map labels to gpus_per_replica."""
         w = LLMInferenceWorkload(models=self._make_models())
@@ -130,8 +135,8 @@ class TestLLMInferenceWorkload:
     def test_duplicate_labels_raises(self) -> None:
         """Duplicate model labels should raise ValueError."""
         models = (
-            LLMInferenceModelSpec("M1", num_replicas=1, gpus_per_replica=1, initial_batch_size=128),
-            LLMInferenceModelSpec("M1", num_replicas=2, gpus_per_replica=1, initial_batch_size=128),
+            LLMInferenceModelSpec("M1", num_replicas=1, gpus_per_replica=1, initial_batch_size=128, itl_deadline_s=0.1),
+            LLMInferenceModelSpec("M1", num_replicas=2, gpus_per_replica=1, initial_batch_size=128, itl_deadline_s=0.1),
         )
         with pytest.raises(ValueError, match="Duplicate model labels"):
             LLMInferenceWorkload(models=models)

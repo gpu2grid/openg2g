@@ -40,7 +40,7 @@ from openg2g.datacenter.offline import (
     TraceByBatchCache,
     load_traces_by_batch_from_dir,
 )
-from openg2g.grid.base import TapPosition
+from openg2g.grid.base import TapPosition, TapSchedule
 from openg2g.grid.opendss import OpenDSSGrid
 from openg2g.metrics.voltage import compute_allbus_voltage_stats
 from openg2g.models.spec import LLMInferenceModelSpec, LLMInferenceWorkload
@@ -162,8 +162,8 @@ def main(args: argparse.Namespace) -> None:
     if args.training_trace:
         training_csv = Path(args.training_trace)
     elif data_dir is not None:
-        raise SystemExit(
-            "Error: --training-trace is required when using --data-dir (training trace is not part of the build output)"
+        raise FileNotFoundError(
+            "--training-trace is required when using --data-dir (training trace is not part of the build output)"
         )
     else:
         training_csv = project_dir / "power_csvs_updated" / "synthetic_training_trace.csv"
@@ -186,7 +186,7 @@ def main(args: argparse.Namespace) -> None:
     else:
         itl_fits = load_itl_fits_from_csv(trace_dir / "ALL_MODELS_latency_fit_parameters_ALL.csv")
 
-    dc_config = DatacenterConfig(gpus_per_server=gpus_per_server, base_kW_per_phase=500.0)
+    dc_config = DatacenterConfig(gpus_per_server=gpus_per_server, base_kw_per_phase=500.0)
     workload = WorkloadConfig(
         inference=INFERENCE,
         training=TrainingRun(
@@ -236,7 +236,7 @@ def main(args: argparse.Namespace) -> None:
         freeze_regcontrols=True,
     )
 
-    tap_ctrl = TapScheduleController(schedule=[], dt_s=dt_ctrl)
+    tap_ctrl = TapScheduleController(schedule=TapSchedule(()), dt_s=dt_ctrl)
 
     ofo_ctrl = OFOBatchController.from_workload(
         workload=INFERENCE,

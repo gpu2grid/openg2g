@@ -32,7 +32,7 @@ from openg2g.datacenter.offline import (
     TraceByBatchCache,
     load_traces_by_batch_from_dir,
 )
-from openg2g.grid.base import TapPosition
+from openg2g.grid.base import TapPosition, TapSchedule
 from openg2g.grid.opendss import OpenDSSGrid
 from openg2g.metrics.voltage import compute_allbus_voltage_stats
 from openg2g.models.spec import LLMInferenceModelSpec, LLMInferenceWorkload
@@ -41,17 +41,26 @@ logger = logging.getLogger("run_baseline")
 
 TAP_STEP = 0.00625
 INITIAL_TAPS = TapPosition(a=1.0 + 14 * TAP_STEP, b=1.0 + 6 * TAP_STEP, c=1.0 + 15 * TAP_STEP)
-TAP_CHANGE_SCHEDULE = [
-    (25 * 60, TapPosition(a=1.0 + 16 * TAP_STEP, b=1.0 + 6 * TAP_STEP, c=1.0 + 17 * TAP_STEP).as_reg_dict()),
-    (55 * 60, TapPosition(a=1.0 + 10 * TAP_STEP, b=1.0 + 6 * TAP_STEP, c=1.0 + 10 * TAP_STEP).as_reg_dict()),
-]
+TAP_CHANGE_SCHEDULE = TapPosition(a=1.0 + 16 * TAP_STEP, b=1.0 + 6 * TAP_STEP, c=1.0 + 17 * TAP_STEP).at(
+    t=25 * 60
+) | TapPosition(a=1.0 + 10 * TAP_STEP, b=1.0 + 6 * TAP_STEP, c=1.0 + 10 * TAP_STEP).at(t=55 * 60)
 
 MODELS = (
-    LLMInferenceModelSpec("Llama-3.1-8B", num_replicas=720, gpus_per_replica=1, initial_batch_size=128),
-    LLMInferenceModelSpec("Llama-3.1-70B", num_replicas=180, gpus_per_replica=4, initial_batch_size=128),
-    LLMInferenceModelSpec("Llama-3.1-405B", num_replicas=90, gpus_per_replica=8, initial_batch_size=128),
-    LLMInferenceModelSpec("Qwen3-30B-A3B", num_replicas=480, gpus_per_replica=2, initial_batch_size=128),
-    LLMInferenceModelSpec("Qwen3-235B-A22B", num_replicas=210, gpus_per_replica=8, initial_batch_size=128),
+    LLMInferenceModelSpec(
+        "Llama-3.1-8B", num_replicas=720, gpus_per_replica=1, initial_batch_size=128, itl_deadline_s=0.08
+    ),
+    LLMInferenceModelSpec(
+        "Llama-3.1-70B", num_replicas=180, gpus_per_replica=4, initial_batch_size=128, itl_deadline_s=0.10
+    ),
+    LLMInferenceModelSpec(
+        "Llama-3.1-405B", num_replicas=90, gpus_per_replica=8, initial_batch_size=128, itl_deadline_s=0.12
+    ),
+    LLMInferenceModelSpec(
+        "Qwen3-30B-A3B", num_replicas=480, gpus_per_replica=2, initial_batch_size=128, itl_deadline_s=0.06
+    ),
+    LLMInferenceModelSpec(
+        "Qwen3-235B-A22B", num_replicas=210, gpus_per_replica=8, initial_batch_size=128, itl_deadline_s=0.14
+    ),
 )
 
 INFERENCE = LLMInferenceWorkload(models=MODELS)
@@ -79,8 +88,8 @@ def main(args: argparse.Namespace) -> None:
     if args.training_trace:
         training_csv = Path(args.training_trace)
     elif args.data_dir:
-        raise ValueError(
-            "Error: --training-trace is required when using --data-dir (training trace is not part of the build output)"
+        raise FileNotFoundError(
+            "--training-trace is required when using --data-dir (training trace is not part of the build output)"
         )
     else:
         training_csv = project_dir / "power_csvs_updated" / "synthetic_training_trace.csv"
@@ -110,7 +119,7 @@ def main(args: argparse.Namespace) -> None:
     else:
         itl_fits = load_itl_fits_from_csv(trace_dir / "ALL_MODELS_latency_fit_parameters_ALL.csv")
 
-    dc_config = DatacenterConfig(gpus_per_server=gpus_per_server, base_kW_per_phase=500.0)
+    dc_config = DatacenterConfig(gpus_per_server=gpus_per_server, base_kw_per_phase=500.0)
     workload = WorkloadConfig(
         inference=INFERENCE,
         training=TrainingRun(
@@ -149,7 +158,7 @@ def main(args: argparse.Namespace) -> None:
         freeze_regcontrols=True,
     )
 
-    tap_ctrl_schedule = TAP_CHANGE_SCHEDULE if mode == "tap-change" else []
+    tap_ctrl_schedule = TAP_CHANGE_SCHEDULE if mode == "tap-change" else TapSchedule(())
     ctrl = TapScheduleController(schedule=tap_ctrl_schedule, dt_s=Fraction(1))
 
     logger.info("Running simulation (mode=%s)...", mode)

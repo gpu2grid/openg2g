@@ -88,10 +88,10 @@ class VoltageDualVariables:
 
         Args:
             observed_voltages: Observed voltage magnitudes (pu), shape
-                ``(n_bus_phases,)``.
+                `(n_bus_phases,)`.
 
         Raises:
-            ValueError: If ``observed_voltages`` length does not match the dual
+            ValueError: If `observed_voltages` length does not match the dual
                 dimension.
         """
         observed_voltages = np.asarray(observed_voltages, float).reshape(-1)
@@ -125,7 +125,7 @@ def phase_share_from_placement(placement: dict[str, int]) -> np.ndarray:
 class PrimalBatchOptimizer:
     """Primal batch-size optimizer operating in log2 space.
 
-    Maintains continuous state ``x_i = log2(batch_i)`` per model and applies
+    Maintains continuous state `x_i = log2(batch_i)` per model and applies
     a gradient descent step using voltage duals, latency duals, and fitted
     power/latency/throughput curves.
 
@@ -211,11 +211,11 @@ class PrimalBatchOptimizer:
 
         Args:
             voltage_dual_diff: Voltage dual difference vector
-                (η = λ̄ − λ), shape ``(n_bus_phases,)``.
+                (η = λ̄ − λ), shape `(n_bus_phases,)`.
             sensitivity_matrix: Voltage sensitivity matrix (H = dv/dp),
-                shape ``(n_bus_phases, 3)``.
+                shape `(n_bus_phases, 3)`.
             phase_share_by_model: Per-model normalized phase share vectors,
-                shape ``(3,)`` each.
+                shape `(3,)` each.
             latency_dual_by_model: Per-model latency dual variables (μ_i).
             replica_count_by_model: Per-model active replica counts (w_i).
 
@@ -305,7 +305,7 @@ class OFOBatchController(Controller[LLMBatchSizeControlledDatacenter[LLMDatacent
 
     Reads grid voltage and datacenter state, updates voltage and latency
     duals, runs the primal batch-size optimizer, and returns new batch sizes.
-    Latency dual updates use ``dc_state.observed_itl_s_by_model``.
+    Latency dual updates use `dc_state.observed_itl_s_by_model`.
 
     Args:
         models: Model specifications.
@@ -371,7 +371,6 @@ class OFOBatchController(Controller[LLMBatchSizeControlledDatacenter[LLMDatacent
 
         # Sensitivity estimation state (H = ∂v/∂p, Eq. 13)
         self._sensitivity_matrix: np.ndarray | None = None
-        self._baseline_voltages: np.ndarray | None = None
         self._control_step_count: int = 0
 
         # Phase share cache (from datacenter placement)
@@ -391,7 +390,6 @@ class OFOBatchController(Controller[LLMBatchSizeControlledDatacenter[LLMDatacent
         self._latency_dual_by_model = {ms.model_label: 0.0 for ms in self._models}
         self._optimizer.init_from_batches({ms.model_label: ms.initial_batch_size for ms in self._models})
         self._sensitivity_matrix = None
-        self._baseline_voltages = None
         self._control_step_count = 0
 
     @classmethod
@@ -411,7 +409,7 @@ class OFOBatchController(Controller[LLMBatchSizeControlledDatacenter[LLMDatacent
     ) -> OFOBatchController:
         """Create an OFO controller from an LLMInferenceWorkload.
 
-        Derives ``feasible_batch_sizes`` and ``itl_deadline_by_model``
+        Derives `feasible_batch_sizes` and `itl_deadline_by_model`
         from the workload's model specs.
 
         Args:
@@ -476,9 +474,7 @@ class OFOBatchController(Controller[LLMBatchSizeControlledDatacenter[LLMDatacent
         if self._sensitivity_matrix is None or (
             self._sensitivity_update_interval > 0 and self._control_step_count % self._sensitivity_update_interval == 0
         ):
-            self._sensitivity_matrix, self._baseline_voltages = grid.estimate_sensitivity(
-                self._sensitivity_perturbation_kw
-            )
+            self._sensitivity_matrix, _ = grid.estimate_sensitivity(self._sensitivity_perturbation_kw)
 
         # 2. Update voltage duals from grid state
         observed_voltages = grid.voltages_vector()
@@ -500,13 +496,13 @@ class OFOBatchController(Controller[LLMBatchSizeControlledDatacenter[LLMDatacent
             raise RuntimeError(f"OFOBatchController requires observed_itl_s_by_model for all models. Missing: {miss}.")
         for ms in self._models:
             label = ms.model_label
-            num_replicas = max(int(dc_state.active_replicas_by_model.get(label, 0)), 0)
-            observed_itl = float(dc_state.observed_itl_s_by_model.get(label, float("nan")))
+            num_replicas = max(int(dc_state.active_replicas_by_model[label]), 0)
+            observed_itl = float(dc_state.observed_itl_s_by_model[label])
             if num_replicas <= 0:
                 logger.debug("Model %s has 0 replicas, skipping latency dual update", label)
                 observed_itl = float("nan")
 
-            deadline = float(self._itl_deadline_by_model.get(label, 0.1))
+            deadline = float(self._itl_deadline_by_model[label])
             if np.isfinite(observed_itl):
                 self._latency_dual_by_model[label] = max(
                     self._latency_dual_by_model[label] + self._latency_dual_step_size * (observed_itl - deadline),
@@ -519,10 +515,9 @@ class OFOBatchController(Controller[LLMBatchSizeControlledDatacenter[LLMDatacent
         replica_count_by_model: dict[str, float] = {}
         for ms in self._models:
             label = ms.model_label
-            replica_count_by_model[label] = float(dc_state.active_replicas_by_model.get(label, 0))
+            replica_count_by_model[label] = float(dc_state.active_replicas_by_model[label])
 
         # 5. Primal update -> next batch sizes
-        assert self._sensitivity_matrix is not None
         batch_next = self._optimizer.step(
             voltage_dual_diff=voltage_dual_diff,
             sensitivity_matrix=self._sensitivity_matrix,

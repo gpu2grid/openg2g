@@ -372,7 +372,7 @@ class _LoadGenerator:
         for d in deployments:
             label = d.model_label
             self._batch_by_model[label] = d.spec.initial_batch_size
-            self._itl_samples[label] = collections.deque(maxlen=100_000)
+            self._itl_samples[label] = collections.deque()
 
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()

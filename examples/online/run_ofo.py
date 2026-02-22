@@ -37,7 +37,7 @@ from openg2g.datacenter.online import (
     OnlineModelDeployment,
     PowerAugmentationConfig,
 )
-from openg2g.grid.base import Phase, TapPosition
+from openg2g.grid.base import Phase, TapPosition, TapSchedule
 from openg2g.grid.opendss import OpenDSSGrid
 from openg2g.metrics.voltage import compute_allbus_voltage_stats
 from openg2g.models.spec import LLMInferenceModelSpec, LLMInferenceWorkload
@@ -101,7 +101,7 @@ def _build_deployments_from_config(
             gpus_per_replica=m["gpus_per_replica"],
             feasible_batch_sizes=tuple(m.get("feasible_batch_sizes", BATCH_SET)),
             initial_batch_size=m.get("initial_batch_size", 128),
-            itl_deadline_s=m.get("itl_deadline_s"),
+            itl_deadline_s=m["itl_deadline_s"],
         )
         specs.append(spec)
 
@@ -230,7 +230,7 @@ def main(args: argparse.Namespace) -> None:
         freeze_regcontrols=True,
     )
 
-    tap_ctrl = TapScheduleController(schedule=[], dt_s=dt_ctrl)
+    tap_ctrl = TapScheduleController(schedule=TapSchedule(()), dt_s=dt_ctrl)
 
     ofo_ctrl = OFOBatchController.from_workload(
         workload=workload,

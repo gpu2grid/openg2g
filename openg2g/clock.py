@@ -41,11 +41,6 @@ class SimulationClock:
     def step(self) -> int:
         return self._step
 
-    @property
-    def step_index(self) -> int:
-        """Global simulation tick index (alias for `step`)."""
-        return self._step
-
     def advance(self) -> float:
         """Advance one tick. Returns new simulation time in seconds."""
         self._step += 1
@@ -76,10 +71,10 @@ class SimulationClock:
         Raises:
             ValueError: If *period_s* is not an exact multiple of *tick_s*.
         """
+        if period_s <= 0:
+            raise ValueError(f"period_s must be positive, got {period_s}")
         ratio = period_s / self.tick_s
         if ratio.denominator != 1:
             raise ValueError(f"period_s={period_s} is not an exact multiple of tick_s={self.tick_s}")
         period_ticks = int(ratio)
-        if period_ticks <= 0:
-            return True
         return self._step % period_ticks == 0

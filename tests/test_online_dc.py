@@ -41,6 +41,7 @@ def _make_deployment(
         num_replicas=num_replicas,
         gpus_per_replica=gpus_per_replica,
         initial_batch_size=128,
+        itl_deadline_s=0.1,
     )
     return OnlineModelDeployment(
         spec=spec,
