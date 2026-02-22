@@ -1974,6 +1974,7 @@ dev = [
     { name = "openai" },
     { name = "openg2g", extra = ["opendss"] },
     { name = "pytest" },
+    { name = "pyyaml" },
     { name = "ruff" },
     { name = "ty" },
 ]
@@ -1986,6 +1987,7 @@ examples = [
     { name = "matplotlib" },
     { name = "openai" },
     { name = "openg2g", extra = ["opendss"] },
+    { name = "pyyaml" },
 ]
 lint = [
     { name = "ruff" },
@@ -2002,7 +2004,7 @@ requires-dist = [
     { name = "numpy" },
     { name = "opendssdirect-py", marker = "extra == 'opendss'" },
     { name = "pandas" },
-    { name = "zeus" },
+    { name = "zeus", git = "https://github.com/ml-energy/zeus.git?rev=master" },
 ]
 provides-extras = ["opendss"]
 
@@ -2015,6 +2017,7 @@ dev = [
     { name = "openai" },
     { name = "openg2g", extras = ["opendss"] },
     { name = "pytest" },
+    { name = "pyyaml" },
     { name = "ruff" },
     { name = "ty" },
 ]
@@ -2027,6 +2030,7 @@ examples = [
     { name = "matplotlib" },
     { name = "openai" },
     { name = "openg2g", extras = ["opendss"] },
+    { name = "pyyaml" },
 ]
 lint = [
     { name = "ruff" },
@@ -3561,7 +3565,7 @@ wheels = [
 [[package]]
 name = "zeus"
 version = "0.14.0"
-source = { registry = "https://pypi.org/simple" }
+source = { git = "https://github.com/ml-energy/zeus.git?rev=master#bd1242028497d2ab2124bae866883dd07d7fc9d7" }
 dependencies = [
     { name = "amdsmi" },
     { name = "httpx" },
@@ -3576,8 +3580,4 @@ dependencies = [
     { name = "scikit-learn", version = "1.7.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "scikit-learn", version = "1.8.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "tyro" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/4b/80/d7ca989c16af40c5b05c5fd85cfe52231deb5441060eb6e9ca5d7d9b4c5c/zeus-0.14.0.tar.gz", hash = "sha256:090772b220a525b8edabcdd7fb5b7edd54e3f8951eba8ef89c9714b55c5e8aa8", size = 211285, upload-time = "2026-02-19T03:19:39.554Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/14/d1/de804cc95e9034272261a67a032cfd5bba3138a8bb8eb4d7bb7ddcc21b5a/zeus-0.14.0-py3-none-any.whl", hash = "sha256:096a33d00c80cac536fcc1b1528e50f0910aa881fb0eb907288f08820eddfc41", size = 267710, upload-time = "2026-02-19T03:19:36.511Z" },
 ]

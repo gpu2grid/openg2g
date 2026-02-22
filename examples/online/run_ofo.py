@@ -182,7 +182,10 @@ def main(args: argparse.Namespace) -> None:
                 if idx not in gpu_indices_by_key[key]:
                     gpu_indices_by_key[key].append(idx)
             servers_by_key[key] = ZeusdConfig.tcp(
-                ep.host, ep.port, gpu_indices=gpu_indices_by_key[key], cpu_indices=[],
+                ep.host,
+                ep.port,
+                gpu_indices=gpu_indices_by_key[key],
+                cpu_indices=[],
             )
 
     power_client = PowerStreamingClient(servers=list(servers_by_key.values()))

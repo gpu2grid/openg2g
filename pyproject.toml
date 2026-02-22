@@ -12,7 +12,7 @@ dependencies = [
     "numpy",
     "pandas",
     "aiohttp",
-    "zeus",
+    "zeus @ git+https://github.com/ml-energy/zeus.git@master",
     "mlenergy-data",
 ]
 
