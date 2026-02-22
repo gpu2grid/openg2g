@@ -16,7 +16,7 @@ import numpy as np
 
 from openg2g.clock import SimulationClock
 from openg2g.events import EventEmitter
-from openg2g.grid.base import BusVoltages, GridBackend, GridState, TapPosition, TapSchedule
+from openg2g.grid.base import BusVoltages, GridBackend, GridState, TapPosition
 from openg2g.types import GridCommand, SetTaps, ThreePhase
 
 if TYPE_CHECKING:
@@ -55,17 +55,8 @@ class OpenDSSGrid(GridBackend[GridState]):
         dt_s: Grid simulation timestep (seconds).
         connection_type: Connection type for DC loads (default ``"wye"``).
         controls_off: If True, disable OpenDSS voltage regulators / controls.
-        tap_schedule: Pre-planned regulator tap settings as a
-            ``TapSchedule``, built via the fluent API:
-
-                TAP_STEP = 0.00625  # standard 5/8% tap step
-                TapPosition(
-                    a=1.0 + 14 * TAP_STEP,
-                    b=1.0 + 6 * TAP_STEP,
-                    c=1.0 + 15 * TAP_STEP,
-                ).at(t=0)
-
-            Each ``TapPosition`` field is a per-unit tap ratio.
+        initial_tap_position: Initial regulator tap position applied before
+            the first solve. Each field is a per-unit tap ratio.
         freeze_regcontrols: If True, disable regcontrols after setting taps.
         exclude_buses: Buses to exclude from voltage indexing (e.g., source bus).
     """
@@ -81,7 +72,7 @@ class OpenDSSGrid(GridBackend[GridState]):
         dt_s: Fraction = Fraction(1),
         connection_type: str = "wye",
         controls_off: bool = True,
-        tap_schedule: TapSchedule | None = None,
+        initial_tap_position: TapPosition | None = None,
         freeze_regcontrols: bool = True,
         exclude_buses: tuple[str, ...] = ("rg60",),
     ) -> None:
@@ -97,15 +88,12 @@ class OpenDSSGrid(GridBackend[GridState]):
         self._controls_off = bool(controls_off)
         self._freeze_regcontrols = bool(freeze_regcontrols)
 
-        self._tap_schedule: list[tuple[float, dict[str, float]]] = [
-            (t, pos.as_reg_dict()) for t, pos in (tap_schedule or ())
-        ]
+        self._initial_tap_position = initial_tap_position
         self._reg_map: dict[str, tuple[str, int]] | None = None
         self._events: EventEmitter | None = None
         self._exclude_buses = tuple(str(b) for b in exclude_buses)
 
         # Simulation state (cleared by reset)
-        self._tap_idx = 0
         self._state: GridState | None = None
         self._history: list[GridState] = []
         self._prev_power: ThreePhase | None = None
@@ -163,8 +151,6 @@ class OpenDSSGrid(GridBackend[GridState]):
         Returns:
             GridState with voltages from the solve.
         """
-        self.apply_taps_if_needed(clock.time_s)
-
         if not power_samples_w:
             if self._prev_power is None:
                 raise RuntimeError("OpenDSSGrid.step() called with no power samples and no previous power.")
@@ -236,7 +222,6 @@ class OpenDSSGrid(GridBackend[GridState]):
         self._state = None
         self._history = []
         self._prev_power = None
-        self._tap_idx = 0
 
     def start(self) -> None:
         self._init_dss()
@@ -255,23 +240,6 @@ class OpenDSSGrid(GridBackend[GridState]):
 
     def bind_event_emitter(self, emitter: EventEmitter) -> None:
         self._events = emitter
-
-    def apply_taps_if_needed(self, t_s: float) -> int:
-        """Apply scheduled tap changes up to time *t_s*."""
-        if not self._tap_schedule:
-            return self._tap_idx
-
-        t_now = float(t_s)
-        while self._tap_idx < len(self._tap_schedule):
-            t_ev, taps = self._tap_schedule[self._tap_idx]
-            if float(t_ev) <= t_now + 1e-12:
-                logger.info("Applying tap schedule entry %d at t=%.1f s: %s", self._tap_idx, t_ev, taps)
-                self._set_reg_taps(taps)
-                self._tap_idx += 1
-                self._solve()
-            else:
-                break
-        return self._tap_idx
 
     def voltages_vector(self) -> np.ndarray:
         """Return voltage magnitudes (pu) in the fixed v_index ordering."""
@@ -386,8 +354,8 @@ class OpenDSSGrid(GridBackend[GridState]):
         if self._controls_off:
             dss.Text.Command("Set ControlMode=Off")
 
-        if self._tap_schedule:
-            self.apply_taps_if_needed(0.0)
+        if self._initial_tap_position is not None:
+            self._set_reg_taps(self._initial_tap_position.as_reg_dict())
 
         self._solve()
         self._cache_buses_with_phases()

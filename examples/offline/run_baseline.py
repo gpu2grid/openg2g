@@ -40,14 +40,11 @@ from openg2g.models.spec import LLMInferenceModelSpec, LLMInferenceWorkload
 logger = logging.getLogger("run_baseline")
 
 TAP_STEP = 0.00625
-TAP_SCHEDULES = {
-    "no-tap": TapPosition(a=1.0 + 14 * TAP_STEP, b=1.0 + 6 * TAP_STEP, c=1.0 + 15 * TAP_STEP).at(t=0),
-    "tap-change": (
-        TapPosition(a=1.0 + 14 * TAP_STEP, b=1.0 + 6 * TAP_STEP, c=1.0 + 15 * TAP_STEP).at(t=0)
-        | TapPosition(a=1.0 + 16 * TAP_STEP, b=1.0 + 6 * TAP_STEP, c=1.0 + 17 * TAP_STEP).at(t=25 * 60)
-        | TapPosition(a=1.0 + 10 * TAP_STEP, b=1.0 + 6 * TAP_STEP, c=1.0 + 10 * TAP_STEP).at(t=55 * 60)
-    ),
-}
+INITIAL_TAPS = TapPosition(a=1.0 + 14 * TAP_STEP, b=1.0 + 6 * TAP_STEP, c=1.0 + 15 * TAP_STEP)
+TAP_CHANGE_SCHEDULE = [
+    (25 * 60, TapPosition(a=1.0 + 16 * TAP_STEP, b=1.0 + 6 * TAP_STEP, c=1.0 + 17 * TAP_STEP).as_reg_dict()),
+    (55 * 60, TapPosition(a=1.0 + 10 * TAP_STEP, b=1.0 + 6 * TAP_STEP, c=1.0 + 10 * TAP_STEP).as_reg_dict()),
+]
 
 MODELS = (
     LLMInferenceModelSpec("Llama-3.1-8B", num_replicas=720, gpus_per_replica=1, initial_batch_size=128),
@@ -62,7 +59,6 @@ INFERENCE = LLMInferenceWorkload(models=MODELS)
 
 def main(args: argparse.Namespace) -> None:
     mode = args.mode
-    tap_schedule = TAP_SCHEDULES[mode]
 
     project_dir = Path(__file__).resolve().parent.parent.parent
     case_dir = Path(__file__).resolve().parent.parent / "ieee13"
@@ -149,11 +145,12 @@ def main(args: argparse.Namespace) -> None:
         dt_s=Fraction(1, 10),
         connection_type="wye",
         controls_off=False,
-        tap_schedule=tap_schedule,
+        initial_tap_position=INITIAL_TAPS,
         freeze_regcontrols=True,
     )
 
-    ctrl = TapScheduleController(schedule=[], dt_s=Fraction(1))
+    tap_ctrl_schedule = TAP_CHANGE_SCHEDULE if mode == "tap-change" else []
+    ctrl = TapScheduleController(schedule=tap_ctrl_schedule, dt_s=Fraction(1))
 
     logger.info("Running simulation (mode=%s)...", mode)
     coord = Coordinator(

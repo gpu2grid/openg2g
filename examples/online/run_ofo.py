@@ -150,11 +150,11 @@ def main(args: argparse.Namespace) -> None:
 
     TAP_STEP = 0.00625
     tap_ratios = config.get("initial_taps", {"a": 14, "b": 6, "c": 15})
-    tap_schedule = TapPosition(
+    initial_taps = TapPosition(
         a=1.0 + tap_ratios["a"] * TAP_STEP,
         b=1.0 + tap_ratios["b"] * TAP_STEP,
         c=1.0 + tap_ratios["c"] * TAP_STEP,
-    ).at(t=0)
+    )
 
     logger.info("Building deployments from config...")
     deployments, workload = _build_deployments_from_config(config)
@@ -226,7 +226,7 @@ def main(args: argparse.Namespace) -> None:
         dt_s=Fraction(1, 10),
         connection_type="wye",
         controls_off=True,
-        tap_schedule=tap_schedule,
+        initial_tap_position=initial_taps,
         freeze_regcontrols=True,
     )
 

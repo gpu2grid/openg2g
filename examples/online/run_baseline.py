@@ -37,7 +37,7 @@ from openg2g.datacenter.online import (
     OnlineModelDeployment,
     PowerAugmentationConfig,
 )
-from openg2g.grid.base import Phase, TapPosition, TapSchedule
+from openg2g.grid.base import Phase, TapPosition
 from openg2g.grid.opendss import OpenDSSGrid
 from openg2g.metrics.voltage import compute_allbus_voltage_stats
 from openg2g.models.spec import LLMInferenceModelSpec
@@ -110,27 +110,33 @@ def _build_deployments_from_config(
     return deployments
 
 
-def _build_tap_schedule(config: dict, mode: str) -> TapSchedule:
-    """Build tap schedule from config and mode."""
+def _build_initial_taps(config: dict) -> TapPosition:
+    """Build initial tap position from config."""
     tap_ratios = config.get("initial_taps", {"a": 14, "b": 6, "c": 15})
-    initial = TapPosition(
+    return TapPosition(
         a=1.0 + tap_ratios["a"] * TAP_STEP,
         b=1.0 + tap_ratios["b"] * TAP_STEP,
         c=1.0 + tap_ratios["c"] * TAP_STEP,
-    ).at(t=0)
+    )
 
+
+def _build_tap_ctrl_schedule(config: dict, mode: str) -> list[tuple[float, dict[str, float]]]:
+    """Build tap controller schedule from config and mode."""
     if mode == "no-tap":
-        return initial
+        return []
 
     tap_changes = config.get("tap_changes", [])
-    schedule = initial
-    for entry in tap_changes:
-        schedule = schedule | TapPosition(
-            a=1.0 + entry["a"] * TAP_STEP,
-            b=1.0 + entry["b"] * TAP_STEP,
-            c=1.0 + entry["c"] * TAP_STEP,
-        ).at(t=entry["t"])
-    return schedule
+    return [
+        (
+            entry["t"],
+            TapPosition(
+                a=1.0 + entry["a"] * TAP_STEP,
+                b=1.0 + entry["b"] * TAP_STEP,
+                c=1.0 + entry["c"] * TAP_STEP,
+            ).as_reg_dict(),
+        )
+        for entry in tap_changes
+    ]
 
 
 def _build_batch_schedule(config: dict) -> dict[str, BatchSizeSchedule]:
@@ -183,7 +189,8 @@ def main(args: argparse.Namespace) -> None:
     dt_ctrl = Fraction(1)
     t_total_s = args.duration
 
-    tap_schedule = _build_tap_schedule(config, mode)
+    initial_taps = _build_initial_taps(config)
+    tap_ctrl_schedule = _build_tap_ctrl_schedule(config, mode)
 
     logger.info("Building deployments from config...")
     deployments = _build_deployments_from_config(config)
@@ -251,13 +258,13 @@ def main(args: argparse.Namespace) -> None:
         dt_s=Fraction(1, 10),
         connection_type="wye",
         controls_off=False,
-        tap_schedule=tap_schedule,
+        initial_tap_position=initial_taps,
         freeze_regcontrols=True,
     )
 
     controllers = []
 
-    tap_ctrl = TapScheduleController(schedule=[], dt_s=dt_ctrl)
+    tap_ctrl = TapScheduleController(schedule=tap_ctrl_schedule, dt_s=dt_ctrl)
     controllers.append(tap_ctrl)
 
     batch_schedules = _build_batch_schedule(config)

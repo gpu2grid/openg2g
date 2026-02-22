@@ -151,7 +151,7 @@ def main(args: argparse.Namespace) -> None:
     t_total_s = 3600
 
     TAP_STEP = 0.00625  # standard 5/8% tap step
-    tap_schedule = TapPosition(a=1.0 + 14 * TAP_STEP, b=1.0 + 6 * TAP_STEP, c=1.0 + 15 * TAP_STEP).at(t=0)
+    initial_taps = TapPosition(a=1.0 + 14 * TAP_STEP, b=1.0 + 6 * TAP_STEP, c=1.0 + 15 * TAP_STEP)
 
     data_dir = Path(args.data_dir) if args.data_dir else None
     if data_dir is not None:
@@ -232,7 +232,7 @@ def main(args: argparse.Namespace) -> None:
         dt_s=Fraction(1, 10),
         connection_type="wye",
         controls_off=True,
-        tap_schedule=tap_schedule,
+        initial_tap_position=initial_taps,
         freeze_regcontrols=True,
     )
 
