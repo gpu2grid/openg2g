@@ -7,11 +7,12 @@ from mlenergy_data.modeling import LogisticModel
 
 from openg2g.clock import SimulationClock
 from openg2g.controller.ofo import OFOBatchController, PrimalConfig, VoltageDualConfig
-from openg2g.datacenter.base import LLMBatchSizeControlledDatacenter
+from openg2g.datacenter.base import LLMBatchSizeControlledDatacenter, LLMDatacenterState
 from openg2g.events import EventEmitter, SimEvent
+from openg2g.grid.base import BusVoltages, GridState
 from openg2g.grid.opendss import OpenDSSGrid
 from openg2g.models.spec import LLMInferenceModelSpec
-from openg2g.types import BusVoltages, DatacenterCommand, GridCommand, GridState, LLMDatacenterState, ThreePhase
+from openg2g.types import DatacenterCommand, GridCommand, ThreePhase
 
 
 class _GridStub(OpenDSSGrid):

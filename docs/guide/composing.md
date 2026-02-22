@@ -44,6 +44,7 @@ from openg2g.datacenter.offline import (
     load_traces_by_batch_from_dir,
 )
 from openg2g.models.spec import LLMInferenceModelSpec
+from openg2g.types import ScheduleActivationPolicy, ServerRamp, ServerRampSchedule
 
 models = [
     LLMInferenceModelSpec(
@@ -68,9 +69,9 @@ dc = OfflineDatacenter(
     timestep_s=0.1,
     gpus_per_server=8,
     seed=0,
-    ramp_t_start=2500.0,
-    ramp_t_end=3000.0,
-    ramp_floor=0.2,
+    activation_policy=ScheduleActivationPolicy(
+        ServerRampSchedule(entries=(ServerRamp(t_start=2500.0, t_end=3000.0, target=0.2),))
+    ),
     base_kW_per_phase=500.0,
 )
 ```
@@ -95,7 +96,7 @@ workload = WorkloadConfig(
         ),
     )),
     training=TrainingRun(t_start=1000.0, t_end=2000.0, n_gpus=2400),
-    server_ramps=ServerRamp(t_start=2500.0, t_end=3000.0, floor=0.2),
+    server_ramps=ServerRamp(t_start=2500.0, t_end=3000.0, target=0.2),
 )
 
 dc = OfflineDatacenter.from_config(
@@ -113,6 +114,7 @@ The `OnlineDatacenter` connects to real vLLM servers for load generation and ITL
 
 ```python
 from zeus.monitor.power_streaming import PowerStreamingClient
+from zeus.utils.zeusd import ZeusdConfig
 from openg2g.datacenter.online import (
     OnlineDatacenter,
     OnlineModelDeployment,
@@ -137,7 +139,10 @@ deployments = [
 ]
 
 power_client = PowerStreamingClient(
-    gpu_endpoints={ep.endpoint_key: list(ep.gpu_indices) for d in deployments for ep in d.gpu_endpoints}
+    servers=[
+        ZeusdConfig.tcp(ep.host, ep.port, gpu_indices=list(ep.gpu_indices), cpu_indices=[])
+        for d in deployments for ep in d.gpu_endpoints
+    ],
 )
 
 dc = OnlineDatacenter(

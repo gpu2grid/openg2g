@@ -16,15 +16,11 @@ from mlenergy_data.modeling import LogisticModel
 
 from openg2g.clock import SimulationClock
 from openg2g.controller.base import Controller
-from openg2g.datacenter.base import LLMBatchSizeControlledDatacenter
+from openg2g.datacenter.base import LLMBatchSizeControlledDatacenter, LLMDatacenterState
 from openg2g.events import EventEmitter
 from openg2g.grid.opendss import OpenDSSGrid
 from openg2g.models.spec import LLMInferenceModelSpec, LLMInferenceWorkload
-from openg2g.types import (
-    ControlAction,
-    LLMDatacenterState,
-    SetBatchSize,
-)
+from openg2g.types import ControlAction, SetBatchSize
 
 logger = logging.getLogger(__name__)
 

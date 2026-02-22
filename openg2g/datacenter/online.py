@@ -21,7 +21,7 @@ import threading
 import time
 import urllib.request
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from fractions import Fraction
 
 import aiohttp
@@ -29,18 +29,47 @@ import numpy as np
 from zeus.monitor.power_streaming import PowerReadings, PowerStreamingClient
 
 from openg2g.clock import SimulationClock
-from openg2g.datacenter.base import LLMBatchSizeControlledDatacenter
+from openg2g.datacenter.base import LLMBatchSizeControlledDatacenter, LLMDatacenterState
 from openg2g.events import EventEmitter
+from openg2g.grid.base import Phase
 from openg2g.models.spec import LLMInferenceModelSpec
 from openg2g.types import (
     DatacenterCommand,
-    OnlineDatacenterState,
-    Phase,
     SetBatchSize,
     ThreePhase,
 )
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class OnlineDatacenterState(LLMDatacenterState):
+    """Extended state from the online (live GPU) backend.
+
+    The base `power_w` field carries the augmented three-phase power
+    (what the grid sees). This subclass adds the measured (pre-augmentation)
+    breakdown for post-hoc analysis.
+
+    Attributes:
+        measured_power_w: Total measured three-phase power from real GPUs
+            (before augmentation), plus base load.
+        measured_power_w_by_model: Per-model total measured power from real
+            GPUs (watts).
+        augmented_power_w_by_model: Per-model augmented power (watts). This
+            is the power fed to the grid for each model after scaling up.
+        augmentation_factor_by_model: Per-model augmentation multiplier
+            (virtual replicas / real replicas).
+        prometheus_metrics_by_model: Per-model Prometheus metrics snapshot.
+            Keys are model labels, values are dicts with metric names like
+            `num_requests_running`, `num_requests_waiting`,
+            `kv_cache_usage_perc`, `num_preemptions_total`.
+    """
+
+    measured_power_w: ThreePhase = field(default_factory=lambda: ThreePhase(a=0.0, b=0.0, c=0.0))
+    measured_power_w_by_model: dict[str, float] = field(default_factory=dict)
+    augmented_power_w_by_model: dict[str, float] = field(default_factory=dict)
+    augmentation_factor_by_model: dict[str, float] = field(default_factory=dict)
+    prometheus_metrics_by_model: dict[str, dict[str, float]] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------

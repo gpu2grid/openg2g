@@ -26,16 +26,16 @@ from plotting import (
 
 from openg2g.controller.tap_schedule import TapScheduleController
 from openg2g.coordinator import Coordinator
-from openg2g.datacenter.config import DatacenterConfig, WorkloadConfig
+from openg2g.datacenter.config import DatacenterConfig, ServerRamp, TrainingRun, WorkloadConfig
 from openg2g.datacenter.offline import (
     OfflineDatacenter,
     TraceByBatchCache,
     load_traces_by_batch_from_dir,
 )
+from openg2g.grid.base import TapPosition
 from openg2g.grid.opendss import OpenDSSGrid
 from openg2g.metrics.voltage import compute_allbus_voltage_stats
 from openg2g.models.spec import LLMInferenceModelSpec, LLMInferenceWorkload
-from openg2g.types import ServerRamp, TapPosition, TrainingRun
 
 logger = logging.getLogger("run_baseline")
 

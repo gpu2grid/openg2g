@@ -216,7 +216,7 @@ The `OfflineDatacenter` replays real GPU power traces at controlled batch sizes 
 
 - Each server plays back a per-GPU power trace (from [ML.ENERGY Benchmark](https://ml.energy/data) data) scaled by GPU count
 - Random restart offsets make servers desynchronized (realistic)
-- Server shutoff ramps model fleet scaling events
+- A `ServerActivationPolicy` determines which servers are active at each timestep, supporting both ramp-up and ramp-down schedules. The default `ScheduleActivationPolicy` follows a `ServerRampSchedule` with random priority ordering. Custom policies (e.g., phase-aware load balancing) can be implemented by subclassing `ServerActivationPolicy`.
 - Training workload overlays add transient high-power phases
 
 ## The OFO Controller

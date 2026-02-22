@@ -23,8 +23,8 @@ from openg2g.datacenter.online import (
     _parse_prometheus_text,
     _PowerAugmenter,
 )
+from openg2g.grid.base import Phase
 from openg2g.models.spec import LLMInferenceModelSpec
-from openg2g.types import Phase
 
 
 def _make_deployment(

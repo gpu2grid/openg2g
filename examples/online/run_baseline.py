@@ -24,9 +24,10 @@ from fractions import Fraction
 from pathlib import Path
 
 import yaml
-from zeus.monitor.power_streaming import PowerStreamingClient, ZeusdTcpConfig
+from zeus.monitor.power_streaming import PowerStreamingClient
+from zeus.utils.zeusd import ZeusdConfig
 
-from openg2g.controller.batch_size_schedule import BatchSizeScheduleController
+from openg2g.controller.batch_size_schedule import BatchSizeChange, BatchSizeSchedule, BatchSizeScheduleController
 from openg2g.controller.tap_schedule import TapScheduleController
 from openg2g.coordinator import Coordinator
 from openg2g.datacenter.online import (
@@ -36,10 +37,10 @@ from openg2g.datacenter.online import (
     OnlineModelDeployment,
     PowerAugmentationConfig,
 )
+from openg2g.grid.base import Phase, TapPosition, TapSchedule
 from openg2g.grid.opendss import OpenDSSGrid
 from openg2g.metrics.voltage import compute_allbus_voltage_stats
 from openg2g.models.spec import LLMInferenceModelSpec
-from openg2g.types import BatchSizeChange, BatchSizeSchedule, Phase, TapPosition, TapSchedule
 
 logger = logging.getLogger("run_baseline")
 
@@ -195,7 +196,7 @@ def main(args: argparse.Namespace) -> None:
     requests_by_model = _load_requests(requests_dir, model_labels)
 
     logger.info("Setting up PowerStreamingClient...")
-    servers_by_key: dict[str, ZeusdTcpConfig] = {}
+    servers_by_key: dict[str, ZeusdConfig] = {}
     gpu_indices_by_key: dict[str, list[int]] = {}
     for d in deployments:
         for ep in d.gpu_endpoints:
@@ -205,10 +206,8 @@ def main(args: argparse.Namespace) -> None:
             for idx in ep.gpu_indices:
                 if idx not in gpu_indices_by_key[key]:
                     gpu_indices_by_key[key].append(idx)
-            servers_by_key[key] = ZeusdTcpConfig(
-                host=ep.host,
-                port=ep.port,
-                gpu_indices=gpu_indices_by_key[key],
+            servers_by_key[key] = ZeusdConfig.tcp(
+                ep.host, ep.port, gpu_indices=gpu_indices_by_key[key], cpu_indices=[],
             )
 
     power_client = PowerStreamingClient(servers=list(servers_by_key.values()))

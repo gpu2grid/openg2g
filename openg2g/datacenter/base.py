@@ -1,15 +1,44 @@
-"""Abstract base class for datacenter backends."""
+"""Abstract base class for datacenter backends and base state types."""
 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
+from dataclasses import dataclass, field
 from fractions import Fraction
-from typing import Generic
+from typing import Generic, TypeVar
 
 from openg2g.clock import SimulationClock
 from openg2g.events import EventEmitter
-from openg2g.types import DatacenterCommand, DCStateT
+from openg2g.types import DatacenterCommand, ThreePhase
+
+
+@dataclass(frozen=True)
+class DatacenterState:
+    """State emitted by a datacenter backend each timestep.
+
+    Contains only universally applicable fields. LLM-inference-specific
+    fields (batch sizes, replicas, latency) live on `LLMDatacenterState`.
+    """
+
+    time_s: float
+    power_w: ThreePhase
+
+
+@dataclass(frozen=True)
+class LLMDatacenterState(DatacenterState):
+    """State from a datacenter serving LLM inference workloads.
+
+    Extends `DatacenterState` with per-model batch size, replica count,
+    and observed inter-token latency fields used by LLM controllers.
+    """
+
+    batch_size_by_model: dict[str, int] = field(default_factory=dict)
+    active_replicas_by_model: dict[str, int] = field(default_factory=dict)
+    observed_itl_s_by_model: dict[str, float] = field(default_factory=dict)
+
+
+DCStateT = TypeVar("DCStateT", bound=DatacenterState)
 
 
 class DatacenterBackend(Generic[DCStateT], ABC):

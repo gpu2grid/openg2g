@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from openg2g.types import GridState
+from openg2g.grid.base import GridState
 
 
 @dataclass

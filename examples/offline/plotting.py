@@ -24,7 +24,10 @@ import numpy as np
 from matplotlib.axes import Axes
 from matplotlib.patches import Patch
 
-from openg2g.types import GridState, LLMDatacenterState, OfflineDatacenterState, OnlineDatacenterState
+from openg2g.datacenter.base import LLMDatacenterState
+from openg2g.datacenter.offline import OfflineDatacenterState
+from openg2g.datacenter.online import OnlineDatacenterState
+from openg2g.grid.base import GridState
 
 Figure = matplotlib.figure.Figure
 

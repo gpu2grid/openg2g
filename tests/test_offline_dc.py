@@ -11,11 +11,12 @@ from mlenergy_data.modeling import ITLMixtureModel
 from openg2g.clock import SimulationClock
 from openg2g.datacenter.offline import (
     OfflineDatacenter,
+    OfflineDatacenterState,
     TraceByBatchCache,
     build_periodic_per_gpu_template,
 )
 from openg2g.models.spec import LLMInferenceModelSpec
-from openg2g.types import DatacenterCommand, OfflineDatacenterState, SetBatchSize
+from openg2g.types import DatacenterCommand, SetBatchSize
 
 
 def _make_simple_cache(dt: float = 0.1, T: float = 100.0) -> TraceByBatchCache:
@@ -51,9 +52,7 @@ def test_step_returns_offline_state():
         timestep_s=Fraction(1, 10),
         gpus_per_server=8,
         seed=0,
-        ramp_t_start=9999,
-        ramp_t_end=9999,
-        ramp_floor=1.0,
+        activation_policy=None,
         base_kW_per_phase=0.0,
     )
 
@@ -78,9 +77,7 @@ def test_step_produces_correct_number_of_states():
         timestep_s=Fraction(1, 10),
         gpus_per_server=8,
         seed=0,
-        ramp_t_start=9999,
-        ramp_t_end=9999,
-        ramp_floor=1.0,
+        activation_policy=None,
     )
 
     clock = SimulationClock(tick_s=Fraction(1, 10))
@@ -106,9 +103,7 @@ def test_batch_change_takes_effect_immediately():
         timestep_s=Fraction(1, 10),
         gpus_per_server=8,
         seed=0,
-        ramp_t_start=9999,
-        ramp_t_end=9999,
-        ramp_floor=1.0,
+        activation_policy=None,
     )
 
     clock = SimulationClock(tick_s=Fraction(1, 10))
@@ -159,9 +154,7 @@ def test_offline_datacenter_emits_observed_itl_when_latency_fits_is_set():
         timestep_s=Fraction(1, 10),
         gpus_per_server=8,
         seed=0,
-        ramp_t_start=9999,
-        ramp_t_end=9999,
-        ramp_floor=1.0,
+        activation_policy=None,
         itl_distributions=latency_fits,
     )
 
@@ -184,9 +177,7 @@ def test_apply_control_rejects_unknown_command():
         timestep_s=Fraction(1, 10),
         gpus_per_server=8,
         seed=0,
-        ramp_t_start=9999,
-        ramp_t_end=9999,
-        ramp_floor=1.0,
+        activation_policy=None,
     )
 
     with pytest.raises(TypeError, match="OfflineDatacenter does not support"):

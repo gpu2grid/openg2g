@@ -20,7 +20,8 @@ import numpy as np
 import pandas as pd
 import yaml
 from mlenergy_data.modeling import LogisticModel
-from zeus.monitor.power_streaming import PowerStreamingClient, ZeusdTcpConfig
+from zeus.monitor.power_streaming import PowerStreamingClient
+from zeus.utils.zeusd import ZeusdConfig
 
 from openg2g.controller.ofo import (
     OFOBatchController,
@@ -36,10 +37,10 @@ from openg2g.datacenter.online import (
     OnlineModelDeployment,
     PowerAugmentationConfig,
 )
+from openg2g.grid.base import Phase, TapPosition
 from openg2g.grid.opendss import OpenDSSGrid
 from openg2g.metrics.voltage import compute_allbus_voltage_stats
 from openg2g.models.spec import LLMInferenceModelSpec, LLMInferenceWorkload
-from openg2g.types import Phase, TapPosition
 
 logger = logging.getLogger("run_ofo")
 
@@ -170,7 +171,7 @@ def main(args: argparse.Namespace) -> None:
     power_fits, latency_fits, throughput_fits = _load_logistic_fits_merged(data_dir / "logistic_fits.csv")
 
     logger.info("Setting up PowerStreamingClient...")
-    servers_by_key: dict[str, ZeusdTcpConfig] = {}
+    servers_by_key: dict[str, ZeusdConfig] = {}
     gpu_indices_by_key: dict[str, list[int]] = {}
     for d in deployments:
         for ep in d.gpu_endpoints:
@@ -180,10 +181,8 @@ def main(args: argparse.Namespace) -> None:
             for idx in ep.gpu_indices:
                 if idx not in gpu_indices_by_key[key]:
                     gpu_indices_by_key[key].append(idx)
-            servers_by_key[key] = ZeusdTcpConfig(
-                host=ep.host,
-                port=ep.port,
-                gpu_indices=gpu_indices_by_key[key],
+            servers_by_key[key] = ZeusdConfig.tcp(
+                ep.host, ep.port, gpu_indices=gpu_indices_by_key[key], cpu_indices=[],
             )
 
     power_client = PowerStreamingClient(servers=list(servers_by_key.values()))

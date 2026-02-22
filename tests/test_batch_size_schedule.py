@@ -7,8 +7,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from openg2g.controller.batch_size_schedule import BatchSizeScheduleController
-from openg2g.types import BatchSizeChange, BatchSizeSchedule, SetBatchSize
+from openg2g.controller.batch_size_schedule import BatchSizeChange, BatchSizeSchedule, BatchSizeScheduleController
+from openg2g.types import SetBatchSize
 
 
 class TestBatchSizeChange:

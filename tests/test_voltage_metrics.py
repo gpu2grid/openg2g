@@ -6,8 +6,9 @@ import math
 
 import pytest
 
+from openg2g.grid.base import BusVoltages, GridState
 from openg2g.metrics.voltage import compute_allbus_voltage_stats
-from openg2g.types import BusVoltages, GridState, ThreePhase
+from openg2g.types import ThreePhase
 
 
 def _make_grid_state(

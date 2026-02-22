@@ -1,5 +1,5 @@
 """Tests for openg2g.types — state dataclasses, TapPosition, TapSchedule, ServerRamp,
-ServerRampSchedule, TrainingRun, TrainingSchedule."""
+ServerRampSchedule, ServerActivationPolicy, TrainingRun, TrainingSchedule."""
 
 from __future__ import annotations
 
@@ -8,18 +8,11 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from openg2g.types import (
-    BusVoltages,
-    GridState,
-    OnlineDatacenterState,
-    ServerRamp,
-    ServerRampSchedule,
-    TapPosition,
-    TapSchedule,
-    ThreePhase,
-    TrainingRun,
-    TrainingSchedule,
-)
+from openg2g.datacenter.config import ServerRamp, ServerRampSchedule, TrainingRun, TrainingSchedule
+from openg2g.datacenter.offline import ScheduleActivationPolicy, ServerActivationPolicy
+from openg2g.datacenter.online import OnlineDatacenterState
+from openg2g.grid.base import BusVoltages, GridState, TapPosition, TapSchedule
+from openg2g.types import ThreePhase
 
 
 class TestTapPosition:
@@ -338,3 +331,75 @@ class TestOnlineDatacenterState:
         assert state.measured_power_w_by_model == {}
         assert state.augmented_power_w_by_model == {}
         assert state.augmentation_factor_by_model == {}
+
+
+class TestScheduleActivationPolicy:
+    def test_all_active_before_ramp(self) -> None:
+        """Before the first ramp, all servers should be active."""
+        schedule = ServerRampSchedule(entries=(ServerRamp(t_start=1000, t_end=2000, target=0.5),))
+        policy = ScheduleActivationPolicy(schedule)
+        rng = np.random.default_rng(42)
+        bound = policy.for_model(num_servers=10, phase_list=np.zeros(10, dtype=int), rng=rng)
+        mask = bound.active_mask(0.0)
+        assert mask.sum() == 10
+
+    def test_ramp_down(self) -> None:
+        """After ramp completes, only the target fraction of servers should be active."""
+        schedule = ServerRampSchedule(entries=(ServerRamp(t_start=0, t_end=0, target=0.5),))
+        policy = ScheduleActivationPolicy(schedule)
+        rng = np.random.default_rng(42)
+        bound = policy.for_model(num_servers=10, phase_list=np.zeros(10, dtype=int), rng=rng)
+        mask = bound.active_mask(1.0)
+        assert mask.sum() == 5
+
+    def test_ramp_up(self) -> None:
+        """Ramp up: start at 0.2, ramp to 1.0."""
+        schedule = ServerRamp(t_start=0, t_end=0, target=0.2) | ServerRamp(t_start=100, t_end=100, target=1.0)
+        policy = ScheduleActivationPolicy(schedule)
+        rng = np.random.default_rng(42)
+        bound = policy.for_model(num_servers=10, phase_list=np.zeros(10, dtype=int), rng=rng)
+        mask_low = bound.active_mask(50.0)
+        mask_high = bound.active_mask(200.0)
+        assert mask_low.sum() == 2
+        assert mask_high.sum() == 10
+
+    def test_ramp_up_servers_superset(self) -> None:
+        """Servers active at low fraction should be a subset of those active at high fraction."""
+        schedule = ServerRamp(t_start=0, t_end=0, target=0.3) | ServerRamp(t_start=100, t_end=100, target=0.7)
+        policy = ScheduleActivationPolicy(schedule)
+        rng = np.random.default_rng(42)
+        bound = policy.for_model(num_servers=10, phase_list=np.zeros(10, dtype=int), rng=rng)
+        mask_low = bound.active_mask(50.0)
+        mask_high = bound.active_mask(200.0)
+        assert np.all(mask_high[mask_low])
+
+    def test_deterministic_with_same_seed(self) -> None:
+        """Same seed should produce the same activation mask."""
+        schedule = ServerRampSchedule(entries=(ServerRamp(t_start=0, t_end=0, target=0.5),))
+        policy = ScheduleActivationPolicy(schedule)
+        bound1 = policy.for_model(num_servers=20, phase_list=np.zeros(20, dtype=int), rng=np.random.default_rng(0))
+        bound2 = policy.for_model(num_servers=20, phase_list=np.zeros(20, dtype=int), rng=np.random.default_rng(0))
+        np.testing.assert_array_equal(bound1.active_mask(1.0), bound2.active_mask(1.0))
+
+    def test_phase_list_available_to_custom_policy(self) -> None:
+        """Custom policies should receive phase_list for phase-aware decisions."""
+        phase_list = np.array([0, 0, 0, 1, 1, 1, 2, 2, 2, 2])
+        received: dict[str, object] = {}
+
+        class _RecordingPolicy(ServerActivationPolicy):
+            def for_model(self, *, num_servers, phase_list, rng):
+                received["num_servers"] = num_servers
+                received["phase_list"] = phase_list
+                return _AllOnBound(num_servers)
+
+        class _AllOnBound:
+            def __init__(self, n: int) -> None:
+                self._n = n
+
+            def active_mask(self, t: float) -> np.ndarray:
+                return np.ones(self._n, dtype=bool)
+
+        policy = _RecordingPolicy()
+        policy.for_model(num_servers=10, phase_list=phase_list, rng=np.random.default_rng(0))
+        assert received["num_servers"] == 10
+        np.testing.assert_array_equal(received["phase_list"], phase_list)

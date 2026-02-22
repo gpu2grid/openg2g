@@ -8,7 +8,8 @@ from __future__ import annotations
 import functools
 import logging
 import math
-from dataclasses import dataclass
+from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
 from fractions import Fraction
 from pathlib import Path
 from typing import Any
@@ -17,24 +18,153 @@ import numpy as np
 from mlenergy_data.modeling import ITLMixtureModel
 
 from openg2g.clock import SimulationClock
-from openg2g.datacenter.base import LLMBatchSizeControlledDatacenter
-from openg2g.datacenter.config import DatacenterConfig, WorkloadConfig
+from openg2g.datacenter.base import LLMBatchSizeControlledDatacenter, LLMDatacenterState
+from openg2g.datacenter.config import (
+    DatacenterConfig,
+    ServerRamp,
+    ServerRampSchedule,
+    TrainingRun,
+    TrainingSchedule,
+    WorkloadConfig,
+)
 from openg2g.datacenter.training_overlay import TrainingOverlayCache
 from openg2g.events import EventEmitter
 from openg2g.models.spec import LLMInferenceModelSpec
 from openg2g.types import (
     DatacenterCommand,
-    OfflineDatacenterState,
-    ServerRamp,
-    ServerRampSchedule,
     SetBatchSize,
     ThreePhase,
-    TrainingRun,
-    TrainingSchedule,
 )
 from openg2g.utils import split_integer_evenly
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class OfflineDatacenterState(LLMDatacenterState):
+    """Extended state from the offline (trace-based) backend."""
+
+    power_by_model_w: dict[str, float] = field(default_factory=dict)
+
+
+class BoundActivationPolicy(ABC):
+    """Per-model activation policy, created by `ServerActivationPolicy.for_model`.
+
+    Answers "which servers are active at time *t*?" for a single model's
+    server pool.
+    """
+
+    @abstractmethod
+    def active_mask(self, t: float) -> np.ndarray:
+        """Boolean mask of active servers at time *t*.
+
+        Returns:
+            Array of shape `(num_servers,)` with `True` for active servers.
+        """
+
+    def active_indices(self, t: float) -> np.ndarray:
+        """Indices of active servers at time *t*.
+
+        The default implementation returns indices in ascending order via
+        `np.where(active_mask(t))`. Subclasses may override to return
+        indices in a specific order (e.g., priority order) to control
+        floating-point summation order in the datacenter.
+
+        Returns:
+            1-D int array of active server indices.
+        """
+        return np.where(self.active_mask(t))[0]
+
+
+class ServerActivationPolicy(ABC):
+    """Determines which servers are active at each simulation timestep.
+
+    A policy is instantiated once and passed to the datacenter. When the
+    datacenter builds each model's server layout, it calls `for_model` to
+    create a model-specific `BoundActivationPolicy`.
+
+    Subclass to implement custom activation strategies. The `phase_list`
+    argument in `for_model` enables phase-aware load balancing.
+    """
+
+    @abstractmethod
+    def for_model(
+        self,
+        *,
+        num_servers: int,
+        phase_list: np.ndarray,
+        rng: np.random.Generator,
+    ) -> BoundActivationPolicy:
+        """Create a bound policy for one model's server pool.
+
+        Args:
+            num_servers: Number of physical servers for this model.
+            phase_list: Phase assignment per server (0=A, 1=B, 2=C), shape
+                `(num_servers,)`.
+            rng: RNG for randomized decisions (priority ordering, etc.).
+                Implementations must consume RNG calls deterministically
+                so that downstream layout generation is reproducible.
+
+        Returns:
+            Bound policy that answers `active_mask(t)` queries.
+        """
+
+
+class _ScheduleBoundPolicy(BoundActivationPolicy):
+    """Bound policy for `ScheduleActivationPolicy`."""
+
+    __slots__ = ("_n", "_priority", "_schedule")
+
+    def __init__(
+        self,
+        schedule: ServerRampSchedule,
+        num_servers: int,
+        priority: np.ndarray,
+    ) -> None:
+        self._schedule = schedule
+        self._n = num_servers
+        self._priority = priority
+
+    def active_mask(self, t: float) -> np.ndarray:
+        frac = self._schedule.fraction_at(t)
+        k = max(0, min(self._n, int(round(float(frac) * self._n))))
+        mask = np.zeros(self._n, dtype=bool)
+        mask[self._priority[:k]] = True
+        return mask
+
+    def active_indices(self, t: float) -> np.ndarray:
+        """Return active server indices in priority order."""
+        frac = self._schedule.fraction_at(t)
+        k = max(0, min(self._n, int(round(float(frac) * self._n))))
+        return self._priority[:k].copy()
+
+
+class ScheduleActivationPolicy(ServerActivationPolicy):
+    """Activate servers by fixed random priority, following a `ServerRampSchedule`.
+
+    At time *t*, the top-*k* servers (by random priority) are active, where
+    ``k = round(schedule.fraction_at(t) * num_servers)``.
+
+    This is the default policy used by `OfflineDatacenter`. It reproduces the
+    previous ``shutdown_order[:k]`` behavior exactly.
+
+    Args:
+        schedule: Temporal ramp schedule mapping time to active-server fraction.
+    """
+
+    def __init__(self, schedule: ServerRampSchedule) -> None:
+        self._schedule = schedule
+
+    def for_model(
+        self,
+        *,
+        num_servers: int,
+        phase_list: np.ndarray,
+        rng: np.random.Generator,
+    ) -> BoundActivationPolicy:
+        priority = np.arange(num_servers, dtype=int)
+        rng.shuffle(priority)
+        return _ScheduleBoundPolicy(self._schedule, num_servers, priority)
 
 
 def build_periodic_per_gpu_template(
@@ -202,27 +332,29 @@ class TraceByBatchCache:
         return self._templates[key]
 
 
-def _server_count_at_time(
-    t: float,
-    *,
-    initial_server_count: int,
-    t_start: float,
-    t_end: float,
-    floor: float,
-) -> int:
-    """Number of active servers at time *t* (monotone non-increasing ramp)."""
-    s0 = int(initial_server_count)
-    if s0 < 0:
-        raise ValueError("initial_server_count must be >= 0.")
-    floor_n = int(math.ceil(max(float(floor), 0.0) * s0))
-    floor_n = max(min(floor_n, s0), 0)
+class _AllActivePolicy(BoundActivationPolicy):
+    """All servers always active (no ramp schedule).
 
-    if t < t_start:
-        return s0
-    if t_end <= t_start or t >= t_end:
-        return floor_n
-    alpha = (t - t_start) / (t_end - t_start)
-    return max(floor_n, min(s0, round(s0 + (floor_n - s0) * alpha)))
+    Consumes one RNG shuffle to keep `_layout_rng` consumption order
+    consistent with `ScheduleActivationPolicy`, so that downstream
+    RNG calls (template offsets, amplitude scales) produce identical
+    values regardless of which policy is used. The shuffled priority
+    array is stored to preserve summation order in `active_indices`.
+    """
+
+    __slots__ = ("_mask", "_priority")
+
+    def __init__(self, num_servers: int, rng: np.random.Generator) -> None:
+        priority = np.arange(num_servers, dtype=int)
+        rng.shuffle(priority)
+        self._priority = priority
+        self._mask = np.ones(num_servers, dtype=bool)
+
+    def active_mask(self, t: float) -> np.ndarray:
+        return self._mask
+
+    def active_indices(self, t: float) -> np.ndarray:
+        return self._priority.copy()
 
 
 @dataclass
@@ -234,7 +366,7 @@ class ServerLayout:
     gpus_per_replica: int
     gpus_per_server_list: np.ndarray
     phase_list: np.ndarray
-    shutdown_order: np.ndarray
+    activation_policy: BoundActivationPolicy
     template_offsets: np.ndarray
     amplitude_scales: np.ndarray
     noise_std_frac: float
@@ -243,33 +375,35 @@ class ServerLayout:
 class OfflineDatacenter(LLMBatchSizeControlledDatacenter[OfflineDatacenterState]):
     """Trace-based datacenter simulation with step-by-step interface.
 
-    Each ``step()`` call computes one timestep of power output by indexing
+    Each `step()` call computes one timestep of power output by indexing
     into pre-built per-GPU templates, applying per-server amplitude jitter
     and noise, and summing across active servers per phase.
 
-    Batch size changes via ``apply_control()`` take effect on the next
-    ``step()`` call.
+    Batch size changes via `apply_control()` take effect on the next
+    `step()` call.
 
     Args:
-        trace_cache: Pre-built ``TraceByBatchCache`` with templates for all
+        trace_cache: Pre-built `TraceByBatchCache` with templates for all
             (batch, model) pairs.
         models: List of model specs describing the served models.
         timestep_s: Simulation timestep (seconds).
         gpus_per_server: Number of GPUs per physical server rack.
         seed: Random seed for layout generation and noise.
-        ramp_t_start: Server shutoff ramp start time (global time).
-        ramp_t_end: Server shutoff ramp end time (global time).
-        ramp_floor: Fraction of servers remaining after ramp.
+        activation_policy: Controls which servers are active at each timestep.
+            Encapsulates both the temporal schedule (when to ramp) and the
+            spatial strategy (which servers to activate/deactivate). Subclass
+            `ServerActivationPolicy` for custom strategies (e.g., phase-aware
+            load balancing). If `None`, all servers are always active.
         base_kW_per_phase: Constant base load per phase (kW).
-        training_overlay: Optional ``TrainingOverlayCache`` for training
+        training_overlay: Optional `TrainingOverlayCache` for training
             workload.
         training_t_add_start: Global time when training overlay starts.
         training_t_add_end: Global time when training overlay ends.
         training_n_train_gpus: Number of GPUs running training.
         itl_distributions: Optional per-model ITL mixture distributions:
-            ``model_label -> batch_size -> ITLMixtureModel``.
+            `model_label -> batch_size -> ITLMixtureModel`.
         latency_exact_threshold: Exact-sampling threshold for latency averaging.
-        latency_seed: Optional seed for latency RNG. Defaults to ``seed + 54321``.
+        latency_seed: Optional seed for latency RNG. Defaults to `seed + 54321`.
     """
 
     def __init__(
@@ -280,9 +414,7 @@ class OfflineDatacenter(LLMBatchSizeControlledDatacenter[OfflineDatacenterState]
         timestep_s: Fraction,
         gpus_per_server: int = 8,
         seed: int = 0,
-        ramp_t_start: float = 2500.0,
-        ramp_t_end: float = 3000.0,
-        ramp_floor: float = 0.2,
+        activation_policy: ServerActivationPolicy | None = None,
         base_kW_per_phase: float = 0.0,
         training_overlay: TrainingOverlayCache | None = None,
         training_t_add_start: float = 1000.0,
@@ -301,9 +433,7 @@ class OfflineDatacenter(LLMBatchSizeControlledDatacenter[OfflineDatacenterState]
         self._layout_rng = np.random.default_rng(self._seed)
         self._rng = np.random.default_rng(self._seed + 12345)
 
-        self._ramp_t_start = float(ramp_t_start)
-        self._ramp_t_end = float(ramp_t_end)
-        self._ramp_floor = float(ramp_floor)
+        self._activation_policy = activation_policy
         self._base_W_per_phase = float(base_kW_per_phase) * 1e3
 
         self._training_overlay = training_overlay
@@ -313,9 +443,8 @@ class OfflineDatacenter(LLMBatchSizeControlledDatacenter[OfflineDatacenterState]
         self._itl_distributions = itl_distributions
         self._latency_exact_threshold = int(latency_exact_threshold)
 
-        # Multi-training and multi-ramp support (set by from_config)
+        # Multi-training support (set by from_config)
         self._training_overlays: list[tuple[TrainingOverlayCache, TrainingRun]] = []
-        self._ramp_schedule: ServerRampSchedule | None = None
 
         # Current batch sizes
         self._batch_by_model: dict[str, int] = {ms.model_label: ms.initial_batch_size for ms in models}
@@ -414,22 +543,8 @@ class OfflineDatacenter(LLMBatchSizeControlledDatacenter[OfflineDatacenterState]
                 )
             server_powers = np.maximum(server_powers, 0.0)
 
-            # Active server count at this timestep
-            if self._ramp_schedule is not None:
-                frac = float(self._ramp_schedule.fraction_at(t_now))
-                k = int(round(frac * layout.num_servers))
-                k = max(0, min(k, layout.num_servers))
-            else:
-                k = _server_count_at_time(
-                    t_now,
-                    initial_server_count=layout.num_servers,
-                    t_start=self._ramp_t_start,
-                    t_end=self._ramp_t_end,
-                    floor=self._ramp_floor,
-                )
-
-            # Sum power by phase for the first k servers in shutdown order
-            active_indices = layout.shutdown_order[:k]
+            # Determine active servers via activation policy
+            active_indices = layout.activation_policy.active_indices(t_now)
             active_powers = server_powers[active_indices]
             active_phases = layout.phase_list[active_indices]
             model_phase_power = np.zeros(3, dtype=float)
@@ -555,6 +670,10 @@ class OfflineDatacenter(LLMBatchSizeControlledDatacenter[OfflineDatacenterState]
     ) -> OfflineDatacenter:
         """Create an OfflineDatacenter from config objects.
 
+        If `workload.server_ramps` is set, it is wrapped in a
+        `ScheduleActivationPolicy`. For custom activation strategies,
+        use the direct constructor with `activation_policy=`.
+
         Args:
             datacenter: Facility configuration (GPUs per server, base load).
             workload: Workload configuration (inference models, training, ramps).
@@ -575,12 +694,12 @@ class OfflineDatacenter(LLMBatchSizeControlledDatacenter[OfflineDatacenterState]
         elif isinstance(workload.training, TrainingSchedule):
             training_runs = list(workload.training)
 
-        # Resolve ramp config
-        ramp_schedule: ServerRampSchedule | None = None
+        # Resolve ramp config into an activation policy
+        activation_policy: ServerActivationPolicy | None = None
         if isinstance(workload.server_ramps, ServerRamp):
-            ramp_schedule = ServerRampSchedule(entries=(workload.server_ramps,))
+            activation_policy = ScheduleActivationPolicy(ServerRampSchedule(entries=(workload.server_ramps,)))
         elif isinstance(workload.server_ramps, ServerRampSchedule):
-            ramp_schedule = workload.server_ramps
+            activation_policy = ScheduleActivationPolicy(workload.server_ramps)
 
         # Use the first training run's params for the legacy fields, or defaults
         if training_runs:
@@ -598,26 +717,13 @@ class OfflineDatacenter(LLMBatchSizeControlledDatacenter[OfflineDatacenterState]
             t_add_end = 0.0
             n_train_gpus = 0
 
-        # Use the first ramp's params for legacy fields, or defaults
-        if ramp_schedule and len(ramp_schedule) > 0:
-            first_ramp = next(iter(ramp_schedule))
-            ramp_t_start = first_ramp.t_start
-            ramp_t_end = first_ramp.t_end
-            ramp_floor = first_ramp.target
-        else:
-            ramp_t_start = float("inf")
-            ramp_t_end = float("inf")
-            ramp_floor = 1.0
-
         instance = cls(
             trace_cache=trace_cache,
             models=models,
             timestep_s=timestep_s,
             gpus_per_server=datacenter.gpus_per_server,
             seed=seed,
-            ramp_t_start=ramp_t_start,
-            ramp_t_end=ramp_t_end,
-            ramp_floor=ramp_floor,
+            activation_policy=activation_policy,
             base_kW_per_phase=datacenter.base_kW_per_phase,
             training_overlay=training_overlay,
             training_t_add_start=t_add_start,
@@ -636,10 +742,6 @@ class OfflineDatacenter(LLMBatchSizeControlledDatacenter[OfflineDatacenterState]
                 target_peak_W_per_gpu=tr.target_peak_W_per_gpu,
             )
             instance._training_overlays.append((overlay, tr))
-
-        # Set up multi-ramp schedule
-        if ramp_schedule and len(ramp_schedule) > 1:
-            instance._ramp_schedule = ramp_schedule
 
         return instance
 
@@ -664,8 +766,17 @@ class OfflineDatacenter(LLMBatchSizeControlledDatacenter[OfflineDatacenterState]
         phase_list = np.asarray(([0] * sA) + ([1] * sB) + ([2] * sC), dtype=int)
         self._layout_rng.shuffle(phase_list)
 
-        shutdown_order = np.arange(num_servers, dtype=int)
-        self._layout_rng.shuffle(shutdown_order)
+        # Bind the activation policy to this model's topology.
+        # The policy consumes _layout_rng here (e.g., ScheduleActivationPolicy
+        # shuffles a priority array), preserving RNG consumption order.
+        if self._activation_policy is not None:
+            bound_policy = self._activation_policy.for_model(
+                num_servers=num_servers,
+                phase_list=phase_list,
+                rng=self._layout_rng,
+            )
+        else:
+            bound_policy = _AllActivePolicy(num_servers, self._layout_rng)
 
         # Read jitter/noise params from any available trace
         tr0 = None
@@ -695,7 +806,7 @@ class OfflineDatacenter(LLMBatchSizeControlledDatacenter[OfflineDatacenterState]
             gpus_per_replica=gpus_per_replica,
             gpus_per_server_list=gpus_per_server_list,
             phase_list=phase_list,
-            shutdown_order=shutdown_order,
+            activation_policy=bound_policy,
             template_offsets=template_offsets,
             amplitude_scales=amplitude_scales,
             noise_std_frac=noise_std_frac,

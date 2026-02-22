@@ -16,16 +16,8 @@ import numpy as np
 
 from openg2g.clock import SimulationClock
 from openg2g.events import EventEmitter
-from openg2g.grid.base import GridBackend
-from openg2g.types import (
-    BusVoltages,
-    GridCommand,
-    GridState,
-    SetTaps,
-    TapPosition,
-    TapSchedule,
-    ThreePhase,
-)
+from openg2g.grid.base import BusVoltages, GridBackend, GridState, TapPosition, TapSchedule
+from openg2g.types import GridCommand, SetTaps, ThreePhase
 
 if TYPE_CHECKING:
     import opendssdirect as dss

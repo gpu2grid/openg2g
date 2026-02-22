@@ -11,16 +11,14 @@ from typing import Any, Generic
 
 from openg2g.clock import SimulationClock
 from openg2g.controller.base import Controller
-from openg2g.datacenter.base import DatacenterBackend
+from openg2g.datacenter.base import DatacenterBackend, DCStateT
 from openg2g.events import EventEmitter, SimEvent
-from openg2g.grid.base import GridBackend
+from openg2g.grid.base import GridBackend, GridStateT
 from openg2g.types import (
     Command,
     ControlAction,
     DatacenterCommand,
-    DCStateT,
     GridCommand,
-    GridStateT,
     ThreePhase,
 )
 
