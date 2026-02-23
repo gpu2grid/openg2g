@@ -8,6 +8,8 @@ on:
       - "_zensical.toml"
       - "openg2g/**"
       - "scripts/gen_api_docs.py"
+      - "scripts/docs.sh"
+      - ".github/workflows/docs.yml"
 
 permissions:
   contents: read
@@ -26,7 +28,7 @@ jobs:
       - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
-      - run: uv sync --group docs
+      - run: uv sync --only-group docs
       - run: uv run bash scripts/docs.sh build
       - uses: actions/upload-pages-artifact@v4
         with:

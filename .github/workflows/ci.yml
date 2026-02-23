@@ -3,7 +3,23 @@ name: CI
 on:
   push:
     branches: [master]
+    paths:
+      - "openg2g/**"
+      - "tests/**"
+      - "examples/**"
+      - "data/**"
+      - "scripts/lint.sh"
+      - "pyproject.toml"
+      - ".github/workflows/ci.yml"
   pull_request:
+    paths:
+      - "openg2g/**"
+      - "tests/**"
+      - "examples/**"
+      - "data/**"
+      - "scripts/lint.sh"
+      - "pyproject.toml"
+      - ".github/workflows/ci.yml"
 
 jobs:
   lint:
@@ -13,7 +29,7 @@ jobs:
       - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
-      - run: uv sync --group lint
+      - run: uv sync --only-group lint
       - run: uv run bash scripts/lint.sh
 
   test:
@@ -27,5 +43,5 @@ jobs:
         with:
           enable-cache: true
           python-version: ${{ matrix.python-version }}
-      - run: uv sync --group test
+      - run: uv sync --only-group test
       - run: uv run pytest -v
