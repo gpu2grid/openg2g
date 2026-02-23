@@ -20,7 +20,7 @@ Two Python packages work together:
 ```
 
 - **[mlenergy-data](https://ml.energy/data)**: Loads, filters, and fits models to real GPU benchmark data (power, latency, throughput vs. batch size) from the [ML.ENERGY Benchmark](https://github.com/ml-energy/benchmark) ([v3 dataset](https://huggingface.co/datasets/ml-energy/benchmark-v3)).
-- **OpenG2G**: Multi-rate time-domain simulation of an LLM inference datacenter connected to an IEEE 13-bus distribution feeder, with OFO batch-size control.
+- **OpenG2G**: Multi-rate time-domain simulation of an LLM workload datacenter connected to an IEEE 13-bus distribution feeder, with OFO batch-size control.
 
 ## The mlenergy-data Toolkit
 

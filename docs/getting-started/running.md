@@ -9,7 +9,7 @@ The commands below go from a fresh clone to running all three simulations.
 
 ```bash
 # Clone and install
-git clone https://github.com/TODO/openg2g.git
+git clone https://github.com/gpu2grid/openg2g.git
 cd openg2g
 uv sync
 uv pip install -e mlenergy-data --config-setting editable_mode=compat

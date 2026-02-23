@@ -1,6 +1,6 @@
 # OpenG2G
 
-A modular Python framework for simulating datacenter-grid interaction, with a focus on LLM inference workloads.
+A modular Python framework for simulating datacenter-grid interaction, with a focus on LLM workloads.
 This library grew out of the [GPU-to-Grid paper](https://arxiv.org/abs/2602.05116).
 
 OpenG2G provides building blocks for studying how GPU-level controls (batch size, power capping) affect distribution-level voltages.
@@ -15,8 +15,7 @@ OpenG2G provides building blocks for studying how GPU-level controls (batch size
 
 ## Overview
 
-The core abstraction is a multi-rate simulation loop.
-A [`Coordinator`][openg2g.coordinator.Coordinator] ticks a shared [clock][openg2g.clock.SimulationClock] and dispatches to three component types at their respective rates.
+The core abstractions are the multi-rate simulation loop ([`Coordinator`][openg2g.coordinator.Coordinator]) and interfaces for datacenter ([`DatacenterBackend`][openg2g.datacenter.base.DatacenterBackend]), grid ([`GridBackend`][openg2g.grid.base.GridBackend]), and controller ([`Controller`][openg2g.controller.base.Controller]) components.
 
 For instance, OpenG2G can build and simulate the following setup (from the [GPU-to-Grid paper](https://arxiv.org/abs/2602.05116)):
 

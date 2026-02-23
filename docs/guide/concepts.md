@@ -6,7 +6,7 @@ This page explains **why** datacenter-grid coordination matters and introduces t
 
 Modern GPU datacenters draw hundreds of megawatts. When connected to distribution feeders (the local power lines that serve neighborhoods and businesses), their rapidly varying power consumption can cause **voltage violations**, where bus voltages drop below or rise above acceptable limits (typically 0.95 to 1.05 per unit).
 
-Traditional grid controls (capacitor banks, voltage regulators) operate on timescales of seconds to minutes. GPU workloads, especially LLM inference, change power draw on sub-second timescales as batch sizes, request rates, and model mixes fluctuate. This mismatch creates a coordination gap.
+Traditional grid controls (capacitor banks, voltage regulators) operate on timescales of seconds to minutes. GPU workloads, especially LLM workloads, change power draw on sub-second timescales as batch sizes, request rates, and model mixes fluctuate. This mismatch creates a coordination gap.
 
 ## Key Idea: Batch Size as a Grid-Aware Control
 

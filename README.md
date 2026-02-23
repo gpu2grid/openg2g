@@ -12,7 +12,7 @@
 
 A modular Python library for simulating datacenter-grid interaction, with a focus on LLM workloads.
 
-OpenG2G provides the building blocks for studying how datacenter-level controls (e.g., LLM inference batch size) affect distribution-level voltages. It ships with an implementation of Online Feedback Optimization (OFO) for joint voltage regulation and latency management, alongside a trace-replay datacenter backend and an OpenDSS-based grid simulator.
+OpenG2G provides the building blocks for studying how datacenter-level controls (e.g., LLM workload batch size) affect distribution-level voltages. It ships with an implementation of Online Feedback Optimization (OFO) for joint voltage regulation and latency management, alongside a trace-replay datacenter backend and an OpenDSS-based grid simulator.
 
 ## Key Features
 
@@ -39,7 +39,7 @@ pip install "openg2g[opendss]"
 ### Development
 
 ```bash
-git clone https://github.com/TODO/openg2g.git
+git clone https://github.com/gpu2grid/openg2g.git
 cd openg2g
 uv sync
 ```
@@ -139,7 +139,7 @@ uv run python examples/offline/run_ofo.py \
 
 ## Documentation
 
-Full documentation is available at [https://TODO/openg2g](https://TODO/openg2g), including:
+Full documentation is available at [https://gpu2grid.io/openg2g](https://gpu2grid.io/openg2g), including:
 
 - Installation and setup guide
 - Running simulations

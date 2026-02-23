@@ -403,7 +403,7 @@ class OFOBatchController(Controller[LLMBatchSizeControlledDatacenter[LLMDatacent
         from the workload's model specs.
 
         Args:
-            workload: LLM inference workload specification.
+            workload: LLM workload specification.
             power_fits: Per-model logistic fit for power.
             latency_fits: Per-model logistic fit for latency.
             throughput_fits: Per-model logistic fit for throughput.
