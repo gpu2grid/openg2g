@@ -30,7 +30,7 @@ jobs:
         with:
           enable-cache: true
       - run: uv sync --only-group lint
-      - run: uv run bash scripts/lint.sh
+      - run: uv run --no-sync bash scripts/lint.sh
 
   test:
     runs-on: ubuntu-latest
@@ -44,4 +44,4 @@ jobs:
           enable-cache: true
           python-version: ${{ matrix.python-version }}
       - run: uv sync --only-group test
-      - run: uv run pytest -v
+      - run: uv run --no-sync pytest -v

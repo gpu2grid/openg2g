@@ -29,7 +29,7 @@ jobs:
         with:
           enable-cache: true
       - run: uv sync --only-group docs
-      - run: uv run bash scripts/docs.sh build
+      - run: uv run --no-sync bash scripts/docs.sh build
       - uses: actions/upload-pages-artifact@v4
         with:
           path: site
