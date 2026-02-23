@@ -92,8 +92,6 @@ See [`examples/`](examples/) for complete simulation scripts:
 
 ## Running Example Simulations
 
-Simulation data (power traces, latency fits, logistic fits) can be built from ML.ENERGY benchmark data using the [`mlenergy-data`](mlenergy-data/) library.
-
 ### 1. Build simulation data from benchmarks
 
 The build script uses the [`mlenergy-data`](https://ml.energy/data) toolkit to download and process GPU benchmark data from the [ML.ENERGY Benchmark v3 dataset](https://huggingface.co/datasets/ml-energy/benchmark-v3) (gated -- [request access](https://huggingface.co/datasets/ml-energy/benchmark-v3) first). It produces the trace CSVs, latency fit parameters, and logistic fit parameters that the simulation consumes. Model selection is controlled by a JSON config file ([`data/offline/models.json`](data/offline/models.json)).
@@ -134,28 +132,6 @@ uv run python examples/offline/run_ofo.py \
 
 `--data-dir` and `--training-trace` are required for all simulation drivers.
 
-## Architecture
-
-```
-Coordinator
-├── SimulationClock          tick = GCD of all component periods
-├── DatacenterBackend        power generation at dt_dc
-│   ├── OfflineDatacenter    trace replay from CSV power profiles
-│   └── OnlineDatacenter     live GPU power via Zeus
-├── OpenDSSGrid              power flow at dt_dss
-└── Controller[]             control actions at dt_ctrl
-    ├── OFOBatchController   primal-dual voltage/latency optimization
-    ├── TapScheduleController pre-scheduled regulator tap changes
-    └── NoopController       baseline (no control)
-```
-
-Each component exposes a `step()` method called by the coordinator at the appropriate rate. Controllers produce `ControlAction` objects that are applied to the datacenter and grid.
-
-Current controller contract:
-
-- `Controller.step(clock, datacenter, grid, events) -> ControlAction`
-- `events` is always available and can be used to emit clock-stamped events.
-
 ## Documentation
 
 Full documentation is available at [https://TODO/openg2g](https://TODO/openg2g), including:
@@ -170,8 +146,10 @@ Full documentation is available at [https://TODO/openg2g](https://TODO/openg2g),
 If you use OpenG2G in your research, please cite:
 
 ```bibtex
-@inproceedings{openg2g2026,
-  title     = {OpenG2G: A Framework for Datacenter-Grid Interaction with LLM Workloads},
-  year      = {2026},
+@article{gpu2grid-arxiv26,
+  title   = {{GPU-to-Grid}: Voltage Regulation via {GPU} Utilization Control},
+  author  = {Zhirui Liang and Jae-Won Chung and Mosharaf Chowdhury and Jiasi Chen and Vladimir Dvorkin},
+  year    = {2026},
+  journal = {arXiv preprint arXiv:2602.05116},
 }
 ```
