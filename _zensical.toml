@@ -1,7 +1,8 @@
 [project]
 site_name = "OpenG2G: GPU-to-Grid Simulation under LLM Workloads"
 site_description = "A modular library for simulating datacenter-grid interactions under LLM workloads."
-repo_url = "https://github.com/TODO/openg2g"
+repo_url = "https://github.com/gpu2grid/openg2g"
+extra_css = ["assets/extra.css"]
 nav = [
   { "Home" = "index.md" },
   { "Getting Started" = [

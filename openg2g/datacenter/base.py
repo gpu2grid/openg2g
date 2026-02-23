@@ -29,7 +29,7 @@ class DatacenterState:
 
 @dataclass(frozen=True)
 class LLMDatacenterState(DatacenterState):
-    """State from a datacenter serving LLM inference workloads.
+    """State from a datacenter serving LLM workloads.
 
     Extends `DatacenterState` with per-model batch size, replica count,
     and observed inter-token latency fields used by LLM controllers.
@@ -106,7 +106,7 @@ class DatacenterBackend(Generic[DCStateT], ABC):
 
 
 class LLMBatchSizeControlledDatacenter(DatacenterBackend[DCStateT]):
-    """Datacenter that serves LLM inference and supports batch-size control.
+    """Datacenter that serves LLM workloads and supports batch-size control.
 
     Marker layer between `DatacenterBackend` and concrete implementations.
     Controllers that issue `set_batch_size` commands or read

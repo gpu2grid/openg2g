@@ -28,7 +28,7 @@ This adds `opendssdirect.py`, which provides the Python bindings for OpenDSS.
 Clone the repository and install all development dependencies:
 
 ```bash
-git clone https://github.com/TODO/openg2g.git
+git clone https://github.com/gpu2grid/openg2g.git
 cd openg2g
 uv sync
 ```
