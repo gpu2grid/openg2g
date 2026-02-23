@@ -1,6 +1,5 @@
 <div align="center">
-<h1>OpenG2G</h1>
-<h2>GPU-to-Grid Simulation under LLM workloads</h2>
+<h1>OpenG2G: GPU-to-Grid Simulation under LLM workloads</h1>
 </div>
 
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
