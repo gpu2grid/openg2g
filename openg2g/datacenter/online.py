@@ -3,7 +3,8 @@
 Connects to real vLLM inference servers for load generation and ITL
 measurement, and to zeusd instances for live GPU power monitoring.
 Power readings from a small number of real GPUs are augmented to
-datacenter scale using temporal staggering.
+datacenter scale using the shared `PowerAugmenter` pipeline from
+`openg2g.datacenter.layout`.
 
 Requires `pip install zeus aiohttp`.
 """
@@ -26,10 +27,17 @@ from fractions import Fraction
 
 import aiohttp
 import numpy as np
-from zeus.monitor.power_streaming import PowerReadings, PowerStreamingClient
+from zeus.monitor.power_streaming import PowerStreamingClient
 
 from openg2g.clock import SimulationClock
 from openg2g.datacenter.base import LLMBatchSizeControlledDatacenter, LLMDatacenterState
+from openg2g.datacenter.config import ServerRampSchedule
+from openg2g.datacenter.layout import (
+    ActivationStrategy,
+    PowerAugmenter,
+    RampActivationStrategy,
+    ServerLayout,
+)
 from openg2g.events import EventEmitter
 from openg2g.grid.base import Phase
 from openg2g.models.spec import LLMInferenceModelSpec
@@ -70,11 +78,6 @@ class OnlineDatacenterState(LLMDatacenterState):
     augmented_power_w_by_model: dict[str, float] = field(default_factory=dict)
     augmentation_factor_by_model: dict[str, float] = field(default_factory=dict)
     prometheus_metrics_by_model: dict[str, dict[str, float]] = field(default_factory=dict)
-
-
-# ---------------------------------------------------------------------------
-# Configuration dataclasses
-# ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
@@ -162,24 +165,26 @@ class PowerAugmentationConfig:
 
     Args:
         base_kw_per_phase: Constant base load per electrical phase (kW).
-        noise_frac: Noise standard deviation as a fraction of augmented power.
+        noise_fraction: Gaussian noise standard deviation as a fraction
+            of per-server power. Applied per-server by the shared
+            `PowerAugmenter`.
         stagger_buffer_s: Seconds of power history for temporal staggering.
-        num_virtual_groups: Number of virtual server groups for staggering.
-            Each group reads from the power buffer at a different time offset,
-            smoothing batch-size-change transients.
-        seed: Random seed for staggering offsets and noise.
+            Also used as the stagger range when building `ServerLayout`
+            (float offsets drawn from `[0, stagger_buffer_s)`).
+        gpus_per_server: Number of GPUs per virtual server for layout
+            computation.
+        amplitude_scale_range: `(low, high)` range for per-server amplitude
+            scaling. Each virtual server draws a uniform multiplier from
+            this range.
+        seed: Random seed for layout generation and noise.
     """
 
     base_kw_per_phase: float = 0.0
-    noise_frac: float = 0.02
+    noise_fraction: float = 0.02
     stagger_buffer_s: float = 10.0
-    num_virtual_groups: int = 64
+    gpus_per_server: int = 8
+    amplitude_scale_range: tuple[float, float] = (0.9, 1.1)
     seed: int = 0
-
-
-# ---------------------------------------------------------------------------
-# Health checks (sync, using stdlib urllib)
-# ---------------------------------------------------------------------------
 
 
 def _check_vllm_health(base_url: str, timeout_s: float = 10.0) -> None:
@@ -252,10 +257,6 @@ def _check_zeusd_health(host: str, port: int = 4938, timeout_s: float = 10.0) ->
         raise RuntimeError(f"zeusd health check failed for {url}: {e}") from e
 
 
-# ---------------------------------------------------------------------------
-# Prometheus metric extraction
-# ---------------------------------------------------------------------------
-
 _GAUGE_RE = re.compile(r"^([a-zA-Z_:][a-zA-Z0-9_:]*)\{.*?\}\s+(.+)$|^([a-zA-Z_:][a-zA-Z0-9_:]*)\s+(.+)$")
 
 _PROMETHEUS_METRICS = (
@@ -272,7 +273,6 @@ def _parse_prometheus_text(text: str) -> dict[str, float]:
     Returns a dict with metric names (without `vllm:` prefix) mapped to
     their summed values.
     """
-    # Build a quick lookup of metric name -> accumulated value
     raw: dict[str, float] = {}
     for line in text.splitlines():
         line = line.strip()
@@ -292,11 +292,6 @@ def _parse_prometheus_text(text: str) -> dict[str, float]:
             short = metric.removeprefix("vllm:")
             result[short] = raw[metric]
     return result
-
-
-# ---------------------------------------------------------------------------
-# Prometheus poller (background async task)
-# ---------------------------------------------------------------------------
 
 
 class _PrometheusPoller:
@@ -337,11 +332,6 @@ class _PrometheusPoller:
                     except Exception:
                         logger.debug("Prometheus poll failed for %s", label, exc_info=True)
                 await asyncio.sleep(self._poll_interval_s)
-
-
-# ---------------------------------------------------------------------------
-# Load generator (background thread with asyncio event loop)
-# ---------------------------------------------------------------------------
 
 
 class _LoadGenerator:
@@ -415,8 +405,6 @@ class _LoadGenerator:
             return float("nan")
         return sum(recent) / len(recent)
 
-    # -- background thread ---------------------------------------------------
-
     def _run_thread(self) -> None:
         self._loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self._loop)
@@ -432,11 +420,9 @@ class _LoadGenerator:
     async def _run_async(self) -> None:
         tasks: list[asyncio.Task] = []
 
-        # Start per-model supervisors
         for label, dep in self._deployments.items():
             tasks.append(asyncio.create_task(self._model_supervisor(label, dep)))
 
-        # Start Prometheus poller if configured
         if self._prometheus is not None:
             tasks.append(asyncio.create_task(self._prometheus.run(self._stop_event)))
 
@@ -571,123 +557,66 @@ class _LoadGenerator:
                 logger.debug("Request to %s failed for %s", dep.vllm_base_url, label, exc_info=True)
 
 
-# ---------------------------------------------------------------------------
-# Power augmenter (temporal staggering + scaling)
-# ---------------------------------------------------------------------------
+class _RollingPowerBuffer:
+    """Per-model rolling buffer of (timestamp, per_gpu_watts) readings.
 
-
-class _PowerAugmenter:
-    """Augments real GPU power to datacenter scale with temporal staggering.
-
-    Maintains a rolling buffer of per-model measured power.  At each
-    query, K virtual server groups -- each with a random time offset --
-    read from the buffer at different historical points.  Their average
-    yields a smoothed per-GPU power that is then scaled to the full
-    simulated GPU count.  This spreads batch-size-change transients over
-    `stagger_buffer_s` seconds instead of reflecting them instantaneously.
+    Provides `sample_servers()` to look up historical per-GPU power at
+    different time offsets for each virtual server, enabling temporal
+    staggering of batch-size-change transients.
     """
 
-    def __init__(
+    def __init__(self, model_labels: Sequence[str], max_samples: int = 10000) -> None:
+        self._buffers: dict[str, collections.deque[tuple[float, float]]] = {
+            label: collections.deque(maxlen=max_samples) for label in model_labels
+        }
+
+    def append(self, label: str, timestamp: float, per_gpu_w: float) -> None:
+        """Feed a new per-GPU power reading for a model."""
+        self._buffers[label].append((timestamp, per_gpu_w))
+
+    def sample_servers(
         self,
-        deployments: Sequence[OnlineModelDeployment],
-        config: PowerAugmentationConfig,
-    ) -> None:
-        self._deployments = {d.model_label: d for d in deployments}
-        self._config = config
-        self._rng = np.random.default_rng(config.seed)
-
-        self._power_buffer: dict[str, collections.deque[tuple[float, float]]] = {}
-        self._group_offsets: dict[str, np.ndarray] = {}
-
-        for d in deployments:
-            label = d.model_label
-            max_samples = max(int(config.stagger_buffer_s * 100), 1000)
-            self._power_buffer[label] = collections.deque(maxlen=max_samples)
-            n_groups = min(config.num_virtual_groups, max(d.spec.num_replicas, 1))
-            self._group_offsets[label] = self._rng.uniform(
-                0.0,
-                config.stagger_buffer_s,
-                size=n_groups,
-            )
-
-    def update(
-        self,
-        readings_by_endpoint: dict[str, PowerReadings],
-        deployments: dict[str, OnlineModelDeployment],
-    ) -> None:
-        """Ingest new power readings from `PowerStreamingClient`.
+        label: str,
+        now: float,
+        stagger_offsets: np.ndarray,
+    ) -> np.ndarray:
+        """Look up per-GPU power at `now - offset[i]` for each virtual server.
 
         Args:
-            readings_by_endpoint: Mapping of `host:port` -> `PowerReadings`.
-            deployments: Model label -> deployment mapping.
-        """
-        now = time.monotonic()
-        for label, dep in deployments.items():
-            total_w = 0.0
-            n_gpus = 0
-            for ep in dep.gpu_endpoints:
-                pr = readings_by_endpoint.get(ep.endpoint_key)
-                if pr is None:
-                    continue
-                for idx in ep.gpu_indices:
-                    if idx in pr.gpu_power_w:
-                        total_w += pr.gpu_power_w[idx]
-                        n_gpus += 1
-            per_gpu_w = total_w / n_gpus if n_gpus > 0 else 0.0
-            self._power_buffer[label].append((now, per_gpu_w))
-
-    def augmented_power(self, model_label: str) -> tuple[float, float]:
-        """Compute augmented total power and measured per-GPU power.
+            label: Model label.
+            now: Current wall-clock time (monotonic).
+            stagger_offsets: Per-server time offsets (seconds), shape `(N,)`.
 
         Returns:
-            Tuple of (augmented_total_watts, measured_per_gpu_watts).
+            Array of shape `(N,)` with per-GPU power for each server.
         """
-        dep = self._deployments[model_label]
-        buf = self._power_buffer[model_label]
+        buf = self._buffers[label]
+        n = len(stagger_offsets)
+        result = np.zeros(n, dtype=float)
         if not buf:
-            return 0.0, 0.0
+            return result
+        for i in range(n):
+            result[i] = self._lookup(buf, now - stagger_offsets[i])
+        return result
 
-        now = time.monotonic()
-        offsets = self._group_offsets[model_label]
+    def clear(self) -> None:
+        """Clear all buffers."""
+        for buf in self._buffers.values():
+            buf.clear()
 
-        group_powers = np.empty(len(offsets))
-        for i, offset in enumerate(offsets):
-            group_powers[i] = _lookup_power(buf, now - offset)
-
-        smoothed_per_gpu = float(np.mean(group_powers))
-
-        simulated_gpus = dep.spec.num_replicas * dep.spec.gpus_per_replica
-        augmented = smoothed_per_gpu * simulated_gpus
-
-        if self._config.noise_frac > 0 and simulated_gpus > 0:
-            sigma = augmented * self._config.noise_frac / np.sqrt(simulated_gpus)
-            augmented += float(self._rng.normal(0.0, sigma))
-            augmented = max(augmented, 0.0)
-
-        measured_per_gpu = buf[-1][1]
-        return augmented, measured_per_gpu
-
-
-def _lookup_power(
-    buf: collections.deque[tuple[float, float]],
-    target_t: float,
-) -> float:
-    """Look up the power reading closest to *target_t* from the buffer."""
-    if not buf:
-        return 0.0
-    if target_t <= buf[0][0]:
+    @staticmethod
+    def _lookup(buf: collections.deque[tuple[float, float]], target_t: float) -> float:
+        """Find the power reading at or just before `target_t`."""
+        if not buf:
+            return 0.0
+        if target_t <= buf[0][0]:
+            return buf[0][1]
+        if target_t >= buf[-1][0]:
+            return buf[-1][1]
+        for i in range(len(buf) - 1, -1, -1):
+            if buf[i][0] <= target_t:
+                return buf[i][1]
         return buf[0][1]
-    if target_t >= buf[-1][0]:
-        return buf[-1][1]
-    for i in range(len(buf) - 1, -1, -1):
-        if buf[i][0] <= target_t:
-            return buf[i][1]
-    return buf[0][1]
-
-
-# ---------------------------------------------------------------------------
-# OnlineDatacenter
-# ---------------------------------------------------------------------------
 
 
 class OnlineDatacenter(LLMBatchSizeControlledDatacenter[OnlineDatacenterState]):
@@ -695,7 +624,8 @@ class OnlineDatacenter(LLMBatchSizeControlledDatacenter[OnlineDatacenterState]):
 
     Dispatches inference load to vLLM servers, streams GPU power from
     zeusd, measures ITL from streaming responses, and augments power
-    readings to datacenter scale for grid simulation.
+    readings to datacenter scale using the shared `PowerAugmenter`
+    pipeline (same as `OfflineDatacenter`).
 
     Call `start()` before the first `step()` and `stop()` after the
     simulation loop finishes.
@@ -710,6 +640,8 @@ class OnlineDatacenter(LLMBatchSizeControlledDatacenter[OnlineDatacenterState]):
             Each dict should contain at least `model`, `messages`, and
             `max_completion_tokens`. Streaming fields are added automatically.
         dt_s: Simulation timestep (seconds).
+        activation_strategy: Controls which virtual servers are active at
+            each timestep. If `None`, all servers are always active.
         prometheus_poll_interval_s: How often to poll vLLM /metrics (seconds).
             Set to 0 to disable Prometheus polling.
         health_check: If True, run health checks on start().
@@ -724,6 +656,7 @@ class OnlineDatacenter(LLMBatchSizeControlledDatacenter[OnlineDatacenterState]):
         load_gen: LoadGenerationConfig | None = None,
         requests_by_model: dict[str, list[dict]],
         dt_s: Fraction = Fraction(1, 10),
+        activation_strategy: ActivationStrategy | None = None,
         prometheus_poll_interval_s: float = 0.5,
         health_check: bool = True,
     ) -> None:
@@ -739,6 +672,7 @@ class OnlineDatacenter(LLMBatchSizeControlledDatacenter[OnlineDatacenterState]):
         self._load_gen_config = load_gen
         self._requests_by_model = dict(requests_by_model)
         self._health_check = health_check
+        self._activation_strategy = activation_strategy
 
         self._prometheus = (
             _PrometheusPoller(
@@ -755,7 +689,19 @@ class OnlineDatacenter(LLMBatchSizeControlledDatacenter[OnlineDatacenterState]):
             load_gen,
             prometheus_poller=self._prometheus,
         )
-        self._augmenter = _PowerAugmenter(deployments, augmentation)
+
+        self._layout_rng = np.random.default_rng(augmentation.seed)
+        self._layouts: dict[str, ServerLayout] = {}
+        self._build_all_layouts()
+        self._augmenter = PowerAugmenter(
+            layouts=self._layouts,
+            base_w_per_phase=augmentation.base_kw_per_phase * 1e3,
+            seed=augmentation.seed + 12345,
+        )
+        self._rolling_buffer = _RollingPowerBuffer(
+            [d.model_label for d in deployments],
+            max_samples=max(int(augmentation.stagger_buffer_s * 100), 1000),
+        )
 
         self._batch_by_model: dict[str, int] = {d.model_label: d.spec.initial_batch_size for d in deployments}
 
@@ -770,14 +716,33 @@ class OnlineDatacenter(LLMBatchSizeControlledDatacenter[OnlineDatacenterState]):
             dt_s,
         )
         for d in deployments:
+            layout = self._layouts.get(d.model_label)
+            n_servers = layout.num_servers if layout else 0
             logger.info(
-                "  %s: %d real GPUs, %d simulated replicas (%.0fx augmentation), vllm=%s",
+                "  %s: %d real GPUs, %d simulated replicas (%.0fx augmentation), %d virtual servers, vllm=%s",
                 d.model_label,
                 d.num_real_gpus,
                 d.spec.num_replicas,
                 d.augmentation_factor,
+                n_servers,
                 d.vllm_base_url,
             )
+
+    def _build_all_layouts(self) -> None:
+        """Build ServerLayout for each deployed model."""
+        default_strategy = RampActivationStrategy(ServerRampSchedule(entries=()))
+        strategy = self._activation_strategy or default_strategy
+        for d in self._deployments:
+            if d.spec.num_replicas > 0:
+                self._layouts[d.model_label] = ServerLayout.build(
+                    d.spec,
+                    gpus_per_server=self._augmentation_config.gpus_per_server,
+                    stagger_range=float(self._augmentation_config.stagger_buffer_s),
+                    activation_strategy=strategy,
+                    amplitude_scale_range=self._augmentation_config.amplitude_scale_range,
+                    noise_fraction=self._augmentation_config.noise_fraction,
+                    rng=self._layout_rng,
+                )
 
     @property
     def dt_s(self) -> Fraction:
@@ -791,18 +756,15 @@ class OnlineDatacenter(LLMBatchSizeControlledDatacenter[OnlineDatacenterState]):
 
     @property
     def phase_share_by_model(self) -> dict[str, np.ndarray]:
-        """Per-model phase share vectors derived from GPU endpoint placement."""
-        _PHASE_INDEX = {Phase.A: 0, Phase.B: 1, Phase.C: 2}
+        """Per-model phase share vectors derived from server layout."""
         shares: dict[str, np.ndarray] = {}
-        for d in self._deployments:
-            counts = np.zeros(3, dtype=float)
-            for ep in d.gpu_endpoints:
-                counts[_PHASE_INDEX[ep.phase]] += len(ep.gpu_indices)
+        for label, layout in self._layouts.items():
+            counts = np.bincount(layout.phase_list, minlength=3).astype(float)
             total = counts.sum()
             if total > 0:
-                shares[d.model_label] = counts / total
+                shares[label] = counts / total
             else:
-                shares[d.model_label] = np.array([1 / 3, 1 / 3, 1 / 3], dtype=float)
+                shares[label] = np.array([1 / 3, 1 / 3, 1 / 3], dtype=float)
         return shares
 
     def history(self, n: int | None = None) -> list[OnlineDatacenterState]:
@@ -821,21 +783,32 @@ class OnlineDatacenter(LLMBatchSizeControlledDatacenter[OnlineDatacenterState]):
             self._load_gen_config,
             prometheus_poller=self._prometheus,
         )
-        self._augmenter = _PowerAugmenter(self._deployments, self._augmentation_config)
+        self._layout_rng = np.random.default_rng(self._augmentation_config.seed)
+        self._layouts = {}
+        self._build_all_layouts()
+        self._augmenter = PowerAugmenter(
+            layouts=self._layouts,
+            base_w_per_phase=self._augmentation_config.base_kw_per_phase * 1e3,
+            seed=self._augmentation_config.seed + 12345,
+        )
+        self._rolling_buffer.clear()
         self._batch_by_model = {d.model_label: d.spec.initial_batch_size for d in self._deployments}
         self._state = None
         self._history = []
         self._started = False
 
     def start(self) -> None:
-        """Start load generation and wait for initial readings.
+        """Start load generation, warm up servers, and fill the power buffer.
 
         Sequence:
             1. Run health checks on all vLLM servers and zeusd instances.
             2. Wait for at least one power reading per endpoint (10 s timeout).
             3. Set initial batch sizes on all vLLM servers.
             4. Start load generation threads.
-            5. Wait for at least one ITL sample per model (30 s timeout).
+            5. Warm up: poll power into the rolling buffer while waiting for
+               each model's `num_requests_running` to reach 95% of its
+               `initial_batch_size`. Fails after 60 s if any model does not
+               saturate.
         """
         if self._started:
             raise RuntimeError("OnlineDatacenter already started")
@@ -880,21 +853,175 @@ class OnlineDatacenter(LLMBatchSizeControlledDatacenter[OnlineDatacenterState]):
         self._load_gen.start()
         logger.info("LoadGenerator started")
 
-        # 5. Wait for initial ITL samples
-        deadline = time.monotonic() + 30.0
-        while time.monotonic() < deadline:
-            all_have_itl = all(
-                not np.isnan(self._load_gen.get_observed_itl(d.model_label, window_s=30.0)) for d in self._deployments
-            )
-            if all_have_itl:
-                logger.info("ITL samples received from all models")
-                break
-            time.sleep(1.0)
-        else:
-            logger.warning("Timed out waiting for ITL samples from some models")
+        # 5. Warm up: fill power buffer + wait for server saturation
+        self._warmup()
 
         self._started = True
         logger.info("OnlineDatacenter ready")
+
+    def _poll_power_into_buffer(self) -> tuple[float, dict[str, float]]:
+        """Read GPU power from all endpoints and feed the rolling buffer.
+
+        Returns:
+            Tuple of (monotonic timestamp, per-model average per-GPU watts).
+        """
+        now = time.monotonic()
+        raw_power = self._power_client.get_power()
+        per_gpu_by_model: dict[str, float] = {}
+        for d in self._deployments:
+            total_w = 0.0
+            n_gpus = 0
+            for ep in d.gpu_endpoints:
+                pr = raw_power.get(ep.endpoint_key)
+                if pr is None:
+                    continue
+                for idx in ep.gpu_indices:
+                    if idx in pr.gpu_power_w:
+                        total_w += pr.gpu_power_w[idx]
+                        n_gpus += 1
+            per_gpu_w = total_w / n_gpus if n_gpus > 0 else 0.0
+            self._rolling_buffer.append(d.model_label, now, per_gpu_w)
+            per_gpu_by_model[d.model_label] = per_gpu_w
+        return now, per_gpu_by_model
+
+    def _warmup(
+        self,
+        timeout_s: float = 60.0,
+        saturation_threshold: float = 0.95,
+        poll_interval_s: float = 0.1,
+    ) -> None:
+        """Fill the rolling power buffer and wait for vLLM server saturation.
+
+        Actively polls GPU power to fill the rolling buffer while monitoring
+        Prometheus `num_requests_running` to verify each model has reached
+        `saturation_threshold` of its `initial_batch_size`.
+
+        Completion requires both conditions for every model:
+            1. `num_requests_running >= saturation_threshold * initial_batch_size`
+            2. At least `stagger_buffer_s` has elapsed since that model first
+               reached saturation (so the buffer contains a full stagger
+               window of steady-state power data).
+
+        Args:
+            timeout_s: Maximum warmup duration in seconds.
+            saturation_threshold: Fraction of `initial_batch_size` that
+                `num_requests_running` must reach (0.0-1.0).
+            poll_interval_s: Seconds between power polls.
+
+        Raises:
+            RuntimeError: If any model fails to saturate within `timeout_s`.
+                Includes the `num_requests_running` trajectory for failed
+                models.
+        """
+        stagger_s = self._augmentation_config.stagger_buffer_s
+        logger.info(
+            "Warming up: waiting for server saturation (%.0f%% of initial_batch_size) "
+            "+ %.1f s buffer fill per model...",
+            saturation_threshold * 100,
+            stagger_s,
+        )
+
+        warmup_start = time.monotonic()
+        deadline = warmup_start + timeout_s
+        last_log = warmup_start
+
+        trajectory: dict[str, list[tuple[float, float]]] = {d.model_label: [] for d in self._deployments}
+        saturation_time: dict[str, float | None] = {d.model_label: None for d in self._deployments}
+
+        while time.monotonic() < deadline:
+            now = time.monotonic()
+            elapsed = now - warmup_start
+
+            self._poll_power_into_buffer()
+
+            all_ready = True
+            if self._prometheus is not None:
+                prom = self._prometheus.get_latest()
+                for d in self._deployments:
+                    label = d.model_label
+                    running = prom.get(label, {}).get("num_requests_running", 0.0)
+                    trajectory[label].append((elapsed, running))
+                    target = d.spec.initial_batch_size * saturation_threshold
+
+                    if running >= target and saturation_time[label] is None:
+                        saturation_time[label] = now
+                        logger.info(
+                            "  %s saturated at t=%.1f s (num_requests_running=%.0f)",
+                            label,
+                            elapsed,
+                            running,
+                        )
+
+                    sat_t = saturation_time[label]
+                    if sat_t is None or (now - sat_t) < stagger_s:
+                        all_ready = False
+            else:
+                logger.warning(
+                    "Prometheus polling is disabled; cannot verify server saturation. "
+                    "Waiting %.1f s for power buffer only.",
+                    stagger_s,
+                )
+                if elapsed < stagger_s:
+                    all_ready = False
+
+            if all_ready:
+                logger.info("Warmup complete in %.1f s", elapsed)
+                return
+
+            if now - last_log >= 10.0:
+                last_log = now
+                if self._prometheus is not None:
+                    prom = self._prometheus.get_latest()
+                    for d in self._deployments:
+                        label = d.model_label
+                        running = prom.get(label, {}).get("num_requests_running", 0.0)
+                        target = d.spec.initial_batch_size
+                        sat_t = saturation_time[label]
+                        buf_s = (now - sat_t) if sat_t is not None else 0.0
+                        logger.info(
+                            "  Warmup %s: num_requests_running=%.0f / %d (%.0f%%), buffer=%.1f / %.1f s",
+                            label,
+                            running,
+                            target,
+                            running / max(target, 1) * 100,
+                            buf_s,
+                            stagger_s,
+                        )
+
+            time.sleep(poll_interval_s)
+
+        if self._prometheus is None:
+            raise RuntimeError(
+                f"Warmup timed out after {timeout_s:.0f} s waiting for power buffer to fill ({stagger_s:.1f} s)"
+            )
+
+        prom = self._prometheus.get_latest()
+        failed: list[str] = []
+        for d in self._deployments:
+            label = d.model_label
+            running = prom.get(label, {}).get("num_requests_running", 0.0)
+            sat_t = saturation_time[label]
+            not_saturated = running < d.spec.initial_batch_size * saturation_threshold
+            not_buffered = sat_t is None or (time.monotonic() - sat_t) < stagger_s
+            if not_saturated or not_buffered:
+                failed.append(label)
+
+        parts = [
+            f"Warmup timed out after {timeout_s:.0f} s. "
+            f"Models that failed to reach {saturation_threshold:.0%} of initial_batch_size:",
+        ]
+        for label in failed:
+            target = self._deployment_map[label].spec.initial_batch_size
+            traj = trajectory[label]
+            final = traj[-1][1] if traj else 0.0
+            parts.append(f"  {label} (target: {target}, reached: {final:.0f}):")
+            step = max(1, int(5.0 / poll_interval_s))
+            samples = traj[::step]
+            if traj and (not samples or samples[-1] is not traj[-1]):
+                samples.append(traj[-1])
+            entries = [f"t={t:.0f}s: {r:.0f}" for t, r in samples]
+            parts.append("    " + ", ".join(entries))
+        raise RuntimeError("\n".join(parts))
 
     def stop(self) -> None:
         """Stop load generation and power streaming."""
@@ -905,40 +1032,28 @@ class OnlineDatacenter(LLMBatchSizeControlledDatacenter[OnlineDatacenterState]):
 
     def step(self, clock: SimulationClock) -> OnlineDatacenterState:
         """Read live power, augment to datacenter scale, and return state."""
-        raw_power = self._power_client.get_power()
-        self._augmenter.update(raw_power, self._deployment_map)
+        now, per_gpu_w_by_model = self._poll_power_into_buffer()
 
-        augmented_phase_w: dict[Phase, float] = {Phase.A: 0.0, Phase.B: 0.0, Phase.C: 0.0}
-        measured_phase_w: dict[Phase, float] = {Phase.A: 0.0, Phase.B: 0.0, Phase.C: 0.0}
         measured_power_by_model: dict[str, float] = {}
-        augmented_power_by_model: dict[str, float] = {}
         augmentation_factor_by_model: dict[str, float] = {}
-        active_replicas: dict[str, int] = {}
-
         for d in self._deployments:
             label = d.model_label
-            augmented_w, measured_per_gpu_w = self._augmenter.augmented_power(label)
-
-            measured_total_w = measured_per_gpu_w * d.num_real_gpus
-            measured_power_by_model[label] = measured_total_w
-            augmented_power_by_model[label] = augmented_w
+            measured_power_by_model[label] = per_gpu_w_by_model.get(label, 0.0) * d.num_real_gpus
             augmentation_factor_by_model[label] = d.augmentation_factor
-            active_replicas[label] = d.spec.num_replicas
 
-            phase_gpu_counts: dict[Phase, int] = {Phase.A: 0, Phase.B: 0, Phase.C: 0}
-            for ep in d.gpu_endpoints:
-                phase_gpu_counts[ep.phase] += len(ep.gpu_indices)
-            total_real_gpus = sum(phase_gpu_counts.values())
-            if total_real_gpus > 0:
-                for phase, count in phase_gpu_counts.items():
-                    frac = count / total_real_gpus
-                    augmented_phase_w[phase] += augmented_w * frac
-                    measured_phase_w[phase] += measured_total_w * frac
+        per_gpu_by_model: dict[str, np.ndarray] = {}
+        for d in self._deployments:
+            label = d.model_label
+            if label not in self._layouts:
+                continue
+            layout = self._layouts[label]
+            per_gpu_by_model[label] = self._rolling_buffer.sample_servers(label, now, layout.stagger_offsets)
 
+        aug = self._augmenter.step(per_gpu_by_model, clock.time_s)
+
+        measured_total = sum(measured_power_by_model.values())
+        measured_per_phase = measured_total / 3.0
         base_w = self._augmentation_config.base_kw_per_phase * 1e3
-        for phase in Phase:
-            augmented_phase_w[phase] += base_w
-            measured_phase_w[phase] += base_w
 
         observed_itl: dict[str, float] = {
             d.model_label: self._load_gen.get_observed_itl(d.model_label) for d in self._deployments
@@ -950,21 +1065,17 @@ class OnlineDatacenter(LLMBatchSizeControlledDatacenter[OnlineDatacenterState]):
 
         state = OnlineDatacenterState(
             time_s=clock.time_s,
-            power_w=ThreePhase(
-                a=augmented_phase_w[Phase.A],
-                b=augmented_phase_w[Phase.B],
-                c=augmented_phase_w[Phase.C],
-            ),
+            power_w=aug.power_w,
             batch_size_by_model=dict(self._batch_by_model),
-            active_replicas_by_model=active_replicas,
+            active_replicas_by_model=aug.active_replicas_by_model,
             observed_itl_s_by_model=observed_itl,
             measured_power_w=ThreePhase(
-                a=measured_phase_w[Phase.A],
-                b=measured_phase_w[Phase.B],
-                c=measured_phase_w[Phase.C],
+                a=measured_per_phase + base_w,
+                b=measured_per_phase + base_w,
+                c=measured_per_phase + base_w,
             ),
             measured_power_w_by_model=measured_power_by_model,
-            augmented_power_w_by_model=augmented_power_by_model,
+            augmented_power_w_by_model=aug.power_by_model_w,
             augmentation_factor_by_model=augmentation_factor_by_model,
             prometheus_metrics_by_model=prometheus_metrics,
         )

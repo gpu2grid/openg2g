@@ -27,7 +27,6 @@ from openg2g.datacenter.layout import (
     PowerAugmenter,
     RampActivationStrategy,
     ServerLayout,
-    build_server_layout,
 )
 from openg2g.datacenter.training_overlay import TrainingOverlayCache
 from openg2g.events import EventEmitter
@@ -611,10 +610,10 @@ class OfflineDatacenter(LLMBatchSizeControlledDatacenter[OfflineDatacenterState]
             if ms.num_replicas > 0:
                 any_batch = self.batch_sizes(ms.model_label)[0]
                 tpl_len = len(self._trace_store.template(ms.model_label, any_batch))
-                self._layouts[ms.model_label] = build_server_layout(
+                self._layouts[ms.model_label] = ServerLayout.build(
                     ms,
                     gpus_per_server=self._gpus_per_server,
-                    template_length=tpl_len,
+                    stagger_range=tpl_len,
                     activation_strategy=strategy,
                     amplitude_scale_range=self._amplitude_scale_range,
                     noise_fraction=self._noise_fraction,
