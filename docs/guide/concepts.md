@@ -1,10 +1,10 @@
 # Concepts and Background
 
-This page explains **why** datacenter--grid coordination matters and introduces the key concepts behind OpenG2G. For the full technical treatment, see the [GPU-to-Grid paper](https://arxiv.org/abs/2602.05116).
+This page explains **why** datacenter-grid coordination matters and introduces the key concepts behind OpenG2G. For the full technical treatment, see the [GPU-to-Grid paper](https://arxiv.org/abs/2602.05116).
 
 ## The Problem: GPU Datacenters Meet Distribution Grids
 
-Modern GPU datacenters draw hundreds of megawatts. When connected to distribution feeders (the local power lines that serve neighborhoods and businesses), their rapidly varying power consumption can cause **voltage violations** -- bus voltages dropping below or rising above acceptable limits (typically 0.95--1.05 per unit).
+Modern GPU datacenters draw hundreds of megawatts. When connected to distribution feeders (the local power lines that serve neighborhoods and businesses), their rapidly varying power consumption can cause **voltage violations**, where bus voltages drop below or rise above acceptable limits (typically 0.95 to 1.05 per unit).
 
 Traditional grid controls (capacitor banks, voltage regulators) operate on timescales of seconds to minutes. GPU workloads, especially LLM inference, change power draw on sub-second timescales as batch sizes, request rates, and model mixes fluctuate. This mismatch creates a coordination gap.
 
@@ -12,9 +12,9 @@ Traditional grid controls (capacitor banks, voltage regulators) operate on times
 
 The central insight is that **GPU batch size** is a controllable knob that simultaneously affects:
 
-- **Power consumption** -- larger batches use more GPU power
-- **Inference latency** -- larger batches increase per-request latency
-- **Grid voltages** -- power changes propagate through the distribution feeder
+- **Power consumption**: Larger batches use more GPU power
+- **Inference latency**: Larger batches increase per-request latency
+- **Grid voltages**: Power changes propagate through the distribution feeder
 
 By adjusting batch sizes in response to grid voltage measurements, a datacenter can regulate its own impact on the distribution network while maintaining acceptable service quality.
 
@@ -116,7 +116,7 @@ For details on the data preparation step, see the [Data Pipeline](data-pipeline.
 OpenG2G is designed for researchers studying questions like:
 
 - **Voltage regulation strategies**: How do different control algorithms (OFO, rule-based, MPC) compare in maintaining voltage limits?
-- **Latency--voltage tradeoffs**: What is the Pareto frontier between inference latency and voltage violation severity?
+- **Latency-voltage tradeoffs**: What is the Pareto frontier between inference latency and voltage violation severity?
 - **Datacenter sizing**: How large can a GPU datacenter be on a given feeder before voltage violations become unmanageable?
 - **Grid topology effects**: How does the choice of feeder (IEEE 13-bus, 123-bus, etc.) affect controllability?
 - **Multi-workload coordination**: How do inference and training workloads interact in their grid impact?

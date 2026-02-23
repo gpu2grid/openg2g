@@ -1,6 +1,7 @@
 [project]
-site_name = "OpenG2G"
+site_name = "OpenG2G: GPU-to-Grid Simulation with LLM Workloads"
 site_description = "A modular framework for datacenter-grid interaction with LLM workloads"
+repo_url = "https://github.com/TODO/openg2g"
 nav = [
   { "Home" = "index.md" },
   { "Getting Started" = [
@@ -15,16 +16,16 @@ nav = [
     { "Custom Components" = "guide/custom-components.md" },
   ]},
   { "API Reference" = [
-    { "openg2g.coordinator" = "api/coordinator.md" },
     { "openg2g.clock" = "api/clock.md" },
-    { "openg2g.types" = "api/types.md" },
-    { "openg2g.events" = "api/events.md" },
-    { "openg2g.models" = "api/models.md" },
-    { "openg2g.datacenter" = "api/datacenter.md" },
-    { "openg2g.datacenter.config" = "api/config.md" },
-    { "openg2g.grid" = "api/grid.md" },
     { "openg2g.controller" = "api/controller.md" },
+    { "openg2g.coordinator" = "api/coordinator.md" },
+    { "openg2g.datacenter" = "api/datacenter.md" },
+    { "openg2g.events" = "api/events.md" },
+    { "openg2g.grid" = "api/grid.md" },
     { "openg2g.metrics" = "api/metrics.md" },
+    { "openg2g.models" = "api/models.md" },
+    { "openg2g.types" = "api/types.md" },
+    { "openg2g.utils" = "api/utils.md" },
   ]},
 ]
 
@@ -35,28 +36,63 @@ features = [
   "navigation.expand",
   "toc.follow",
 ]
+favicon = "assets/transmission-tower.svg"
+logo = "assets/transmission-tower.svg"
+
+[project.theme.icon]
+repo = "fontawesome/brands/github"
+
+# [[project.theme.palette]]
+# media = "(prefers-color-scheme)"
+# toggle.icon = "lucide/sun-moon"
+# toggle.name = "Switch to light mode"
 
 [[project.theme.palette]]
+media = "(prefers-color-scheme: light)"
 scheme = "default"
-primary = "indigo"
-accent = "indigo"
-toggle = { icon = "material/brightness-7", name = "Switch to dark mode" }
+toggle.icon = "lucide/sun"
+toggle.name = "Switch to dark mode"
 
 [[project.theme.palette]]
+media = "(prefers-color-scheme: dark)"
 scheme = "slate"
-primary = "indigo"
-accent = "indigo"
-toggle = { icon = "material/brightness-4", name = "Switch to light mode" }
+toggle.icon = "lucide/moon"
+toggle.name = "Switch to light mode"
 
-# Zensical enables all 19 markdown extensions by default.
-# Only override options that differ from defaults.
-[project.markdown_extensions.pymdownx.highlight]
-anchor_linenums = true
-
+[project.markdown_extensions.abbr]
+[project.markdown_extensions.admonition]
+[project.markdown_extensions.attr_list]
+[project.markdown_extensions.def_list]
+[project.markdown_extensions.footnotes]
+[project.markdown_extensions.md_in_html]
 [project.markdown_extensions.toc]
 permalink = true
+[project.markdown_extensions.pymdownx.arithmatex]
+generic = true
+[project.markdown_extensions.pymdownx.betterem]
+smart_enable = "all"
+[project.markdown_extensions.pymdownx.caret]
+[project.markdown_extensions.pymdownx.details]
+[project.markdown_extensions.pymdownx.emoji]
+emoji_generator = "zensical.extensions.emoji.to_svg"
+emoji_index = "zensical.extensions.emoji.twemoji"
+[project.markdown_extensions.pymdownx.highlight]
+anchor_linenums = true
+[project.markdown_extensions.pymdownx.inlinehilite]
+[project.markdown_extensions.pymdownx.keys]
+[project.markdown_extensions.pymdownx.mark]
+[project.markdown_extensions.pymdownx.smartsymbols]
+[project.markdown_extensions.pymdownx.superfences]
+[project.markdown_extensions.pymdownx.tabbed]
+alternate_style = true
+[project.markdown_extensions.pymdownx.tasklist]
+custom_checkbox = true
+[project.markdown_extensions.pymdownx.tilde]
 
 [project.plugins.mkdocstrings.handlers.python.options]
-show_source = false
+show_source = true
 show_root_heading = true
+show_root_full_path = true
 members_order = "source"
+inherited_members = true
+filters = ["!^_"]

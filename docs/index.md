@@ -1,17 +1,21 @@
 # OpenG2G
 
-A modular Python framework for simulating datacenter-grid interaction, with a focus on LLM inference workloads. Based on the [GPU-to-Grid paper](https://arxiv.org/abs/2602.05116).
+A modular Python framework for simulating datacenter-grid interaction, with a focus on LLM inference workloads.
+This library grew out of the [GPU-to-Grid paper](https://arxiv.org/abs/2602.05116).
 
-OpenG2G provides building blocks for studying how GPU-level controls (batch size, power capping) affect distribution-level voltages. It ships with:
+OpenG2G provides building blocks for studying how GPU-level controls (batch size, power capping) affect distribution-level voltages.
 
 - **Online Feedback Optimization (OFO)** for joint voltage regulation and latency management
 - A **trace-replay datacenter backend** for reproducible offline simulation
-- A **live GPU backend** via [Zeus](https://github.com/ml-energy/zeus) for hardware-in-the-loop experiments
-- An **OpenDSS-based grid simulator** for power flow analysis on standard IEEE test feeders
+- A **live GPU backend** via [Zeus](https://ml.energy/zeus) for hardware-in-the-loop experiments
+- A **grid simulator based on OpenDSS** for power flow analysis on standard IEEE test feeders
+
+!!! Note
+    The online (live) datacenter backend is currently in early development. The offline trace-replay backend is fully functional and recommended for most users.
 
 ## Overview
 
-The core abstraction is a multi-rate simulation loop. A `Coordinator` ticks a shared clock and dispatches to three component types at their respective rates:
+The core abstraction is a multi-rate simulation loop. A [`Coordinator`][openg2g.coordinator.Coordinator] ticks a shared clock and dispatches to three component types at their respective rates:
 
 ```
                     ┌─────────────────────────────┐
@@ -37,14 +41,14 @@ The core abstraction is a multi-rate simulation loop. A `Coordinator` ticks a sh
                          └────────────────┘       └───────────────────┘
 ```
 
-Controllers produce `ControlAction` objects (batch size changes, tap adjustments) that are applied to the datacenter and grid before the next tick.
+Controllers produce [`ControlAction`][openg2g.types.ControlAction] objects (batch size changes, tap adjustments) that are applied to the datacenter and grid before the next tick.
 
 ## What Can You Explore?
 
 OpenG2G is designed for researchers studying questions like:
 
 - **Voltage regulation strategies**: How do different control algorithms (OFO, rule-based, MPC) compare in maintaining voltage limits?
-- **Latency--voltage tradeoffs**: What is the Pareto frontier between inference latency and voltage violation severity?
+- **Latency-voltage tradeoffs**: What is the Pareto frontier between inference latency and voltage violation severity?
 - **Datacenter sizing**: How large can a GPU datacenter be on a given feeder before voltage violations become unmanageable?
 - **Grid topology effects**: How does the choice of feeder (IEEE 13-bus, 123-bus, etc.) affect controllability?
 
@@ -57,8 +61,8 @@ See [Concepts and Background](guide/concepts.md#what-can-you-explore) for the fu
 
 ## Guide
 
-- [Concepts and Background](guide/concepts.md) -- why datacenter-grid coordination matters
-- [Data Pipeline](guide/data-pipeline.md) -- from GPU benchmarks to simulation inputs
-- [Architecture](guide/architecture.md) -- how components fit together
-- [Composing Components](guide/composing.md) -- assembling a simulation from parts
-- [Custom Components](guide/custom-components.md) -- implementing your own datacenter or controller
+- [Concepts and Background](guide/concepts.md): Why datacenter-grid coordination matters
+- [Data Pipeline](guide/data-pipeline.md): From GPU benchmarks to simulation inputs
+- [Architecture](guide/architecture.md): How components fit together
+- [Composing Components](guide/composing.md): Assembling a simulation from parts
+- [Custom Components](guide/custom-components.md): Implementing your own datacenter or controller

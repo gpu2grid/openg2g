@@ -2,10 +2,10 @@
 
 OpenG2G ships with example simulations in the `examples/` directory:
 
-- `offline/run_baseline.py` -- uncontrolled baseline (no OFO, capacitor banks active), with two modes:
-    - `--mode no-tap` (default) -- fixed tap positions ("No control, no tap")
-    - `--mode tap-change` -- scheduled tap changes at t=1500s and t=3300s ("Tap change only")
-- `offline/run_ofo.py` -- OFO closed-loop control with batch size optimization
+- `offline/run_baseline.py`: Uncontrolled baseline (no OFO, capacitor banks active), with two modes:
+    - `--mode no-tap` (default): Fixed tap positions ("No control, no tap")
+    - `--mode tap-change`: Scheduled tap changes at t=1500s and t=3300s ("Tap change only")
+- `offline/run_ofo.py`: OFO closed-loop control with batch size optimization
 
 These correspond to the three evaluation cases in the [GPU-to-Grid paper](https://arxiv.org/abs/2602.05116).
 
@@ -16,8 +16,8 @@ These correspond to the three evaluation cases in the [GPU-to-Grid paper](https:
 
 Both examples require:
 
-- **Power trace CSVs** -- per-model GPU power traces at various batch sizes, latency fit parameters, and logistic fit parameters. Build from benchmark data with `data/offline/build_mlenergy_data.py`.
-- **OpenDSS case files** -- IEEE 13-bus test feeder files, included in the repo at `examples/ieee13/`.
+- **Power trace CSVs**: Per-model GPU power traces at various batch sizes, latency fit parameters, and logistic fit parameters. Build from benchmark data with `data/offline/build_mlenergy_data.py`.
+- **OpenDSS case files**: IEEE 13-bus test feeder files, included in the repo at `examples/ieee13/`.
 
 ## Baseline Simulation
 
@@ -46,9 +46,9 @@ Key parameters (defined at the top of the script):
 
 Outputs are saved to `outputs/baseline_no-tap/` or `outputs/baseline_tap-change/`:
 
-- `power_profiles.png` -- three-phase DC power over time
-- `allbus_voltages_phase_{A,B,C}.png` -- all-bus voltage trajectories
-- `console_output.txt` -- full simulation log
+- `power_profiles.png`: Three-phase DC power over time
+- `allbus_voltages_phase_{A,B,C}.png`: All-bus voltage trajectories
+- `console_output.txt`: Full simulation log
 
 ## OFO Simulation
 
@@ -71,10 +71,10 @@ This adds several OFO-specific parameters:
 
 Outputs are saved to `outputs/ofo/`:
 
-- `dc_power_3ph.png` -- three-phase DC power
-- `batch_schedule.png` -- batch size schedule per model
-- `allbus_voltages_phase_{A,B,C}.png` -- voltage trajectories
-- `console_output.txt` -- full simulation log with per-step OFO decisions
+- `dc_power_3ph.png`: Three-phase DC power
+- `batch_schedule.png`: Batch size schedule per model
+- `allbus_voltages_phase_{A,B,C}.png`: Voltage trajectories
+- `console_output.txt`: Full simulation log with per-step OFO decisions
 
 ## Understanding the Output
 

@@ -27,14 +27,14 @@ The coordinator computes the base tick as the GCD of all component periods. In t
 Every `run()` call follows the sequence: `reset()` all -> `start()` all -> simulation loop -> `stop()` all. Calling `run()` twice produces identical results.
 
 - **`reset()`** (abstract) clears simulation state (history, RNGs, counters). Configuration is not affected.
-- **`start()`** (no-op by default) acquires per-run resources. `OpenDSSGrid` compiles its DSS circuit here; most offline components don't override this.
+- **`start()`** (no-op by default) acquires per-run resources. [`OpenDSSGrid`][openg2g.grid.opendss.OpenDSSGrid] compiles its DSS circuit here; most offline components don't override this.
 - **`stop()`** (no-op by default) releases per-run resources. Simulation state is preserved for inspection.
 
 ## Setting Up the Datacenter
 
 ### Offline (Trace Replay)
 
-The `OfflineDatacenter` replays CSV power traces. You first load traces from a manifest into a `PowerTraceStore`, build periodic templates, then create the datacenter.
+The [`OfflineDatacenter`][openg2g.datacenter.offline.OfflineDatacenter] replays CSV power traces. You first load traces from a manifest into a [`PowerTraceStore`][openg2g.datacenter.offline.PowerTraceStore], build periodic templates, then create the datacenter.
 
 #### Direct construction
 
@@ -73,7 +73,7 @@ dc = OfflineDatacenter(
 
 #### Using config objects
 
-For more complex setups (training overlays, server ramp schedules), use the `from_config()` factory with `DatacenterConfig` and `WorkloadConfig`:
+For more complex setups (training overlays, server ramp schedules), use the `from_config()` factory with [`DatacenterConfig`][openg2g.datacenter.config.DatacenterConfig] and [`WorkloadConfig`][openg2g.datacenter.config.WorkloadConfig]:
 
 ```python
 from openg2g.datacenter.config import DatacenterConfig, WorkloadConfig
@@ -110,7 +110,7 @@ dc = OfflineDatacenter.from_config(
 
 ### Online (Live GPU)
 
-The `OnlineDatacenter` connects to real vLLM servers for load generation and ITL measurement, and to zeusd instances for live GPU power monitoring. Power readings from a small number of real GPUs are augmented to datacenter scale using temporal staggering.
+The [`OnlineDatacenter`][openg2g.datacenter.online.OnlineDatacenter] connects to real vLLM servers for load generation and ITL measurement, and to zeusd instances for live GPU power monitoring. Power readings from a small number of real GPUs are augmented to datacenter scale using temporal staggering.
 
 ```python
 from zeus.monitor.power_streaming import PowerStreamingClient
@@ -158,7 +158,7 @@ The coordinator calls `start()` to run health checks, wait for power readings, s
 
 ## Setting Up the Grid
 
-Tap schedules are built using `TapPosition` (per-unit tap ratios per phase) and the `|` operator:
+Tap schedules are built using [`TapPosition`][openg2g.types.TapPosition] (per-unit tap ratios per phase) and the `|` operator:
 
 ```python
 from openg2g.grid.opendss import OpenDSSGrid
@@ -213,20 +213,20 @@ coord = Coordinator(
 )
 ```
 
-Initial tap positions are set via the `initial_tap_position` parameter on `OpenDSSGrid` (using the `TapPosition` API). Scheduled changes are handled by `TapScheduleController`. Actions from all controllers are applied before the next tick.
+Initial tap positions are set via the `initial_tap_position` parameter on [`OpenDSSGrid`][openg2g.grid.opendss.OpenDSSGrid] (using the [`TapPosition`][openg2g.types.TapPosition] API). Scheduled changes are handled by [`TapScheduleController`][openg2g.controller.tap_schedule.TapScheduleController]. Actions from all controllers are applied before the next tick.
 
 ### Command Types
 
 Commands are typed dataclasses routed to backends via `singledispatchmethod`:
 
-- `SetBatchSize(batch_size_by_model=...)` -- datacenter command
-- `SetTaps(tap_position=...)` -- grid command
+- [`SetBatchSize`][openg2g.types.SetBatchSize]`(batch_size_by_model=...)`: Datacenter command
+- [`SetTaps`][openg2g.types.SetTaps]`(tap_position=...)`: Grid command
 
 Backends raise `TypeError` for unsupported command types.
 
 Controller interface summary:
 
-- `step(clock, datacenter, grid, events) -> ControlAction`
+- `step(clock, datacenter, grid, events)` -> [`ControlAction`][openg2g.types.ControlAction]
 - read current state through `datacenter.state` and `grid.state`
 - read history through `datacenter.history(...)` and `grid.history(...)`
 - emit events through `events.emit(topic, data)`
@@ -250,7 +250,7 @@ In live mode, the clock synchronizes with wall time. If computation falls behind
 
 ## Analyzing Results
 
-The `SimulationLog` returned by `coord.run()` contains all state and action history:
+The [`SimulationLog`][openg2g.coordinator.SimulationLog] returned by `coord.run()` contains all state and action history:
 
 ```python
 log = coord.run()
@@ -260,7 +260,7 @@ from openg2g.metrics.voltage import compute_allbus_voltage_stats
 stats = compute_allbus_voltage_stats(log.grid_states, v_min=0.95, v_max=1.05)
 print(f"Violation time: {stats.violation_time_s:.1f} s")
 
-# Plotting -- the example scripts in examples/offline/ import shared plot
+# Plotting: the example scripts in examples/offline/ import shared plot
 # functions from plotting.py (a sibling module in that directory).
 # See examples/offline/plotting.py for reusable plot functions.
 import numpy as np
@@ -288,4 +288,4 @@ for batch_init in [64, 128, 256, 512]:
     print(f"batch_init={batch_init}: violation={stats.integral_violation:.2f}")
 ```
 
-Each `run()` resets simulation state, then `start()` compiles a fresh DSS circuit, so every iteration starts clean despite reusing the same `OpenDSSGrid` instance.
+Each `run()` resets simulation state, then `start()` compiles a fresh DSS circuit, so every iteration starts clean despite reusing the same [`OpenDSSGrid`][openg2g.grid.opendss.OpenDSSGrid] instance.

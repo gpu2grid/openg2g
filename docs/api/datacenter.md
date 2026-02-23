@@ -1,13 +1,8 @@
 # openg2g.datacenter
 
-## Base
-
 ::: openg2g.datacenter.base
-
-## Offline
-
+::: openg2g.datacenter.config
+::: openg2g.datacenter.layout
 ::: openg2g.datacenter.offline
-
-## Online
-
 ::: openg2g.datacenter.online
+::: openg2g.datacenter.training_overlay

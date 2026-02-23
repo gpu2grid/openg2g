@@ -41,9 +41,9 @@ Four-parameter logistic: `y = b0 + L * sigmoid(k * (x - x0))` where `x = log2(ba
 
 These curves model how power, latency, and throughput vary with batch size (Section II-C of the [paper](https://arxiv.org/abs/2602.05116), Eq. 1-3). See [Concepts: Batch Size as a Grid-Aware Control](concepts.md#key-idea-batch-size-as-a-grid-aware-control) for the characteristic S-curve shape.
 
-- `LogisticModel.fit(x, y)` -- grid search + least squares
-- `LogisticModel.eval(batch)` -- evaluate at any batch size
-- `LogisticModel.deriv_wrt_x(x)` -- gradient for OFO controller (used in Eq. 18 of the paper)
+- `LogisticModel.fit(x, y)`: Grid search + least squares
+- `LogisticModel.eval(batch)`: Evaluate at any batch size
+- `LogisticModel.deriv_wrt_x(x)`: Gradient for OFO controller (used in Eq. 18 of the paper)
 
 ### Inter-token latency (ITL) mixture model
 
@@ -63,8 +63,8 @@ Two-component lognormal mixture captures bimodal ITL distributions (steady decod
       (decode)     (scheduling)
 ```
 
-- `ITLMixtureModel.fit(samples)` -- EM algorithm
-- `ITLMixtureModel.sample_avg(n_replicas, rng)` -- draw average latency across replicas
+- `ITLMixtureModel.fit(samples)`: EM algorithm
+- `ITLMixtureModel.sample_avg(n_replicas, rng)`: Draw average latency across replicas
 
 ## Build-Time Pipeline
 
@@ -136,7 +136,7 @@ At simulation time, the generated CSV artifacts are consumed at two points:
   └─────────────────────────────────────────────────────────────────────┘
 ```
 
-- **OfflineDatacenter**: Loads power traces via `PowerTraceStore.load(manifest)`, which reads a manifest CSV and builds periodic per-GPU templates. At each step, the datacenter indexes into these templates and delegates to a `PowerAugmenter` to produce three-phase power. Latency fits are loaded as `ITLMixtureModel` instances and sampled at each control interval.
+- **[`OfflineDatacenter`][openg2g.datacenter.offline.OfflineDatacenter]**: Loads power traces via [`PowerTraceStore.load(manifest)`][openg2g.datacenter.offline.PowerTraceStore.load], which reads a manifest CSV and builds periodic per-GPU templates. At each step, the datacenter indexes into these templates and delegates to a [`PowerAugmenter`][openg2g.datacenter.layout.PowerAugmenter] to produce three-phase power. Latency fits are loaded as `ITLMixtureModel` instances and sampled at each control interval.
 
 - **OFO Controller**: Loads logistic fits as `LogisticModel` instances (one per metric per model). At each control step, it calls `eval()` and `deriv_wrt_x()` to compute the gradient of the Lagrangian (Eq. 18 of the [paper](https://arxiv.org/abs/2602.05116)).
 
