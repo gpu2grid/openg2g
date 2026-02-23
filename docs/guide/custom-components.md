@@ -14,7 +14,7 @@ from openg2g.controller.base import Controller
 from openg2g.datacenter.base import DatacenterBackend
 from openg2g.events import EventEmitter
 from openg2g.grid.base import GridBackend
-from openg2g.types import Command, ControlAction, DatacenterState, GridState
+from openg2g.types import ControlAction, DatacenterState, GridState, SetBatchSize
 
 
 class MyController(Controller[DatacenterBackend[DatacenterState], GridBackend[GridState]]):
@@ -45,23 +45,11 @@ class MyController(Controller[DatacenterBackend[DatacenterState], GridBackend[Gr
                 if v < self._v_threshold:
                     events.emit("controller.low_voltage", {"bus": bus, "time_s": clock.time_s})
                     return ControlAction(
-                        commands=[
-                            Command(
-                                target="datacenter",
-                                kind="set_batch_size",
-                                payload={"batch_size_by_model": {"MyModel": 64}},
-                            )
-                        ]
+                        commands=[SetBatchSize(batch_size_by_model={"MyModel": 64})]
                     )
 
         return ControlAction(
-            commands=[
-                Command(
-                    target="datacenter",
-                    kind="set_batch_size",
-                    payload={"batch_size_by_model": {"MyModel": 128}},
-                )
-            ]
+            commands=[SetBatchSize(batch_size_by_model={"MyModel": 128})]
         )
 ```
 
@@ -69,8 +57,8 @@ class MyController(Controller[DatacenterBackend[DatacenterState], GridBackend[Gr
 
 - `step()` must return a `ControlAction` on every call.
 - Use `ControlAction(commands=[])` for a no-op.
-- Emit `Command(target="datacenter", kind="set_batch_size", ...)` for batch updates.
-- Emit `Command(target="grid", kind="set_taps", ...)` for tap updates.
+- Use `SetBatchSize(batch_size_by_model=...)` for batch updates.
+- Use `SetTaps(tap_position=...)` for tap updates.
 - Read current component state via `datacenter.state` and `grid.state`.
 - Use `datacenter.history(...)` and `grid.history(...)` for non-Markovian logic.
 - Keep `step()` fast -- it runs synchronously in the simulation loop.
@@ -98,7 +86,7 @@ import numpy as np
 
 from openg2g.clock import SimulationClock
 from openg2g.datacenter.base import DatacenterBackend
-from openg2g.types import Command, DatacenterState, ThreePhase
+from openg2g.types import DatacenterCommand, DatacenterState, SetBatchSize, ThreePhase
 
 
 class SyntheticDatacenter(DatacenterBackend[DatacenterState]):
@@ -138,12 +126,9 @@ class SyntheticDatacenter(DatacenterBackend[DatacenterState]):
         self._history.append(st)
         return st
 
-    def apply_control(self, command: Command) -> None:
-        if command.kind != "set_batch_size":
-            return
-        batch_map = command.payload.get("batch_size_by_model", {})
-        if isinstance(batch_map, dict):
-            self._batch.update({str(k): int(v) for k, v in batch_map.items()})
+    def apply_control(self, command: DatacenterCommand) -> None:
+        if isinstance(command, SetBatchSize):
+            self._batch.update({str(k): int(v) for k, v in command.batch_size_by_model.items()})
 ```
 
 If your backend needs richer state (e.g. per-model power breakdowns), define a `DatacenterState` subclass and use it as the type parameter:

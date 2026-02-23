@@ -39,18 +39,7 @@ Each `LLMRun` is a typed record with 40 fields: power, latency, throughput, mode
 
 Four-parameter logistic: `y = b0 + L * sigmoid(k * (x - x0))` where `x = log2(batch)`.
 
-These curves model how power, latency, and throughput vary with batch size (Section II-C of the [paper](https://arxiv.org/abs/2602.05116), Eq. 1-3):
-
-```
-  Power (W)                              Latency (s)
-    |          ___________                  |              ___________
-    |         /                             |             /
-    |        /                              |            /
-    |    ___/                               |    _______/
-    |___/                                   |___/
-    └───────────────────── batch            └───────────────────── batch
-       8   32  128  512                        8   32  128  512
-```
+These curves model how power, latency, and throughput vary with batch size (Section II-C of the [paper](https://arxiv.org/abs/2602.05116), Eq. 1-3). See [Concepts: Batch Size as a Grid-Aware Control](concepts.md#key-idea-batch-size-as-a-grid-aware-control) for the characteristic S-curve shape.
 
 - `LogisticModel.fit(x, y)` -- grid search + least squares
 - `LogisticModel.eval(batch)` -- evaluate at any batch size
@@ -137,7 +126,7 @@ At simulation time, the generated CSV artifacts are consumed at two points:
   ┌─────────── RUN TIME (every simulation) ─────────────────────────────┐
   │                                                                     │
   │   OfflineDatacenter reads:                                          │
-  │     traces/*.csv ──> PowerTraceCache (periodic power templates)   │
+  │     traces/*.csv ──> PowerTraceStore (periodic power templates)   │
   │     latency_fits.csv ──> ITLMixtureModel.sample_avg() per step      │
   │                                                                     │
   │   OFO Controller reads:                                             │
@@ -147,7 +136,7 @@ At simulation time, the generated CSV artifacts are consumed at two points:
   └─────────────────────────────────────────────────────────────────────┘
 ```
 
-- **OfflineDatacenter**: Loads power trace CSVs into `PowerTraceCache`, which tiles them into periodic templates. At each step, the datacenter indexes into these templates to produce per-server power. Latency fits are loaded as `ITLMixtureModel` instances and sampled at each control interval.
+- **OfflineDatacenter**: Loads power traces via `PowerTraceStore.load(manifest)`, which reads a manifest CSV and builds periodic per-GPU templates. At each step, the datacenter indexes into these templates and delegates to a `PowerAugmenter` to produce three-phase power. Latency fits are loaded as `ITLMixtureModel` instances and sampled at each control interval.
 
 - **OFO Controller**: Loads logistic fits as `LogisticModel` instances (one per metric per model). At each control step, it calls `eval()` and `deriv_wrt_x()` to compute the gradient of the Lagrangian (Eq. 18 of the [paper](https://arxiv.org/abs/2602.05116)).
 
@@ -163,4 +152,4 @@ python examples/offline/run_ofo.py \
   --training-trace data/generated/synthetic_training_trace.csv
 ```
 
-Without `--data-dir`, simulation drivers default to `power_csvs_updated/` (legacy hand-curated data).
+`--data-dir` and `--training-trace` are required for all simulation drivers.

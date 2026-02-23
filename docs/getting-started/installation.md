@@ -44,7 +44,7 @@ The project uses PEP 735 dependency groups managed by uv:
 | `dev` | Everything below | `uv sync` (default) |
 | `test` | pytest | `uv sync --group test` |
 | `lint` | ruff, pyright | `uv sync --group lint` |
-| `docs` | mkdocs-material, mkdocstrings | `uv sync --group docs` |
+| `docs` | zensical, mkdocstrings | `uv sync --group docs` |
 | `examples` | openg2g[opendss], matplotlib | `uv sync --group examples` |
 
 ### Verify the Installation
@@ -54,3 +54,7 @@ uv run pytest tests/ -v
 ```
 
 All tests should pass. Tests that require OpenDSS will be skipped if `opendssdirect.py` is not installed.
+
+## Next Steps
+
+To run simulations, you'll need to build the data artifacts first. See [Running a Simulation](running.md) for data requirements and [Data Pipeline](../guide/data-pipeline.md) for the full build process.

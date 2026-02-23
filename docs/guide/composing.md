@@ -34,18 +34,15 @@ Every `run()` call follows the sequence: `reset()` all -> `start()` all -> simul
 
 ### Offline (Trace Replay)
 
-The `OfflineDatacenter` replays CSV power traces. You first load traces into a cache, build periodic templates, then create the datacenter.
+The `OfflineDatacenter` replays CSV power traces. You first load traces from a manifest into a `PowerTraceStore`, build periodic templates, then create the datacenter.
 
 #### Direct construction
 
 ```python
-from openg2g.datacenter.offline import (
-    OfflineDatacenter,
-    PowerTraceCache,
-    load_power_traces_from_dir,
-)
+from openg2g.datacenter.offline import OfflineDatacenter, PowerTraceStore
+from openg2g.datacenter.layout import RampActivationStrategy
 from openg2g.models.spec import LLMInferenceModelSpec
-from openg2g.types import ScheduleActivationPolicy, ServerRamp, ServerRampSchedule
+from openg2g.datacenter.config import ServerRamp, ServerRampSchedule
 
 models = [
     LLMInferenceModelSpec(
@@ -56,24 +53,21 @@ models = [
     ),
 ]
 
-power_traces = load_power_traces_from_dir(
-    base_dir="power_csvs_updated",
-    batch_set=[128],
-    required_measured_gpus={m.model_label: m.gpus_per_replica for m in models},
-)
-
-cache = PowerTraceCache.from_traces(power_traces, duration_s=3600.0, timestep_s=0.1)
+store = PowerTraceStore.load("data/generated/traces_summary.csv")
+store.build_templates(duration_s=3600.0, timestep_s=0.1)
 
 dc = OfflineDatacenter(
-    power_trace_cache=cache,
+    trace_store=store,
     models=models,
     timestep_s=0.1,
     gpus_per_server=8,
     seed=0,
-    activation_policy=ScheduleActivationPolicy(
+    amplitude_scale_range=(0.98, 1.02),
+    noise_fraction=0.005,
+    activation_strategy=RampActivationStrategy(
         ServerRampSchedule(entries=(ServerRamp(t_start=2500.0, t_end=3000.0, target=0.2),))
     ),
-    base_kW_per_phase=500.0,
+    base_kw_per_phase=500.0,
 )
 ```
 
@@ -83,9 +77,12 @@ For more complex setups (training overlays, server ramp schedules), use the `fro
 
 ```python
 from openg2g.datacenter.config import DatacenterConfig, WorkloadConfig
-from openg2g.datacenter.offline import OfflineDatacenter, PowerTraceCache
+from openg2g.datacenter.offline import OfflineDatacenter, PowerTraceStore
 from openg2g.models.spec import LLMInferenceModelSpec, LLMInferenceWorkload
 from openg2g.types import ServerRamp, TrainingRun
+
+store = PowerTraceStore.load("data/generated/traces_summary.csv")
+store.build_templates(duration_s=3600.0, timestep_s=0.1)
 
 workload = WorkloadConfig(
     inference=LLMInferenceWorkload(models=(
@@ -101,11 +98,13 @@ workload = WorkloadConfig(
 )
 
 dc = OfflineDatacenter.from_config(
-    datacenter=DatacenterConfig(gpus_per_server=8, base_kW_per_phase=500.0),
+    datacenter=DatacenterConfig(gpus_per_server=8, base_kw_per_phase=500.0),
     workload=workload,
-    power_trace_cache=cache,
+    trace_store=store,
     timestep_s=0.1,
     seed=0,
+    amplitude_scale_range=(0.98, 1.02),
+    noise_fraction=0.005,
 )
 ```
 
@@ -214,16 +213,16 @@ coord = Coordinator(
 )
 ```
 
-Tap changes are typically configured via the `tap_schedule` parameter on `OpenDSSGrid` (using the `TapPosition` fluent API) rather than through `TapScheduleController`. Actions from all controllers are applied before the next tick.
+Initial tap positions are set via the `initial_tap_position` parameter on `OpenDSSGrid` (using the `TapPosition` API). Scheduled changes are handled by `TapScheduleController`. Actions from all controllers are applied before the next tick.
 
-### Command Kinds
+### Command Types
 
-Built-in controllers currently emit two command kinds:
+Commands are typed dataclasses routed to backends via `singledispatchmethod`:
 
-- `set_batch_size` (target `datacenter`) with payload key `batch_size_by_model`
-- `set_taps` (target `grid`) with payload key `tap_changes`
+- `SetBatchSize(batch_size_by_model=...)` -- datacenter command
+- `SetTaps(tap_position=...)` -- grid command
 
-Backends validate command payloads and raise clear errors on unsupported kinds.
+Backends raise `TypeError` for unsupported command types.
 
 Controller interface summary:
 
@@ -261,17 +260,14 @@ from openg2g.metrics.voltage import compute_allbus_voltage_stats
 stats = compute_allbus_voltage_stats(log.grid_states, v_min=0.95, v_max=1.05)
 print(f"Violation time: {stats.violation_time_s:.1f} s")
 
-# Plotting (see examples/plotting.py for reusable plot functions)
-from examples.plotting import plot_power_3ph, plot_allbus_voltages_per_phase
+# Plotting -- the example scripts in examples/offline/ import shared plot
+# functions from plotting.py (a sibling module in that directory).
+# See examples/offline/plotting.py for reusable plot functions.
 import numpy as np
-
-plot_power_3ph(
-    np.array(log.time_s),
-    np.array(log.kW_A),
-    np.array(log.kW_B),
-    np.array(log.kW_C),
-    save_path="power.png",
-)
+time_s = np.array(log.time_s)
+kW_A = np.array(log.kW_A)
+kW_B = np.array(log.kW_B)
+kW_C = np.array(log.kW_C)
 ```
 
 ## Configuration Sweeps
@@ -285,7 +281,7 @@ from openg2g.grid.opendss import OpenDSSGrid
 grid = OpenDSSGrid(...)  # stores config only (cheap)
 
 for batch_init in [64, 128, 256, 512]:
-    dc = OfflineDatacenter(power_trace_cache=cache, models=models, ...)
+    dc = OfflineDatacenter(trace_store=store, models=models, ...)
     ctrl = OFOBatchController(models=models, ...)
     coord = Coordinator(dc, grid, [ctrl], total_duration_s=3600, dc_bus="671")
     log = coord.run()  # reset -> start (compile DSS) -> loop -> stop

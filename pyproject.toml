@@ -22,7 +22,7 @@ opendss = ["opendssdirect.py"]
 [dependency-groups]
 test = ["pytest"]
 lint = ["ruff", "ty"]
-docs = ["mkdocs-material", "mkdocstrings[python]"]
+docs = ["zensical", "mkdocstrings[python]"]
 examples = ["openg2g[opendss]", "matplotlib", "datasets", "openai", "pyyaml"]
 dev = [
     {include-group = "test"},

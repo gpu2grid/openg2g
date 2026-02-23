@@ -40,7 +40,7 @@ uv sync
 from fractions import Fraction
 
 from openg2g.coordinator import Coordinator
-from openg2g.datacenter.offline import OfflineDatacenter, TraceByBatchCache
+from openg2g.datacenter.offline import OfflineDatacenter, PowerTraceStore
 from openg2g.grid.opendss import OpenDSSGrid
 from openg2g.controller.noop import NoopController
 from openg2g.models.spec import LLMInferenceModelSpec
@@ -51,9 +51,9 @@ models = [
     LLMInferenceModelSpec("Llama-3.1-8B", num_replicas=720, gpus_per_replica=1, initial_batch_size=128),
     LLMInferenceModelSpec("Llama-3.1-70B", num_replicas=180, gpus_per_replica=4, initial_batch_size=128),
 ]
-cache = TraceByBatchCache(traces_by_batch)
-cache.build_templates(duration_s=3600, timestep_s=Fraction(1, 10))
-dc = OfflineDatacenter(trace_cache=cache, models=models, timestep_s=Fraction(1, 10))
+store = PowerTraceStore.load("data/generated/traces_summary.csv")
+store.build_templates(duration_s=3600, timestep_s=Fraction(1, 10))
+dc = OfflineDatacenter(trace_store=store, models=models, timestep_s=Fraction(1, 10))
 
 # 2. Set up the grid
 TAP_STEP = 0.00625
@@ -64,7 +64,8 @@ grid = OpenDSSGrid(
     dc_bus_kv=4.16,
     power_factor=0.95,
     dt_s=Fraction(1, 10),
-    tap_schedule=TapPosition(a=1.0 + 14 * TAP_STEP, b=1.0 + 6 * TAP_STEP, c=1.0 + 15 * TAP_STEP).at(t=0),
+    initial_tap_position=TapPosition(a=1.0 + 14 * TAP_STEP, b=1.0 + 6 * TAP_STEP, c=1.0 + 15 * TAP_STEP),
+    connection_type="wye",
 )
 
 # 3. Run the simulation
@@ -73,6 +74,7 @@ coord = Coordinator(
     grid=grid,
     controllers=[NoopController()],
     total_duration_s=3600,
+    dc_bus="671",
 )
 log = coord.run()
 ```
@@ -126,7 +128,7 @@ uv run python examples/offline/run_ofo.py \
   --training-trace data/generated/synthetic_training_trace.csv
 ```
 
-Without `--data-dir`, the simulation drivers default to the legacy `power_csvs_updated/` directory.
+`--data-dir` and `--training-trace` are required for all simulation drivers.
 
 ## Architecture
 

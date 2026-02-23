@@ -39,6 +39,17 @@ The core abstraction is a multi-rate simulation loop. A `Coordinator` ticks a sh
 
 Controllers produce `ControlAction` objects (batch size changes, tap adjustments) that are applied to the datacenter and grid before the next tick.
 
+## What Can You Explore?
+
+OpenG2G is designed for researchers studying questions like:
+
+- **Voltage regulation strategies**: How do different control algorithms (OFO, rule-based, MPC) compare in maintaining voltage limits?
+- **Latency--voltage tradeoffs**: What is the Pareto frontier between inference latency and voltage violation severity?
+- **Datacenter sizing**: How large can a GPU datacenter be on a given feeder before voltage violations become unmanageable?
+- **Grid topology effects**: How does the choice of feeder (IEEE 13-bus, 123-bus, etc.) affect controllability?
+
+See [Concepts and Background](guide/concepts.md#what-can-you-explore) for the full list of research directions.
+
 ## Getting Started
 
 - [Installation](getting-started/installation.md)
