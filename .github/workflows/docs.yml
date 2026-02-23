@@ -7,6 +7,7 @@ on:
       - "docs/**"
       - "_zensical.toml"
       - "openg2g/**"
+      - "scripts/gen_api_docs.py"
 
 permissions:
   contents: read
