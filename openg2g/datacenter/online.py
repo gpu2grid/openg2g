@@ -990,7 +990,9 @@ class OnlineDatacenter(LLMBatchSizeControlledDatacenter[OnlineDatacenterState]):
             if old != b_int:
                 dep = self._deployment_map.get(label)
                 if dep is not None:
-                    _set_vllm_batch_size(dep.vllm_base_url, b_int, ramp_up_rate=command.ramp_up_rate)
+                    _set_vllm_batch_size(
+                        dep.vllm_base_url, b_int, ramp_up_rate=command.ramp_up_rate_by_model.get(label, 0.0)
+                    )
                     self._load_gen.set_batch_size(label, b_int)
                 logger.info("Batch size %s: %s -> %d", label, old, b_int)
 

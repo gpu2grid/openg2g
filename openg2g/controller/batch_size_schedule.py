@@ -119,7 +119,7 @@ class BatchSizeScheduleController(Controller[DatacenterBackend, GridBackend]):
     ) -> ControlAction:
         t_now = clock.time_s
         batch_changes: dict[str, int] = {}
-        ramp_up_rate: float = 0.0
+        ramp_rates: dict[str, float] = {}
 
         for label, schedule in self._schedules.items():
             entries = list(schedule)
@@ -130,7 +130,7 @@ class BatchSizeScheduleController(Controller[DatacenterBackend, GridBackend]):
                 if float(t_ev) <= t_now + 1e-12:
                     batch_changes[label] = change.batch_size
                     if change.ramp_up_rate > 0:
-                        ramp_up_rate = max(ramp_up_rate, change.ramp_up_rate)
+                        ramp_rates[label] = change.ramp_up_rate
                     idx += 1
                 else:
                     break
@@ -142,7 +142,7 @@ class BatchSizeScheduleController(Controller[DatacenterBackend, GridBackend]):
                 commands=[
                     SetBatchSize(
                         batch_size_by_model=batch_changes,
-                        ramp_up_rate=ramp_up_rate,
+                        ramp_up_rate_by_model=ramp_rates,
                     )
                 ]
             )

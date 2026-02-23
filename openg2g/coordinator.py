@@ -13,7 +13,7 @@ from openg2g.clock import SimulationClock
 from openg2g.controller.base import Controller
 from openg2g.datacenter.base import DatacenterBackend, DCStateT
 from openg2g.events import EventEmitter, SimEvent
-from openg2g.grid.base import GridBackend, GridStateT
+from openg2g.grid.base import GridBackend, GridStateT, PhaseVoltages
 from openg2g.types import (
     Command,
     ControlAction,
@@ -53,8 +53,6 @@ class SimulationLog(Generic[DCStateT, GridStateT]):
         kW_A: DC load power phase A at each grid step (kW).
         kW_B: DC load power phase B at each grid step (kW).
         kW_C: DC load power phase C at each grid step (kW).
-        batch_log_by_model: Per-model batch size history (populated only when
-            controllers emit batch changes).
         events: Clock-stamped simulation events from all components.
     """
 
@@ -71,20 +69,19 @@ class SimulationLog(Generic[DCStateT, GridStateT]):
     kW_B: list[float] = field(default_factory=list)
     kW_C: list[float] = field(default_factory=list)
 
-    batch_log_by_model: dict[str, list[int]] = field(default_factory=dict)
     events: list[SimEvent] = field(default_factory=list)
 
     def record_dc(self, state: DCStateT) -> None:
         self.dc_states.append(state)
 
-    def record_grid(self, state: GridStateT, *, dc_bus: str = "671") -> None:
+    def record_grid(self, state: GridStateT, *, dc_bus: str) -> None:
         self.grid_states.append(state)
         self.time_s.append(state.time_s)
 
         v_dc = (
             state.voltages[dc_bus]
             if dc_bus in state.voltages
-            else ThreePhase(a=float("nan"), b=float("nan"), c=float("nan"))
+            else PhaseVoltages(a=float("nan"), b=float("nan"), c=float("nan"))
         )
         self.voltage_a_pu.append(v_dc.a)
         self.voltage_b_pu.append(v_dc.b)
@@ -99,22 +96,9 @@ class SimulationLog(Generic[DCStateT, GridStateT]):
         self.kW_B.append(power_w.b / 1e3)
         self.kW_C.append(power_w.c / 1e3)
 
-    def record_batch(self, batch_by_model: dict[str, int]) -> None:
-        for label, b in batch_by_model.items():
-            if label not in self.batch_log_by_model:
-                self.batch_log_by_model[label] = []
-            self.batch_log_by_model[label].append(int(b))
-
     def emit(self, event: SimEvent) -> None:
         """Event sink entrypoint for component-originated events."""
         self.events.append(event)
-        if event.topic == "datacenter.batch_size.updated":
-            if "batch_size_by_model" not in event.data:
-                raise ValueError("Event datacenter.batch_size.updated missing required data['batch_size_by_model'].")
-            batch_map = event.data["batch_size_by_model"]
-            if not isinstance(batch_map, dict):
-                raise ValueError("Event datacenter.batch_size.updated requires data['batch_size_by_model'] as dict.")
-            self.record_batch({str(k): int(v) for k, v in batch_map.items()})
 
 
 class Coordinator(Generic[DCStateT, GridStateT]):
@@ -141,7 +125,7 @@ class Coordinator(Generic[DCStateT, GridStateT]):
         grid: GridBackend[GridStateT],
         controllers: Sequence[Controller[Any, Any]],
         total_duration_s: int,
-        dc_bus: str = "671",
+        dc_bus: str,
         live: bool = False,
     ) -> None:
         self.datacenter = datacenter

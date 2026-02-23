@@ -11,7 +11,7 @@ from openg2g.controller.base import Controller
 from openg2g.datacenter.base import DatacenterBackend, DatacenterState, LLMBatchSizeControlledDatacenter
 from openg2g.datacenter.offline import OfflineDatacenterState
 from openg2g.events import EventEmitter
-from openg2g.grid.base import BusVoltages, GridBackend, GridState
+from openg2g.grid.base import BusVoltages, GridBackend, GridState, PhaseVoltages
 from openg2g.grid.opendss import OpenDSSGrid
 from openg2g.types import ControlAction, DatacenterCommand, GridCommand, ThreePhase
 
@@ -64,7 +64,7 @@ class _Grid(GridBackend[GridState]):
     ) -> GridState:
         return GridState(
             time_s=clock.time_s,
-            voltages=BusVoltages({"671": ThreePhase(1.0, 1.0, 1.0)}),
+            voltages=BusVoltages({"671": PhaseVoltages(1.0, 1.0, 1.0)}),
         )
 
     def apply_control(self, command: GridCommand) -> None:

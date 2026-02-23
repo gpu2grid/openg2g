@@ -137,7 +137,7 @@ At simulation time, the generated CSV artifacts are consumed at two points:
   ┌─────────── RUN TIME (every simulation) ─────────────────────────────┐
   │                                                                     │
   │   OfflineDatacenter reads:                                          │
-  │     traces/*.csv ──> TraceByBatchCache (periodic power templates)   │
+  │     traces/*.csv ──> PowerTraceCache (periodic power templates)   │
   │     latency_fits.csv ──> ITLMixtureModel.sample_avg() per step      │
   │                                                                     │
   │   OFO Controller reads:                                             │
@@ -147,7 +147,7 @@ At simulation time, the generated CSV artifacts are consumed at two points:
   └─────────────────────────────────────────────────────────────────────┘
 ```
 
-- **OfflineDatacenter**: Loads power trace CSVs into `TraceByBatchCache`, which tiles them into periodic templates. At each step, the datacenter indexes into these templates to produce per-server power. Latency fits are loaded as `ITLMixtureModel` instances and sampled at each control interval.
+- **OfflineDatacenter**: Loads power trace CSVs into `PowerTraceCache`, which tiles them into periodic templates. At each step, the datacenter indexes into these templates to produce per-server power. Latency fits are loaded as `ITLMixtureModel` instances and sampled at each control interval.
 
 - **OFO Controller**: Loads logistic fits as `LogisticModel` instances (one per metric per model). At each control step, it calls `eval()` and `deriv_wrt_x()` to compute the gradient of the Lagrangian (Eq. 18 of the [paper](https://arxiv.org/abs/2602.05116)).
 

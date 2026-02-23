@@ -133,7 +133,7 @@ class TestBatchSizeScheduleController:
         assert cmd.batch_size_by_model["model-a"] == 48
         assert cmd.batch_size_by_model["model-b"] == 64
 
-    def test_ramp_up_rate_in_payload(self) -> None:
+    def test_ramp_up_rate_per_model(self) -> None:
         schedule = BatchSizeChange(32, ramp_up_rate=4.0).at(10)
         ctrl = BatchSizeScheduleController(
             schedules={"model-a": schedule},
@@ -146,7 +146,7 @@ class TestBatchSizeScheduleController:
         action = ctrl.step(self._make_clock(10.0), dc, grid, events)
         cmd = action.commands[0]
         assert isinstance(cmd, SetBatchSize)
-        assert cmd.ramp_up_rate == 4.0
+        assert cmd.ramp_up_rate_by_model == {"model-a": 4.0}
 
     def test_no_ramp_up_rate_when_zero(self) -> None:
         schedule = BatchSizeChange(32).at(10)
@@ -161,7 +161,24 @@ class TestBatchSizeScheduleController:
         action = ctrl.step(self._make_clock(10.0), dc, grid, events)
         cmd = action.commands[0]
         assert isinstance(cmd, SetBatchSize)
-        assert cmd.ramp_up_rate == 0.0
+        assert cmd.ramp_up_rate_by_model == {}
+
+    def test_mixed_ramp_rates_per_model(self) -> None:
+        schedules = {
+            "model-a": BatchSizeChange(32, ramp_up_rate=4.0).at(10),
+            "model-b": BatchSizeChange(64, ramp_up_rate=8.0).at(10),
+            "model-c": BatchSizeChange(128).at(10),
+        }
+        ctrl = BatchSizeScheduleController(schedules=schedules, dt_s=Fraction(1))
+        dc = MagicMock()
+        grid = MagicMock()
+        events = MagicMock()
+
+        action = ctrl.step(self._make_clock(10.0), dc, grid, events)
+        cmd = action.commands[0]
+        assert isinstance(cmd, SetBatchSize)
+        assert cmd.ramp_up_rate_by_model == {"model-a": 4.0, "model-b": 8.0}
+        assert "model-c" not in cmd.ramp_up_rate_by_model
 
     def test_dt_s(self) -> None:
         ctrl = BatchSizeScheduleController(schedules={}, dt_s=Fraction(2))

@@ -1,5 +1,5 @@
 """Tests for openg2g.types — state dataclasses, TapPosition, TapSchedule, ServerRamp,
-ServerRampSchedule, ServerActivationPolicy, TrainingRun, TrainingSchedule."""
+ServerRampSchedule, ActivationStrategy, TrainingRun, TrainingSchedule."""
 
 from __future__ import annotations
 
@@ -9,9 +9,9 @@ import numpy as np
 import pytest
 
 from openg2g.datacenter.config import ServerRamp, ServerRampSchedule, TrainingRun, TrainingSchedule
-from openg2g.datacenter.offline import ScheduleActivationPolicy, ServerActivationPolicy
+from openg2g.datacenter.layout import ActivationStrategy, RampActivationStrategy
 from openg2g.datacenter.online import OnlineDatacenterState
-from openg2g.grid.base import BusVoltages, GridState
+from openg2g.grid.base import BusVoltages, GridState, PhaseVoltages
 from openg2g.types import TapPosition, TapSchedule, ThreePhase
 
 
@@ -268,7 +268,7 @@ class TestGridState:
     def test_tap_positions_default_none(self) -> None:
         state = GridState(
             time_s=0.0,
-            voltages=BusVoltages({"671": ThreePhase(a=1.0, b=1.0, c=1.0)}),
+            voltages=BusVoltages({"671": PhaseVoltages(a=1.0, b=1.0, c=1.0)}),
         )
         assert state.tap_positions is None
 
@@ -276,7 +276,7 @@ class TestGridState:
         taps = TapPosition(a=1.0875, b=1.0375, c=1.09375)
         state = GridState(
             time_s=1.0,
-            voltages=BusVoltages({"671": ThreePhase(a=0.98, b=0.99, c=1.01)}),
+            voltages=BusVoltages({"671": PhaseVoltages(a=0.98, b=0.99, c=1.01)}),
             tap_positions=taps,
         )
         assert state.tap_positions is taps
@@ -313,11 +313,11 @@ class TestOnlineDatacenterState:
         assert state.augmentation_factor_by_model == {}
 
 
-class TestScheduleActivationPolicy:
+class TestRampActivationStrategy:
     def test_all_active_before_ramp(self) -> None:
         """Before the first ramp, all servers should be active."""
         schedule = ServerRampSchedule(entries=(ServerRamp(t_start=1000, t_end=2000, target=0.5),))
-        policy = ScheduleActivationPolicy(schedule)
+        policy = RampActivationStrategy(schedule)
         rng = np.random.default_rng(42)
         bound = policy.for_model(num_servers=10, phase_list=np.zeros(10, dtype=int), rng=rng)
         mask = bound.active_mask(0.0)
@@ -326,7 +326,7 @@ class TestScheduleActivationPolicy:
     def test_ramp_down(self) -> None:
         """After ramp completes, only the target fraction of servers should be active."""
         schedule = ServerRampSchedule(entries=(ServerRamp(t_start=0, t_end=0, target=0.5),))
-        policy = ScheduleActivationPolicy(schedule)
+        policy = RampActivationStrategy(schedule)
         rng = np.random.default_rng(42)
         bound = policy.for_model(num_servers=10, phase_list=np.zeros(10, dtype=int), rng=rng)
         mask = bound.active_mask(1.0)
@@ -335,7 +335,7 @@ class TestScheduleActivationPolicy:
     def test_ramp_up(self) -> None:
         """Ramp up: start at 0.2, ramp to 1.0."""
         schedule = ServerRamp(t_start=0, t_end=0, target=0.2) | ServerRamp(t_start=100, t_end=100, target=1.0)
-        policy = ScheduleActivationPolicy(schedule)
+        policy = RampActivationStrategy(schedule)
         rng = np.random.default_rng(42)
         bound = policy.for_model(num_servers=10, phase_list=np.zeros(10, dtype=int), rng=rng)
         mask_low = bound.active_mask(50.0)
@@ -346,7 +346,7 @@ class TestScheduleActivationPolicy:
     def test_ramp_up_servers_superset(self) -> None:
         """Servers active at low fraction should be a subset of those active at high fraction."""
         schedule = ServerRamp(t_start=0, t_end=0, target=0.3) | ServerRamp(t_start=100, t_end=100, target=0.7)
-        policy = ScheduleActivationPolicy(schedule)
+        policy = RampActivationStrategy(schedule)
         rng = np.random.default_rng(42)
         bound = policy.for_model(num_servers=10, phase_list=np.zeros(10, dtype=int), rng=rng)
         mask_low = bound.active_mask(50.0)
@@ -356,7 +356,7 @@ class TestScheduleActivationPolicy:
     def test_deterministic_with_same_seed(self) -> None:
         """Same seed should produce the same activation mask."""
         schedule = ServerRampSchedule(entries=(ServerRamp(t_start=0, t_end=0, target=0.5),))
-        policy = ScheduleActivationPolicy(schedule)
+        policy = RampActivationStrategy(schedule)
         bound1 = policy.for_model(num_servers=20, phase_list=np.zeros(20, dtype=int), rng=np.random.default_rng(0))
         bound2 = policy.for_model(num_servers=20, phase_list=np.zeros(20, dtype=int), rng=np.random.default_rng(0))
         np.testing.assert_array_equal(bound1.active_mask(1.0), bound2.active_mask(1.0))
@@ -366,7 +366,7 @@ class TestScheduleActivationPolicy:
         phase_list = np.array([0, 0, 0, 1, 1, 1, 2, 2, 2, 2])
         received: dict[str, object] = {}
 
-        class _RecordingPolicy(ServerActivationPolicy):
+        class _RecordingPolicy(ActivationStrategy):
             def for_model(self, *, num_servers, phase_list, rng):
                 received["num_servers"] = num_servers
                 received["phase_list"] = phase_list

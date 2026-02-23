@@ -9,7 +9,7 @@ from openg2g.clock import SimulationClock
 from openg2g.controller.ofo import OFOBatchController, PrimalConfig, VoltageDualConfig
 from openg2g.datacenter.base import LLMBatchSizeControlledDatacenter, LLMDatacenterState
 from openg2g.events import EventEmitter, SimEvent
-from openg2g.grid.base import BusVoltages, GridState
+from openg2g.grid.base import BusVoltages, GridState, PhaseVoltages
 from openg2g.grid.opendss import OpenDSSGrid
 from openg2g.models.spec import LLMInferenceModelSpec
 from openg2g.types import DatacenterCommand, GridCommand, ThreePhase
@@ -61,7 +61,7 @@ class _GridStub(OpenDSSGrid):
     ) -> GridState:
         self._state = GridState(
             time_s=clock.time_s,
-            voltages=BusVoltages({"671": ThreePhase(a=0.94, b=0.96, c=1.01)}),
+            voltages=BusVoltages({"671": PhaseVoltages(a=0.94, b=0.96, c=1.01)}),
         )
         self._history.append(self._state)
         return self._state
@@ -167,7 +167,7 @@ def test_ofo_uses_observed_latency_for_dual_update():
     )
     grid_state = GridState(
         time_s=0.0,
-        voltages=BusVoltages({"671": ThreePhase(a=0.94, b=0.96, c=1.01)}),
+        voltages=BusVoltages({"671": PhaseVoltages(a=0.94, b=0.96, c=1.01)}),
     )
     dc.set_state(dc_state)
     grid.set_state(grid_state)

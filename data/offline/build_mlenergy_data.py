@@ -17,6 +17,8 @@ import pandas as pd
 from mlenergy_data.modeling import ITLMixtureModel, LogisticModel
 from mlenergy_data.records import LLMRuns
 
+from openg2g.datacenter.offline import PowerTraceStore
+
 logger = logging.getLogger("build_mlenergy_data")
 
 
@@ -28,7 +30,11 @@ def _emit_trace_bank(*, tl: pd.DataFrame, dt_s: float, out_dir: Path) -> pd.Data
     traces_dir.mkdir(parents=True, exist_ok=True)
 
     summary_rows: list[dict[str, Any]] = []
-    keys = ["model_label", "num_gpus", "max_num_seqs"]
+    keys = [
+        PowerTraceStore.MANIFEST_COL_MODEL_LABEL,
+        PowerTraceStore.MANIFEST_COL_NUM_GPUS,
+        PowerTraceStore.MANIFEST_COL_BATCH_SIZE,
+    ]
     for key, g in tl.groupby(keys, dropna=False):
         assert isinstance(key, tuple)
         model_label, num_gpus, batch = str(key[0]), cast(int, key[1]), cast(int, key[2])
@@ -56,20 +62,20 @@ def _emit_trace_bank(*, tl: pd.DataFrame, dt_s: float, out_dir: Path) -> pd.Data
         p_med = np.median(mat, axis=0)
 
         trace_name = f"{model_label}_num_gpus_{int(num_gpus)}_max_num_seqs_{int(batch)}.csv"
-        pd.DataFrame({"relative_time_s": grid, "power_total_W": p_med}).to_csv(
+        pd.DataFrame({PowerTraceStore.TRACE_COL_TIME: grid, PowerTraceStore.TRACE_COL_POWER: p_med}).to_csv(
             traces_dir / trace_name,
             index=False,
         )
 
         summary_rows.append(
             {
-                "model_label": str(model_label),
-                "num_gpus": int(num_gpus),
-                "max_num_seqs": int(batch),
+                PowerTraceStore.MANIFEST_COL_MODEL_LABEL: str(model_label),
+                PowerTraceStore.MANIFEST_COL_NUM_GPUS: int(num_gpus),
+                PowerTraceStore.MANIFEST_COL_BATCH_SIZE: int(batch),
                 "n_runs": int(len(series_list)),
                 "duration_s_median": t_end,
                 "power_total_w_median": float(np.median(p_med)),
-                "trace_file": f"traces/{trace_name}",
+                PowerTraceStore.MANIFEST_COL_TRACE_FILE: f"traces/{trace_name}",
             }
         )
 

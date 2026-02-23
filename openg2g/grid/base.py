@@ -25,6 +25,18 @@ class Phase(str, Enum):
 
 
 @dataclass(frozen=True)
+class PhaseVoltages:
+    """Per-phase voltage magnitudes in per-unit.
+
+    Phases missing from the bus have NaN for that field.
+    """
+
+    a: float
+    b: float
+    c: float
+
+
+@dataclass(frozen=True)
 class BusVoltages:
     """Per-bus, per-phase voltage map.
 
@@ -32,9 +44,9 @@ class BusVoltages:
     Buses missing a phase have NaN for that field.
     """
 
-    _data: dict[str, ThreePhase]
+    _data: dict[str, PhaseVoltages]
 
-    def __getitem__(self, bus: str) -> ThreePhase:
+    def __getitem__(self, bus: str) -> PhaseVoltages:
         return self._data[bus]
 
     def buses(self) -> list[str]:

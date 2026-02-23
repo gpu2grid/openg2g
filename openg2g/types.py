@@ -127,11 +127,12 @@ class SetBatchSize(DatacenterCommand):
 
     Attributes:
         batch_size_by_model: Mapping of model label to target batch size.
-        ramp_up_rate: Requests/second ramp-up rate. 0 means immediate.
+        ramp_up_rate_by_model: Per-model requests/second ramp-up rate.
+            Models not present get immediate changes (rate 0).
     """
 
     batch_size_by_model: dict[str, int]
-    ramp_up_rate: float = 0.0
+    ramp_up_rate_by_model: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

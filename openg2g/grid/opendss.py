@@ -16,7 +16,7 @@ import numpy as np
 
 from openg2g.clock import SimulationClock
 from openg2g.events import EventEmitter
-from openg2g.grid.base import BusVoltages, GridBackend, GridState
+from openg2g.grid.base import BusVoltages, GridBackend, GridState, PhaseVoltages
 from openg2g.types import GridCommand, SetTaps, TapPosition, ThreePhase
 
 if TYPE_CHECKING:
@@ -433,7 +433,7 @@ class OpenDSSGrid(GridBackend[GridState]):
         for i, (bus, phase) in enumerate(self._node_map):
             if 1 <= phase <= 3:
                 vals[bus][phase - 1] = float(vmag[i])
-        data = {bus: ThreePhase(a=v[0], b=v[1], c=v[2]) for bus, v in vals.items()}
+        data = {bus: PhaseVoltages(a=v[0], b=v[1], c=v[2]) for bus, v in vals.items()}
         return BusVoltages(_data=data)
 
     def _build_v_index(self) -> list[tuple[str, int]]:

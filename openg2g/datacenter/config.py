@@ -197,16 +197,53 @@ class DatacenterConfig:
             raise ValueError(f"gpus_per_server must be >= 1, got {self.gpus_per_server}.")
 
 
-@dataclass(frozen=True)
 class WorkloadConfig:
     """What runs in the datacenter: inference, training, and ramp events.
 
-    Attributes:
+    Accepts flexible input types and normalizes them internally:
+    - A single `TrainingRun` is wrapped in a `TrainingSchedule`.
+    - A single `ServerRamp` is wrapped in a `ServerRampSchedule`.
+    - `None` yields an empty schedule.
+
+    Properties always return schedule types, eliminating `isinstance`
+    checks at consumption sites.
+
+    Args:
         inference: LLM inference workload specification.
-        training: Training workload window(s).  `None` disables training overlay.
-        server_ramps: Server ramp event(s).  `None` keeps all servers active.
+        training: Training workload window(s). `None` disables training overlay.
+        server_ramps: Server ramp event(s). `None` keeps all servers active.
     """
 
-    inference: LLMInferenceWorkload
-    training: TrainingRun | TrainingSchedule | None = None
-    server_ramps: ServerRamp | ServerRampSchedule | None = None
+    def __init__(
+        self,
+        inference: LLMInferenceWorkload,
+        training: TrainingRun | TrainingSchedule | None = None,
+        server_ramps: ServerRamp | ServerRampSchedule | None = None,
+    ) -> None:
+        self._inference = inference
+
+        if training is None:
+            self._training = TrainingSchedule(entries=())
+        elif isinstance(training, TrainingRun):
+            self._training = TrainingSchedule(entries=(training,))
+        else:
+            self._training = training
+
+        if server_ramps is None:
+            self._server_ramps = ServerRampSchedule(entries=())
+        elif isinstance(server_ramps, ServerRamp):
+            self._server_ramps = ServerRampSchedule(entries=(server_ramps,))
+        else:
+            self._server_ramps = server_ramps
+
+    @property
+    def inference(self) -> LLMInferenceWorkload:
+        return self._inference
+
+    @property
+    def training(self) -> TrainingSchedule:
+        return self._training
+
+    @property
+    def server_ramps(self) -> ServerRampSchedule:
+        return self._server_ramps

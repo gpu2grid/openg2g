@@ -185,7 +185,7 @@ grid = OpenDSSGrid(...)  # stores config only (cheap)
 for config in sweep_configs:
     dc = OfflineDatacenter(**config)  # builds power templates (expensive, reusable)
     ctrl = OFOBatchController(...)
-    coord = Coordinator(dc, grid, [ctrl], total_duration_s=3600)
+    coord = Coordinator(dc, grid, [ctrl], total_duration_s=3600, dc_bus="671")
     log = coord.run()  # reset -> start (compile DSS) -> loop -> stop
 ```
 
@@ -280,7 +280,7 @@ Online Feedback Optimization (primal-dual) regulates batch sizes to keep voltage
   ┌─────────── RUN TIME (every simulation) ─────────────────────┐
   │                                                              │
   │   OfflineDatacenter reads:                                   │
-  │     traces/*.csv ──> TraceByBatchCache (power templates)     │
+  │     traces/*.csv ──> PowerTraceCache (power templates)     │
   │     latency_fits.csv ──> ITLMixtureModel.sample_avg()        │
   │                                                              │
   │   OFO Controller reads:                                      │

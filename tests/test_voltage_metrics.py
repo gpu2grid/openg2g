@@ -6,9 +6,8 @@ import math
 
 import pytest
 
-from openg2g.grid.base import BusVoltages, GridState
+from openg2g.grid.base import BusVoltages, GridState, PhaseVoltages
 from openg2g.metrics.voltage import compute_allbus_voltage_stats
-from openg2g.types import ThreePhase
 
 
 def _make_grid_state(
@@ -16,7 +15,7 @@ def _make_grid_state(
     bus_voltages: dict[str, tuple[float, float, float]],
 ) -> GridState:
     """Helper to build a GridState from a dict of bus -> (va, vb, vc)."""
-    data = {bus: ThreePhase(a=v[0], b=v[1], c=v[2]) for bus, v in bus_voltages.items()}
+    data = {bus: PhaseVoltages(a=v[0], b=v[1], c=v[2]) for bus, v in bus_voltages.items()}
     return GridState(time_s=time_s, voltages=BusVoltages(_data=data))
 
 

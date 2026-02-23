@@ -273,11 +273,14 @@ def main(args: argparse.Namespace) -> None:
     logger.info("  integral_violation     = %.5f pu·s", stats.integral_violation_pu_s)
 
     logger.info("=== Batch Schedule Summary ===")
-    for label, batches in log.batch_log_by_model.items():
-        if batches:
-            avg = np.mean(batches)
-            changes = sum(1 for i in range(1, len(batches)) if batches[i] != batches[i - 1])
-            logger.info("  %s: avg_batch=%.1f, changes=%d", label, avg, changes)
+    if log.dc_states:
+        model_labels = sorted(log.dc_states[0].batch_size_by_model.keys())
+        for label in model_labels:
+            batches = np.array([s.batch_size_by_model.get(label, 0) for s in log.dc_states])
+            if batches.size:
+                avg = float(np.mean(batches))
+                changes = int(np.sum(np.diff(batches) != 0))
+                logger.info("  %s: avg_batch=%.1f, changes=%d", label, avg, changes)
 
     logger.info("Outputs saved to: %s", save_dir)
 

@@ -421,11 +421,9 @@ def plot_allbus_voltages_per_phase(
 
 def plot_model_timeseries_4panel(
     time_s: np.ndarray,
-    batch_log_by_model: dict[str, list[int]],
     per_model: PerModelTimeSeries,
     model_labels: list[str],
     *,
-    dt_ctrl_s: float = 1.0,
     regime_shading: bool = True,
     t_regime_edges_s: tuple[float, ...] | None = None,
     regime_colors: tuple[str, ...] | None = None,
@@ -438,10 +436,9 @@ def plot_model_timeseries_4panel(
 
     Args:
         time_s: DSS/DC time base (seconds) aligned with *per_model* arrays.
-        batch_log_by_model: {model_label: [batch_sizes]} from SimulationLog.
-        per_model: Extracted per-model time series.
+        per_model: Extracted per-model time series (batch sizes read from
+            `per_model.batch_size`).
         model_labels: Ordered model labels for consistent color assignment.
-        dt_ctrl_s: Controller time step (for ITL time base).
         regime_shading: If True, draw colored background spans.
         t_regime_edges_s: Edge times (seconds) for regime spans.
             Defaults to (0, 950, 2000, 2950, 3100, 3600).
@@ -517,16 +514,14 @@ def plot_model_timeseries_4panel(
 
     # (a) log2(batch)
     ax = axes[0]
-    # batch_log is at control rate; compute its time base
-    n_ctrl = max(len(v) for v in batch_log_by_model.values()) if batch_log_by_model else 0
-    t_ctrl_min = (np.arange(n_ctrl, dtype=float) * dt_ctrl_s) / 60.0
+    t_dc_min = per_model.time_s / 60.0
 
     for lab in model_labels:
-        b = np.asarray(batch_log_by_model.get(lab, []), int)
-        if b.size == 0:
+        b = per_model.batch_size.get(lab)
+        if b is None or b.size == 0:
             continue
         ax.step(
-            t_ctrl_min[: b.size],
+            t_dc_min[: b.size],
             np.log2(b),
             where="post",
             lw=lw_main,
@@ -696,8 +691,7 @@ def plot_voltage_dc_bus(
 
 
 def plot_batch_schedule(
-    batch_log_by_model: dict[str, list[int]],
-    dt_ctrl_s: float,
+    per_model: PerModelTimeSeries,
     *,
     save_path: Path | str | None = None,
     title: str = "Per-model batch schedule (closed-loop)",
@@ -705,10 +699,9 @@ def plot_batch_schedule(
     """log2 batch schedule, step plot with integer y-ticks."""
     fig, ax = plt.subplots(figsize=(11, 2.6), dpi=160)
 
-    for label, b_list in batch_log_by_model.items():
-        b = np.asarray(b_list, int)
-        t_min = (np.arange(len(b), dtype=float) * dt_ctrl_s) / 60.0
-        ax.step(t_min, np.log2(b), where="post", lw=1.4, label=label)
+    t_min = per_model.time_s / 60.0
+    for label, b in per_model.batch_size.items():
+        ax.step(t_min[: b.size], np.log2(b), where="post", lw=1.4, label=label)
 
     ax.set_xlabel("Time (min)")
     ax.set_ylabel(r"$\log_2(\mathrm{batch\ size})$")

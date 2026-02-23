@@ -7,12 +7,12 @@ def test_set_batch_size_is_datacenter_command() -> None:
     cmd = SetBatchSize(batch_size_by_model={"model_a": 64})
     assert isinstance(cmd, DatacenterCommand)
     assert cmd.batch_size_by_model == {"model_a": 64}
-    assert cmd.ramp_up_rate == 0.0
+    assert cmd.ramp_up_rate_by_model == {}
 
 
 def test_set_batch_size_with_ramp() -> None:
-    cmd = SetBatchSize(batch_size_by_model={"model_a": 32}, ramp_up_rate=4.0)
-    assert cmd.ramp_up_rate == 4.0
+    cmd = SetBatchSize(batch_size_by_model={"model_a": 32}, ramp_up_rate_by_model={"model_a": 4.0})
+    assert cmd.ramp_up_rate_by_model == {"model_a": 4.0}
 
 
 def test_set_taps_is_grid_command() -> None:

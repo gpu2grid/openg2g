@@ -13,7 +13,7 @@ from openg2g.controller.base import Controller
 from openg2g.coordinator import Coordinator, _gcd_fraction
 from openg2g.datacenter.base import DatacenterBackend, DatacenterState
 from openg2g.events import EventEmitter
-from openg2g.grid.base import BusVoltages, GridBackend, GridState
+from openg2g.grid.base import BusVoltages, GridBackend, GridState, PhaseVoltages
 from openg2g.grid.opendss import OpenDSSGrid
 from openg2g.types import ControlAction, DatacenterCommand, GridCommand, SetBatchSize, ThreePhase
 
@@ -114,7 +114,7 @@ class _StubGrid(GridBackend[GridState]):
         self.step_calls.append((clock, list(power_samples_w)))
         state = GridState(
             time_s=clock.time_s,
-            voltages=BusVoltages({"671": ThreePhase(a=1.0, b=1.0, c=1.0)}),
+            voltages=BusVoltages({"671": PhaseVoltages(a=1.0, b=1.0, c=1.0)}),
         )
         self._state = state
         self._history.append(state)
@@ -292,7 +292,7 @@ def test_coordinator_exposes_clock_stamped_controller_events():
     assert abs(ev.t_s - 0.0) < 1e-12
 
 
-def test_batch_history_is_populated_from_datacenter_events():
+def test_datacenter_events_are_recorded():
     class _EventedDC(DatacenterBackend[DatacenterState]):
         def __init__(self) -> None:
             self._events: EventEmitter | None = None
@@ -346,7 +346,9 @@ def test_batch_history_is_populated_from_datacenter_events():
 
     coord = Coordinator(dc, grid, [ctrl], total_duration_s=1, dc_bus="671")
     log = coord.run()
-    assert log.batch_log_by_model["model_a"] == [64]
+    batch_events = [e for e in log.events if e.topic == "datacenter.batch_size.updated"]
+    assert len(batch_events) == 1
+    assert batch_events[0].data["batch_size_by_model"]["model_a"] == 64
 
 
 def test_controller_generic_types_auto_extracted():
@@ -487,6 +489,7 @@ def test_coordinator_warns_dt_grid_lt_dt_dc():
             _StubGrid(dt_s=Fraction(1, 2)),
             [],
             total_duration_s=1,
+            dc_bus="671",
         )
     msgs = [str(x.message) for x in w]
     assert any("dt_grid" in m and "dt_dc" in m for m in msgs)
@@ -500,6 +503,7 @@ def test_coordinator_warns_ctrl_dt_lt_grid_dt():
             _StubGrid(dt_s=Fraction(1)),
             [_StubController(dt_s=Fraction(1, 2))],
             total_duration_s=1,
+            dc_bus="671",
         )
     msgs = [str(x.message) for x in w]
     assert any("stale voltages" in m for m in msgs)

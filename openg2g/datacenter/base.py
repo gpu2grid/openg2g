@@ -118,7 +118,8 @@ class LLMBatchSizeControlledDatacenter(DatacenterBackend[DCStateT]):
     def phase_share_by_model(self) -> dict[str, np.ndarray]:
         """Per-model phase share vectors `[frac_A, frac_B, frac_C]`.
 
-        Default: uniform `[1/3, 1/3, 1/3]` for all models. Override in
-        subclasses that know actual server-to-phase placement.
+        Returns an empty dict by default. Consumers treat missing keys
+        as uniform `[1/3, 1/3, 1/3]`. Override in subclasses that know
+        actual server-to-phase placement.
         """
         return {}

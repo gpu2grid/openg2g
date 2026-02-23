@@ -183,6 +183,7 @@ coord = Coordinator(
     grid=grid,
     controllers=[ctrl],
     total_duration_s=3600,
+    dc_bus="671",
 )
 log = coord.run()
 ```

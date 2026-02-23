@@ -29,8 +29,7 @@ from openg2g.coordinator import Coordinator
 from openg2g.datacenter.config import DatacenterConfig, ServerRamp, TrainingRun, WorkloadConfig
 from openg2g.datacenter.offline import (
     OfflineDatacenter,
-    TraceByBatchCache,
-    load_traces_by_batch_from_dir,
+    PowerTraceStore,
 )
 from openg2g.grid.opendss import OpenDSSGrid
 from openg2g.metrics.voltage import compute_allbus_voltage_stats
@@ -78,21 +77,8 @@ def main(args: argparse.Namespace) -> None:
     file_handler.setFormatter(logging.Formatter("%(asctime)s %(name)s %(levelname)s %(message)s", datefmt="%H:%M:%S"))
     logging.getLogger().addHandler(file_handler)
 
-    if args.data_dir:
-        data_dir = Path(args.data_dir)
-        trace_dir = data_dir / "traces"
-    else:
-        data_dir = None
-        trace_dir = project_dir / "power_csvs_updated"
-
-    if args.training_trace:
-        training_csv = Path(args.training_trace)
-    elif args.data_dir:
-        raise FileNotFoundError(
-            "--training-trace is required when using --data-dir (training trace is not part of the build output)"
-        )
-    else:
-        training_csv = project_dir / "power_csvs_updated" / "synthetic_training_trace.csv"
+    data_dir = Path(args.data_dir)
+    training_csv = Path(args.training_trace)
 
     v_min = 0.95
     v_max = 1.05
@@ -102,22 +88,11 @@ def main(args: argparse.Namespace) -> None:
     t_total_s = 3600
 
     logger.info("Loading power traces...")
-    traces_by_batch = load_traces_by_batch_from_dir(
-        base_dir=trace_dir,
-        batch_set=[128],
-        required_measured_gpus=INFERENCE.required_measured_gpus,
-        amp_jitter_default=(0.98, 1.02),
-        noise_std_frac_default=0.005,
-    )
-
-    cache = TraceByBatchCache(traces_by_batch)
-    cache.build_templates(duration_s=600.0, timestep_s=dt_dc)
+    store = PowerTraceStore.load(data_dir / "traces_summary.csv")
+    store.build_templates(duration_s=600.0, timestep_s=dt_dc)
 
     logger.info("Loading latency fits...")
-    if data_dir is not None:
-        itl_fits = load_itl_fits_from_csv(data_dir / "latency_fits.csv")
-    else:
-        itl_fits = load_itl_fits_from_csv(trace_dir / "ALL_MODELS_latency_fit_parameters_ALL.csv")
+    itl_fits = load_itl_fits_from_csv(data_dir / "latency_fits.csv")
 
     dc_config = DatacenterConfig(gpus_per_server=gpus_per_server, base_kw_per_phase=500.0)
     workload = WorkloadConfig(
@@ -136,9 +111,11 @@ def main(args: argparse.Namespace) -> None:
     dc = OfflineDatacenter.from_config(
         dc_config,
         workload,
-        trace_cache=cache,
+        trace_store=store,
         timestep_s=dt_dc,
         seed=0,
+        amplitude_scale_range=(0.98, 1.02),
+        noise_fraction=0.005,
         itl_distributions=itl_fits,
         latency_exact_threshold=30,
         latency_seed=0,
@@ -227,14 +204,13 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--data-dir",
-        default=None,
-        help="Toolkit-generated data directory (contains traces/). Defaults to power_csvs_updated/ for legacy mode.",
+        required=True,
+        help="Toolkit-generated data directory (contains traces/, traces_summary.csv, latency_fits.csv).",
     )
     parser.add_argument(
         "--training-trace",
-        default=None,
-        help="Path to synthetic training trace CSV. Required when using "
-        "--data-dir; defaults to power_csvs_updated/synthetic_training_trace.csv.",
+        required=True,
+        help="Path to synthetic training trace CSV.",
     )
     parser.add_argument(
         "--log-level",

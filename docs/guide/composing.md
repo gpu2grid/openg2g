@@ -15,6 +15,7 @@ coord = Coordinator(
     grid=grid,
     controllers=[NoopController(dt_s=1.0)],
     total_duration_s=3600,
+    dc_bus="671",
 )
 log = coord.run()
 ```
@@ -40,8 +41,8 @@ The `OfflineDatacenter` replays CSV power traces. You first load traces into a c
 ```python
 from openg2g.datacenter.offline import (
     OfflineDatacenter,
-    TraceByBatchCache,
-    load_traces_by_batch_from_dir,
+    PowerTraceCache,
+    load_power_traces_from_dir,
 )
 from openg2g.models.spec import LLMInferenceModelSpec
 from openg2g.types import ScheduleActivationPolicy, ServerRamp, ServerRampSchedule
@@ -55,16 +56,16 @@ models = [
     ),
 ]
 
-traces_by_batch = load_traces_by_batch_from_dir(
+power_traces = load_power_traces_from_dir(
     base_dir="power_csvs_updated",
     batch_set=[128],
     required_measured_gpus={m.model_label: m.gpus_per_replica for m in models},
 )
 
-cache = TraceByBatchCache.from_traces(traces_by_batch, duration_s=3600.0, timestep_s=0.1)
+cache = PowerTraceCache.from_traces(power_traces, duration_s=3600.0, timestep_s=0.1)
 
 dc = OfflineDatacenter(
-    trace_cache=cache,
+    power_trace_cache=cache,
     models=models,
     timestep_s=0.1,
     gpus_per_server=8,
@@ -82,7 +83,7 @@ For more complex setups (training overlays, server ramp schedules), use the `fro
 
 ```python
 from openg2g.datacenter.config import DatacenterConfig, WorkloadConfig
-from openg2g.datacenter.offline import OfflineDatacenter, TraceByBatchCache
+from openg2g.datacenter.offline import OfflineDatacenter, PowerTraceCache
 from openg2g.models.spec import LLMInferenceModelSpec, LLMInferenceWorkload
 from openg2g.types import ServerRamp, TrainingRun
 
@@ -102,7 +103,7 @@ workload = WorkloadConfig(
 dc = OfflineDatacenter.from_config(
     datacenter=DatacenterConfig(gpus_per_server=8, base_kW_per_phase=500.0),
     workload=workload,
-    trace_cache=cache,
+    power_trace_cache=cache,
     timestep_s=0.1,
     seed=0,
 )
@@ -209,6 +210,7 @@ coord = Coordinator(
     grid=grid,
     controllers=controllers,
     total_duration_s=3600,
+    dc_bus="671",
 )
 ```
 
@@ -240,6 +242,7 @@ coord = Coordinator(
     grid=grid,
     controllers=controllers,
     total_duration_s=300,
+    dc_bus="671",
     live=True,
 )
 ```
@@ -282,9 +285,9 @@ from openg2g.grid.opendss import OpenDSSGrid
 grid = OpenDSSGrid(...)  # stores config only (cheap)
 
 for batch_init in [64, 128, 256, 512]:
-    dc = OfflineDatacenter(trace_cache=cache, models=models, ...)
+    dc = OfflineDatacenter(power_trace_cache=cache, models=models, ...)
     ctrl = OFOBatchController(models=models, ...)
-    coord = Coordinator(dc, grid, [ctrl], total_duration_s=3600)
+    coord = Coordinator(dc, grid, [ctrl], total_duration_s=3600, dc_bus="671")
     log = coord.run()  # reset -> start (compile DSS) -> loop -> stop
     print(f"batch_init={batch_init}: violation={stats.integral_violation:.2f}")
 ```
