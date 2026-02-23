@@ -1,10 +1,9 @@
 <div align="center">
-<h1>OpenG2G: GPU-to-Grid Simulation under LLM workloads</h1>
+<h1>OpenG2G</h1>
+<a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache_2.0-green.svg" alt="License: Apache-2.0"></a>
+<a href="https://www.python.org/"><img src="https://img.shields.io/badge/Python-3.10%2B-blue.svg" alt="Python 3.10+"></a>
+<a href="https://arxiv.org/abs/2602.05116"><img src="https://img.shields.io/badge/arXiv-2602.05116-b31b1b.svg" alt="arXiv"></a>
 </div>
-
-[![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
-[![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
-[![arXiv](https://img.shields.io/badge/arXiv-2602.05116-b31b1b.svg)](https://arxiv.org/abs/2602.05116)
 
 A modular Python framework for simulating datacenter-grid interaction, with a focus on LLM inference workloads.
 
