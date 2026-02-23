@@ -15,7 +15,10 @@ OpenG2G provides building blocks for studying how GPU-level controls (batch size
 
 ## Overview
 
-The core abstraction is a multi-rate simulation loop. A [`Coordinator`][openg2g.coordinator.Coordinator] ticks a shared clock and dispatches to three component types at their respective rates:
+The core abstraction is a multi-rate simulation loop.
+A [`Coordinator`][openg2g.coordinator.Coordinator] ticks a shared [clock][openg2g.clock.SimulationClock] and dispatches to three component types at their respective rates.
+
+For instance, OpenG2G can build and simulate the following setup (from the [GPU-to-Grid paper](https://arxiv.org/abs/2602.05116)):
 
 ```
                     ┌─────────────────────────────┐

@@ -5,7 +5,7 @@ on:
     branches: [master]
     paths:
       - "docs/**"
-      - "zensical.toml"
+      - "_zensical.toml"
       - "openg2g/**"
 
 permissions:
@@ -26,7 +26,7 @@ jobs:
         with:
           enable-cache: true
       - run: uv sync --group docs
-      - run: uv run zensical build --clean
+      - run: uv run bash scripts/docs.sh build
       - uses: actions/upload-pages-artifact@v4
         with:
           path: site

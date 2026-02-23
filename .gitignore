@@ -3,6 +3,8 @@
 site
 dist
 build
+zensical.toml
+docs/api/
 
 *.egg-info
 **/__pycache__

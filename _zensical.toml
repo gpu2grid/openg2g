@@ -15,18 +15,18 @@ nav = [
     { "Composing Components" = "guide/composing.md" },
     { "Custom Components" = "guide/custom-components.md" },
   ]},
-  { "API Reference" = [
-    { "openg2g.clock" = "api/clock.md" },
-    { "openg2g.controller" = "api/controller.md" },
-    { "openg2g.coordinator" = "api/coordinator.md" },
-    { "openg2g.datacenter" = "api/datacenter.md" },
-    { "openg2g.events" = "api/events.md" },
-    { "openg2g.grid" = "api/grid.md" },
-    { "openg2g.metrics" = "api/metrics.md" },
-    { "openg2g.models" = "api/models.md" },
-    { "openg2g.types" = "api/types.md" },
-    { "openg2g.utils" = "api/utils.md" },
-  ]},
+  {"API Reference" = [
+    {"openg2g.clock" = "api/clock.md"},
+    {"openg2g.controller" = "api/controller.md"},
+    {"openg2g.coordinator" = "api/coordinator.md"},
+    {"openg2g.datacenter" = "api/datacenter.md"},
+    {"openg2g.events" = "api/events.md"},
+    {"openg2g.grid" = "api/grid.md"},
+    {"openg2g.metrics" = "api/metrics.md"},
+    {"openg2g.models" = "api/models.md"},
+    {"openg2g.types" = "api/types.md"},
+    {"openg2g.utils" = "api/utils.md"},
+]},
 ]
 
 [project.theme]
