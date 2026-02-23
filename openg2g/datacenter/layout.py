@@ -168,76 +168,83 @@ class ServerLayout:
     amplitude_scales: np.ndarray
     noise_fraction: float
 
+    @classmethod
+    def build(
+        cls,
+        model_spec: LLMInferenceModelSpec,
+        *,
+        gpus_per_server: int,
+        stagger_range: int | float,
+        activation_strategy: ActivationStrategy,
+        amplitude_scale_range: tuple[float, float],
+        noise_fraction: float,
+        rng: np.random.Generator,
+    ) -> ServerLayout:
+        """Build a server layout for one model.
 
-def build_server_layout(
-    model_spec: LLMInferenceModelSpec,
-    *,
-    gpus_per_server: int,
-    template_length: int,
-    activation_strategy: ActivationStrategy,
-    amplitude_scale_range: tuple[float, float],
-    noise_fraction: float,
-    rng: np.random.Generator,
-) -> ServerLayout:
-    """Build a server layout for one model.
+        This is a pure function of its inputs (plus RNG state). The caller
+        is responsible for providing a consistently-seeded RNG so that
+        layout generation is reproducible.
 
-    This is a pure function of its inputs (plus RNG state). The caller
-    is responsible for providing a consistently-seeded RNG so that
-    layout generation is reproducible.
+        Args:
+            model_spec: Model specification (replicas, GPUs per replica, etc.).
+            gpus_per_server: Number of GPUs per physical server rack.
+            stagger_range: Upper bound for per-server stagger offsets. If `int`,
+                offsets are drawn from `rng.integers(0, stagger_range)` (for
+                offline template indexing). If `float`, offsets are drawn from
+                `rng.uniform(0, stagger_range)` (for online time-based staggering).
+            activation_strategy: Strategy for determining active servers.
+            amplitude_scale_range: `(low, high)` range for per-server amplitude
+                scaling. Each server draws a uniform multiplier from this range.
+            noise_fraction: Gaussian noise standard deviation as a fraction
+                of per-server power.
+            rng: Random number generator (consumed for phase assignment,
+                activation policy, stagger offsets, and amplitude scales).
 
-    Args:
-        model_spec: Model specification (replicas, GPUs per replica, etc.).
-        gpus_per_server: Number of GPUs per physical server rack.
-        template_length: Length of the power template array, used to bound
-            stagger offsets.
-        activation_strategy: Strategy for determining active servers.
-        amplitude_scale_range: `(low, high)` range for per-server amplitude
-            scaling. Each server draws a uniform multiplier from this range.
-        noise_fraction: Gaussian noise standard deviation as a fraction
-            of per-server power.
-        rng: Random number generator (consumed for phase assignment,
-            activation policy, stagger offsets, and amplitude scales).
+        Returns:
+            Frozen `ServerLayout` for the model.
+        """
+        num_replicas = int(model_spec.num_replicas)
+        gpus_per_replica = int(model_spec.gpus_per_replica)
+        total_gpus = num_replicas * gpus_per_replica
+        num_servers = int(math.ceil(total_gpus / gpus_per_server))
 
-    Returns:
-        Frozen `ServerLayout` for the model.
-    """
-    num_replicas = int(model_spec.num_replicas)
-    gpus_per_replica = int(model_spec.gpus_per_replica)
-    total_gpus = num_replicas * gpus_per_replica
-    num_servers = int(math.ceil(total_gpus / gpus_per_server))
+        gpus_per_server_list = np.full(num_servers, gpus_per_server, dtype=int)
+        tail = total_gpus - (num_servers - 1) * gpus_per_server
+        gpus_per_server_list[-1] = int(tail) if tail > 0 else gpus_per_server
 
-    gpus_per_server_list = np.full(num_servers, gpus_per_server, dtype=int)
-    tail = total_gpus - (num_servers - 1) * gpus_per_server
-    gpus_per_server_list[-1] = int(tail) if tail > 0 else gpus_per_server
+        sA, sB, sC = split_integer_evenly(num_servers, 3)
+        phase_list = np.asarray(([0] * sA) + ([1] * sB) + ([2] * sC), dtype=int)
+        rng.shuffle(phase_list)
 
-    sA, sB, sC = split_integer_evenly(num_servers, 3)
-    phase_list = np.asarray(([0] * sA) + ([1] * sB) + ([2] * sC), dtype=int)
-    rng.shuffle(phase_list)
+        bound_policy = activation_strategy.for_model(
+            num_servers=num_servers,
+            phase_list=phase_list,
+            rng=rng,
+        )
 
-    bound_policy = activation_strategy.for_model(
-        num_servers=num_servers,
-        phase_list=phase_list,
-        rng=rng,
-    )
+        if isinstance(stagger_range, int):
+            stagger_offsets = rng.integers(low=0, high=max(stagger_range, 1), size=num_servers)
+        else:
+            stagger_offsets = rng.uniform(0.0, max(float(stagger_range), 1e-9), size=num_servers)
 
-    stagger_offsets = rng.integers(low=0, high=max(template_length, 1), size=num_servers)
-    amplitude_scales = rng.uniform(
-        float(amplitude_scale_range[0]),
-        float(amplitude_scale_range[1]),
-        size=num_servers,
-    )
+        amplitude_scales = rng.uniform(
+            float(amplitude_scale_range[0]),
+            float(amplitude_scale_range[1]),
+            size=num_servers,
+        )
 
-    return ServerLayout(
-        num_servers=num_servers,
-        total_gpus=total_gpus,
-        gpus_per_replica=gpus_per_replica,
-        gpus_per_server_list=gpus_per_server_list,
-        phase_list=phase_list,
-        activation_policy=bound_policy,
-        stagger_offsets=stagger_offsets,
-        amplitude_scales=amplitude_scales,
-        noise_fraction=float(noise_fraction),
-    )
+        return cls(
+            num_servers=num_servers,
+            total_gpus=total_gpus,
+            gpus_per_replica=gpus_per_replica,
+            gpus_per_server_list=gpus_per_server_list,
+            phase_list=phase_list,
+            activation_policy=bound_policy,
+            stagger_offsets=stagger_offsets,
+            amplitude_scales=amplitude_scales,
+            noise_fraction=float(noise_fraction),
+        )
 
 
 @dataclass(frozen=True)

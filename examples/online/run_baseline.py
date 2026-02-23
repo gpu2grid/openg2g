@@ -2,7 +2,7 @@
 
 Connects to live vLLM servers and zeusd instances for hardware-in-the-loop
 baseline measurement.  Power readings from a small number of real GPUs are
-augmented to datacenter scale using temporal staggering.
+augmented to datacenter scale using the shared PowerAugmenter pipeline.
 
 Two modes correspond to two baselines:
   no-tap       Fixed tap positions throughout.
@@ -11,8 +11,10 @@ Two modes correspond to two baselines:
 An optional batch size schedule can drive controlled batch size changes
 via `BatchSizeScheduleController`.
 
+Edit the deployment definitions below to match your cluster before running.
+
 Usage:
-    python examples/online/run_baseline.py --config examples/online/online_config.example.yaml --mode no-tap
+    python examples/online/run_baseline.py --mode no-tap --duration 3600
 """
 
 from __future__ import annotations
@@ -23,11 +25,9 @@ import logging
 from fractions import Fraction
 from pathlib import Path
 
-import yaml
 from zeus.monitor.power_streaming import PowerStreamingClient
 from zeus.utils.zeusd import ZeusdConfig
 
-from openg2g.controller.batch_size_schedule import BatchSizeChange, BatchSizeSchedule, BatchSizeScheduleController
 from openg2g.controller.tap_schedule import TapScheduleController
 from openg2g.coordinator import Coordinator
 from openg2g.datacenter.online import (
@@ -45,16 +45,52 @@ from openg2g.types import TapPosition, TapSchedule
 
 logger = logging.getLogger("run_baseline")
 
+TAP_STEP = 0.00625
+INITIAL_TAPS = TapPosition(a=1.0 + 14 * TAP_STEP, b=1.0 + 6 * TAP_STEP, c=1.0 + 15 * TAP_STEP)
+TAP_CHANGE_SCHEDULE = TapPosition(a=1.0 + 16 * TAP_STEP, b=1.0 + 6 * TAP_STEP, c=1.0 + 17 * TAP_STEP).at(
+    t=25 * 60
+) | TapPosition(a=1.0 + 10 * TAP_STEP, b=1.0 + 6 * TAP_STEP, c=1.0 + 10 * TAP_STEP).at(t=55 * 60)
+
 MAX_BATCH_SIZE = 512
 
+DEPLOYMENTS = [
+    OnlineModelDeployment(
+        spec=LLMInferenceModelSpec(
+            model_label="Llama-3.1-8B",
+            num_replicas=720,
+            gpus_per_replica=1,
+            feasible_batch_sizes=tuple(range(1, MAX_BATCH_SIZE + 1)),
+            initial_batch_size=128,
+            itl_deadline_s=0.08,
+        ),
+        vllm_base_url="http://node1:8000",
+        model_name="meta-llama/Llama-3.1-8B-Instruct",
+        gpu_endpoints=(
+            GPUEndpointMapping(host="node1", port=4938, gpu_indices=(0, 1, 2, 3), phase=Phase.A),
+            GPUEndpointMapping(host="node1", port=4938, gpu_indices=(4, 5, 6, 7), phase=Phase.B),
+        ),
+    ),
+    OnlineModelDeployment(
+        spec=LLMInferenceModelSpec(
+            model_label="Llama-3.1-70B",
+            num_replicas=180,
+            gpus_per_replica=4,
+            feasible_batch_sizes=tuple(range(1, MAX_BATCH_SIZE + 1)),
+            initial_batch_size=128,
+            itl_deadline_s=0.10,
+        ),
+        vllm_base_url="http://node2:8000",
+        model_name="meta-llama/Llama-3.1-70B-Instruct",
+        gpu_endpoints=(
+            GPUEndpointMapping(host="node2", port=4938, gpu_indices=(0, 1, 2, 3), phase=Phase.A),
+            GPUEndpointMapping(host="node2", port=4938, gpu_indices=(4, 5, 6, 7), phase=Phase.C),
+        ),
+    ),
+]
 
-def _batch_set_from_config(m: dict) -> tuple[int, ...]:
-    """Derive feasible batch sizes from a model config entry."""
-    max_bs = m.get("max_batch_size", MAX_BATCH_SIZE)
-    return tuple(range(1, int(max_bs) + 1))
-
-
-TAP_STEP = 0.00625
+V_MIN = 0.95
+V_MAX = 1.05
+DC_BUS = "671"
 
 
 def _load_requests(requests_dir: Path, model_labels: list[str]) -> dict[str, list[dict]]:
@@ -76,104 +112,6 @@ def _load_requests(requests_dir: Path, model_labels: list[str]) -> dict[str, lis
     return result
 
 
-def _parse_phase(s: str) -> Phase:
-    """Parse a phase string like 'a', 'b', 'c' into a Phase enum."""
-    return Phase(s.lower())
-
-
-def _build_deployments_from_config(
-    config: dict,
-) -> list[OnlineModelDeployment]:
-    """Build OnlineModelDeployment list from config."""
-    deployments: list[OnlineModelDeployment] = []
-
-    for m in config["models"]:
-        spec = LLMInferenceModelSpec(
-            model_label=m["model_label"],
-            num_replicas=m["num_replicas"],
-            gpus_per_replica=m["gpus_per_replica"],
-            feasible_batch_sizes=_batch_set_from_config(m),
-            initial_batch_size=m.get("initial_batch_size", 128),
-            itl_deadline_s=m["itl_deadline_s"],
-        )
-
-        endpoints = tuple(
-            GPUEndpointMapping(
-                host=ep["host"],
-                port=ep.get("port", 4938),
-                gpu_indices=tuple(ep.get("gpu_indices", [0])),
-                phase=_parse_phase(ep.get("phase", "a")),
-            )
-            for ep in m.get("gpu_endpoints", [])
-        )
-
-        deployments.append(
-            OnlineModelDeployment(
-                spec=spec,
-                vllm_base_url=m["vllm_base_url"],
-                model_name=m["model_name"],
-                gpu_endpoints=endpoints,
-            )
-        )
-
-    return deployments
-
-
-def _build_initial_taps(config: dict) -> TapPosition:
-    """Build initial tap position from config."""
-    tap_ratios = config.get("initial_taps", {"a": 14, "b": 6, "c": 15})
-    return TapPosition(
-        a=1.0 + tap_ratios["a"] * TAP_STEP,
-        b=1.0 + tap_ratios["b"] * TAP_STEP,
-        c=1.0 + tap_ratios["c"] * TAP_STEP,
-    )
-
-
-def _build_tap_ctrl_schedule(config: dict, mode: str) -> TapSchedule:
-    """Build tap controller schedule from config and mode."""
-    if mode == "no-tap":
-        return TapSchedule(())
-
-    tap_changes = config.get("tap_changes", [])
-    schedule = TapSchedule(())
-    for entry in tap_changes:
-        schedule = schedule | TapPosition(
-            a=1.0 + entry["a"] * TAP_STEP,
-            b=1.0 + entry["b"] * TAP_STEP,
-            c=1.0 + entry["c"] * TAP_STEP,
-        ).at(t=entry["t"])
-    return schedule
-
-
-def _build_batch_schedule(config: dict) -> dict[str, BatchSizeSchedule]:
-    """Build per-model batch size schedules from config.
-
-    Config format under `batch_schedule`:
-        {
-            "model_label": [
-                {"t": 40, "batch_size": 48},
-                {"t": 60, "batch_size": 32, "ramp_up_rate": 4}
-            ]
-        }
-    """
-    raw = config.get("batch_schedule", {})
-    if not raw:
-        return {}
-
-    schedules: dict[str, BatchSizeSchedule] = {}
-    for label, entries in raw.items():
-        schedule: BatchSizeSchedule | None = None
-        for entry in sorted(entries, key=lambda e: e["t"]):
-            change = BatchSizeChange(
-                batch_size=entry["batch_size"],
-                ramp_up_rate=entry.get("ramp_up_rate", 0.0),
-            ).at(t=entry["t"])
-            schedule = change if schedule is None else (schedule | change)
-        if schedule is not None:
-            schedules[label] = schedule
-    return schedules
-
-
 def main(args: argparse.Namespace) -> None:
     mode = args.mode
     project_dir = Path(__file__).resolve().parent.parent.parent
@@ -185,33 +123,22 @@ def main(args: argparse.Namespace) -> None:
     file_handler.setFormatter(logging.Formatter("%(asctime)s %(name)s %(levelname)s %(message)s", datefmt="%H:%M:%S"))
     logging.getLogger().addHandler(file_handler)
 
-    with open(args.config) as f:
-        config = yaml.safe_load(f)
-
-    v_min = config.get("v_min", 0.95)
-    v_max = config.get("v_max", 1.05)
-    dc_bus = config.get("dc_bus", "671")
     dt_dc = Fraction(1, 10)
     dt_ctrl = Fraction(1)
     t_total_s = args.duration
 
-    initial_taps = _build_initial_taps(config)
-    tap_ctrl_schedule = _build_tap_ctrl_schedule(config, mode)
+    tap_ctrl_schedule = TAP_CHANGE_SCHEDULE if mode == "tap-change" else TapSchedule(())
 
-    logger.info("Building deployments from config...")
-    deployments = _build_deployments_from_config(config)
-    model_labels = [d.model_label for d in deployments]
+    model_labels = [d.model_label for d in DEPLOYMENTS]
 
     logger.info("Loading pre-built requests...")
-    requests_dir = Path(config.get("requests_dir", "data/online/requests"))
-    if not requests_dir.is_absolute():
-        requests_dir = project_dir / requests_dir
+    requests_dir = project_dir / "data" / "online" / "requests"
     requests_by_model = _load_requests(requests_dir, model_labels)
 
     logger.info("Setting up PowerStreamingClient...")
     servers_by_key: dict[str, ZeusdConfig] = {}
     gpu_indices_by_key: dict[str, list[int]] = {}
-    for d in deployments:
+    for d in DEPLOYMENTS:
         for ep in d.gpu_endpoints:
             key = ep.endpoint_key
             if key not in gpu_indices_by_key:
@@ -228,25 +155,24 @@ def main(args: argparse.Namespace) -> None:
 
     power_client = PowerStreamingClient(servers=list(servers_by_key.values()))
 
-    aug_cfg = config.get("augmentation", {})
     augmentation = PowerAugmentationConfig(
-        base_kw_per_phase=aug_cfg.get("base_kw_per_phase", 500.0),
-        noise_frac=aug_cfg.get("noise_frac", 0.02),
-        stagger_buffer_s=aug_cfg.get("stagger_buffer_s", 10.0),
-        num_virtual_groups=aug_cfg.get("num_virtual_groups", 64),
-        seed=aug_cfg.get("seed", 0),
+        base_kw_per_phase=500.0,
+        noise_fraction=0.02,
+        stagger_buffer_s=10.0,
+        gpus_per_server=8,
+        amplitude_scale_range=(0.9, 1.1),
+        seed=0,
     )
 
-    load_gen_cfg = config.get("load_gen", {})
     load_gen = LoadGenerationConfig(
-        max_output_tokens=load_gen_cfg.get("max_output_tokens", 512),
-        concurrency_multiplier=load_gen_cfg.get("concurrency_multiplier", 3.0),
-        itl_window_s=load_gen_cfg.get("itl_window_s", 1.0),
+        max_output_tokens=512,
+        concurrency_multiplier=3.0,
+        itl_window_s=1.0,
     )
 
     logger.info("Initializing OnlineDatacenter...")
     dc = OnlineDatacenter(
-        deployments=deployments,
+        deployments=DEPLOYMENTS,
         power_client=power_client,
         augmentation=augmentation,
         load_gen=load_gen,
@@ -258,37 +184,28 @@ def main(args: argparse.Namespace) -> None:
     grid = OpenDSSGrid(
         dss_case_dir=str(case_dir),
         dss_master_file="IEEE13Nodeckt.dss",
-        dc_bus=dc_bus,
+        dc_bus=DC_BUS,
         dc_bus_kv=4.16,
         power_factor=0.95,
         dt_s=Fraction(1, 10),
         connection_type="wye",
-        initial_tap_position=initial_taps,
+        initial_tap_position=INITIAL_TAPS,
     )
 
-    controllers = []
-
     tap_ctrl = TapScheduleController(schedule=tap_ctrl_schedule, dt_s=dt_ctrl)
-    controllers.append(tap_ctrl)
-
-    batch_schedules = _build_batch_schedule(config)
-    if batch_schedules:
-        batch_ctrl = BatchSizeScheduleController(schedules=batch_schedules, dt_s=dt_ctrl)
-        controllers.append(batch_ctrl)
-        logger.info("BatchSizeScheduleController active for %d models", len(batch_schedules))
 
     logger.info("Running online baseline simulation (mode=%s) for %d seconds...", mode, t_total_s)
     coord = Coordinator(
         datacenter=dc,
         grid=grid,
-        controllers=controllers,
+        controllers=[tap_ctrl],
         total_duration_s=t_total_s,
-        dc_bus=dc_bus,
+        dc_bus=DC_BUS,
         live=True,
     )
     log = coord.run()
 
-    stats = compute_allbus_voltage_stats(log.grid_states, v_min=v_min, v_max=v_max)
+    stats = compute_allbus_voltage_stats(log.grid_states, v_min=V_MIN, v_max=V_MAX)
     logger.info("=== Voltage Statistics (all-bus) ===")
     logger.info("  voltage_violation_time = %.1f s", stats.violation_time_s)
     logger.info("  worst_vmin             = %.6f", stats.worst_vmin)
@@ -300,11 +217,6 @@ def main(args: argparse.Namespace) -> None:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Online baseline simulation (no OFO control, hardware-in-the-loop)")
-    parser.add_argument(
-        "--config",
-        required=True,
-        help="Path to YAML config file with deployment details.",
-    )
     parser.add_argument(
         "--mode",
         choices=["no-tap", "tap-change"],

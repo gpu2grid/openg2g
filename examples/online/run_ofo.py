@@ -2,10 +2,12 @@
 
 Connects to live vLLM servers and zeusd instances for hardware-in-the-loop
 OFO control.  Power readings from a small number of real GPUs are augmented
-to datacenter scale using temporal staggering.
+to datacenter scale using the shared PowerAugmenter pipeline.
+
+Edit the deployment definitions below to match your cluster before running.
 
 Usage:
-    python examples/online/run_ofo.py --config examples/online/online_config.example.yaml --duration 3600
+    python examples/online/run_ofo.py --data-dir data/generated --duration 3600
 """
 
 from __future__ import annotations
@@ -18,7 +20,6 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-import yaml
 from mlenergy_data.modeling import LogisticModel
 from zeus.monitor.power_streaming import PowerStreamingClient
 from zeus.utils.zeusd import ZeusdConfig
@@ -45,13 +46,51 @@ from openg2g.types import TapPosition, TapSchedule
 
 logger = logging.getLogger("run_ofo")
 
+TAP_STEP = 0.00625
+INITIAL_TAPS = TapPosition(a=1.0 + 14 * TAP_STEP, b=1.0 + 6 * TAP_STEP, c=1.0 + 15 * TAP_STEP)
+
 MAX_BATCH_SIZE = 512
 
+DEPLOYMENTS = [
+    OnlineModelDeployment(
+        spec=LLMInferenceModelSpec(
+            model_label="Llama-3.1-8B",
+            num_replicas=720,
+            gpus_per_replica=1,
+            feasible_batch_sizes=tuple(range(1, MAX_BATCH_SIZE + 1)),
+            initial_batch_size=128,
+            itl_deadline_s=0.08,
+        ),
+        vllm_base_url="http://node1:8000",
+        model_name="meta-llama/Llama-3.1-8B-Instruct",
+        gpu_endpoints=(
+            GPUEndpointMapping(host="node1", port=4938, gpu_indices=(0, 1, 2, 3), phase=Phase.A),
+            GPUEndpointMapping(host="node1", port=4938, gpu_indices=(4, 5, 6, 7), phase=Phase.B),
+        ),
+    ),
+    OnlineModelDeployment(
+        spec=LLMInferenceModelSpec(
+            model_label="Llama-3.1-70B",
+            num_replicas=180,
+            gpus_per_replica=4,
+            feasible_batch_sizes=tuple(range(1, MAX_BATCH_SIZE + 1)),
+            initial_batch_size=128,
+            itl_deadline_s=0.10,
+        ),
+        vllm_base_url="http://node2:8000",
+        model_name="meta-llama/Llama-3.1-70B-Instruct",
+        gpu_endpoints=(
+            GPUEndpointMapping(host="node2", port=4938, gpu_indices=(0, 1, 2, 3), phase=Phase.A),
+            GPUEndpointMapping(host="node2", port=4938, gpu_indices=(4, 5, 6, 7), phase=Phase.C),
+        ),
+    ),
+]
 
-def _batch_set_from_config(m: dict) -> tuple[int, ...]:
-    """Derive feasible batch sizes from a model config entry."""
-    max_bs = m.get("max_batch_size", MAX_BATCH_SIZE)
-    return tuple(range(1, int(max_bs) + 1))
+WORKLOAD = LLMInferenceWorkload(models=tuple(d.spec for d in DEPLOYMENTS))
+
+V_MIN = 0.95
+V_MAX = 1.05
+DC_BUS = "671"
 
 
 def _load_logistic_fits_merged(
@@ -89,52 +128,6 @@ def _load_requests(requests_dir: Path, model_labels: list[str]) -> dict[str, lis
     return result
 
 
-def _parse_phase(s: str) -> Phase:
-    """Parse a phase string like 'a', 'b', 'c' into a Phase enum."""
-    return Phase(s.lower())
-
-
-def _build_deployments_from_config(
-    config: dict,
-) -> tuple[list[OnlineModelDeployment], LLMInferenceWorkload]:
-    """Build OnlineModelDeployment list and workload from config."""
-    deployments: list[OnlineModelDeployment] = []
-    specs: list[LLMInferenceModelSpec] = []
-
-    for m in config["models"]:
-        spec = LLMInferenceModelSpec(
-            model_label=m["model_label"],
-            num_replicas=m["num_replicas"],
-            gpus_per_replica=m["gpus_per_replica"],
-            feasible_batch_sizes=_batch_set_from_config(m),
-            initial_batch_size=m.get("initial_batch_size", 128),
-            itl_deadline_s=m["itl_deadline_s"],
-        )
-        specs.append(spec)
-
-        endpoints = tuple(
-            GPUEndpointMapping(
-                host=ep["host"],
-                port=ep.get("port", 4938),
-                gpu_indices=tuple(ep.get("gpu_indices", [0])),
-                phase=_parse_phase(ep.get("phase", "a")),
-            )
-            for ep in m.get("gpu_endpoints", [])
-        )
-
-        deployments.append(
-            OnlineModelDeployment(
-                spec=spec,
-                vllm_base_url=m["vllm_base_url"],
-                model_name=m["model_name"],
-                gpu_endpoints=endpoints,
-            )
-        )
-
-    workload = LLMInferenceWorkload(models=tuple(specs))
-    return deployments, workload
-
-
 def main(args: argparse.Namespace) -> None:
     project_dir = Path(__file__).resolve().parent.parent.parent
     case_dir = Path(__file__).resolve().parent.parent / "ieee13"
@@ -145,32 +138,14 @@ def main(args: argparse.Namespace) -> None:
     file_handler.setFormatter(logging.Formatter("%(asctime)s %(name)s %(levelname)s %(message)s", datefmt="%H:%M:%S"))
     logging.getLogger().addHandler(file_handler)
 
-    with open(args.config) as f:
-        config = yaml.safe_load(f)
-
-    v_min = config.get("v_min", 0.95)
-    v_max = config.get("v_max", 1.05)
-    dc_bus = config.get("dc_bus", "671")
     dt_dc = Fraction(1, 10)
     dt_ctrl = Fraction(1)
     t_total_s = args.duration
 
-    TAP_STEP = 0.00625
-    tap_ratios = config.get("initial_taps", {"a": 14, "b": 6, "c": 15})
-    initial_taps = TapPosition(
-        a=1.0 + tap_ratios["a"] * TAP_STEP,
-        b=1.0 + tap_ratios["b"] * TAP_STEP,
-        c=1.0 + tap_ratios["c"] * TAP_STEP,
-    )
-
-    logger.info("Building deployments from config...")
-    deployments, workload = _build_deployments_from_config(config)
-    model_labels = [d.model_label for d in deployments]
+    model_labels = [d.model_label for d in DEPLOYMENTS]
 
     logger.info("Loading pre-built requests...")
-    requests_dir = Path(config.get("requests_dir", "data/online/requests"))
-    if not requests_dir.is_absolute():
-        requests_dir = project_dir / requests_dir
+    requests_dir = project_dir / "data" / "online" / "requests"
     requests_by_model = _load_requests(requests_dir, model_labels)
 
     logger.info("Loading logistic fits...")
@@ -180,7 +155,7 @@ def main(args: argparse.Namespace) -> None:
     logger.info("Setting up PowerStreamingClient...")
     servers_by_key: dict[str, ZeusdConfig] = {}
     gpu_indices_by_key: dict[str, list[int]] = {}
-    for d in deployments:
+    for d in DEPLOYMENTS:
         for ep in d.gpu_endpoints:
             key = ep.endpoint_key
             if key not in gpu_indices_by_key:
@@ -197,25 +172,24 @@ def main(args: argparse.Namespace) -> None:
 
     power_client = PowerStreamingClient(servers=list(servers_by_key.values()))
 
-    aug_cfg = config.get("augmentation", {})
     augmentation = PowerAugmentationConfig(
-        base_kw_per_phase=aug_cfg.get("base_kw_per_phase", 500.0),
-        noise_frac=aug_cfg.get("noise_frac", 0.02),
-        stagger_buffer_s=aug_cfg.get("stagger_buffer_s", 10.0),
-        num_virtual_groups=aug_cfg.get("num_virtual_groups", 64),
-        seed=aug_cfg.get("seed", 0),
+        base_kw_per_phase=500.0,
+        noise_fraction=0.02,
+        stagger_buffer_s=10.0,
+        gpus_per_server=8,
+        amplitude_scale_range=(0.9, 1.1),
+        seed=0,
     )
 
-    load_gen_cfg = config.get("load_gen", {})
     load_gen = LoadGenerationConfig(
-        max_output_tokens=load_gen_cfg.get("max_output_tokens", 512),
-        concurrency_multiplier=load_gen_cfg.get("concurrency_multiplier", 3.0),
-        itl_window_s=load_gen_cfg.get("itl_window_s", 1.0),
+        max_output_tokens=512,
+        concurrency_multiplier=3.0,
+        itl_window_s=1.0,
     )
 
     logger.info("Initializing OnlineDatacenter...")
     dc = OnlineDatacenter(
-        deployments=deployments,
+        deployments=DEPLOYMENTS,
         power_client=power_client,
         augmentation=augmentation,
         load_gen=load_gen,
@@ -227,18 +201,18 @@ def main(args: argparse.Namespace) -> None:
     grid = OpenDSSGrid(
         dss_case_dir=str(case_dir),
         dss_master_file="IEEE13Nodeckt.dss",
-        dc_bus=dc_bus,
+        dc_bus=DC_BUS,
         dc_bus_kv=4.16,
         power_factor=0.95,
         dt_s=Fraction(1, 10),
         connection_type="wye",
-        initial_tap_position=initial_taps,
+        initial_tap_position=INITIAL_TAPS,
     )
 
     tap_ctrl = TapScheduleController(schedule=TapSchedule(()), dt_s=dt_ctrl)
 
     ofo_ctrl = OFOBatchController.from_workload(
-        workload=workload,
+        workload=WORKLOAD,
         power_fits=power_fits,
         latency_fits=latency_fits,
         throughput_fits=throughput_fits,
@@ -250,8 +224,8 @@ def main(args: argparse.Namespace) -> None:
             voltage_gradient_scale=1e6,
         ),
         voltage_dual_config=VoltageDualConfig(
-            v_min=v_min,
-            v_max=v_max,
+            v_min=V_MIN,
+            v_max=V_MAX,
             ascent_step_size=1.0,
         ),
         latency_dual_step_size=1.0,
@@ -266,12 +240,12 @@ def main(args: argparse.Namespace) -> None:
         grid=grid,
         controllers=[tap_ctrl, ofo_ctrl],
         total_duration_s=t_total_s,
-        dc_bus=dc_bus,
+        dc_bus=DC_BUS,
         live=True,
     )
     log = coord.run()
 
-    stats = compute_allbus_voltage_stats(log.grid_states, v_min=v_min, v_max=v_max)
+    stats = compute_allbus_voltage_stats(log.grid_states, v_min=V_MIN, v_max=V_MAX)
     logger.info("=== Voltage Statistics (all-bus) ===")
     logger.info("  voltage_violation_time = %.1f s", stats.violation_time_s)
     logger.info("  worst_vmin             = %.6f", stats.worst_vmin)
@@ -293,11 +267,6 @@ def main(args: argparse.Namespace) -> None:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Online OFO closed-loop simulation (hardware-in-the-loop)")
-    parser.add_argument(
-        "--config",
-        required=True,
-        help="Path to YAML config file with deployment details.",
-    )
     parser.add_argument(
         "--duration",
         type=int,
