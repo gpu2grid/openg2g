@@ -13,6 +13,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from openg2g.datacenter.training_overlay import TrainingTrace
+
 
 def generate_training_like_trace(
     T: float = 1400.0,
@@ -155,7 +157,7 @@ def main() -> None:
 
     out_path = Path(args.out_csv)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    df = pd.DataFrame({"t_s": t, "power_W": p})
+    df = pd.DataFrame({TrainingTrace.COL_TIME: t, TrainingTrace.COL_POWER: p})
     df.to_csv(out_path, index=False)
     print(f"Wrote {len(df)} samples to {out_path}")
 

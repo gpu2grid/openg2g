@@ -6,6 +6,7 @@ latency management via GPU batch size control.
 
 from __future__ import annotations
 
+import bisect
 import logging
 import math
 from dataclasses import dataclass
@@ -174,8 +175,13 @@ class PrimalBatchOptimizer:
 
     def _discretize_batch(self, log_batch_size: float) -> int:
         b_cont = 2.0 ** float(log_batch_size)
-        b = min(self.feasible_batch_sizes, key=lambda bb: abs(float(bb) - b_cont))
-        return int(b)
+        idx = bisect.bisect_left(self.feasible_batch_sizes, b_cont)
+        candidates = []
+        if idx > 0:
+            candidates.append(self.feasible_batch_sizes[idx - 1])
+        if idx < len(self.feasible_batch_sizes):
+            candidates.append(self.feasible_batch_sizes[idx])
+        return int(min(candidates, key=lambda bb: abs(bb - b_cont)))
 
     def init_from_batches(self, batch_init: dict[str, int]) -> None:
         """Initialize log-batch-size state from discrete batch sizes."""

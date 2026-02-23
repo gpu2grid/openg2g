@@ -45,7 +45,13 @@ from openg2g.types import TapPosition, TapSchedule
 
 logger = logging.getLogger("run_ofo")
 
-BATCH_SET = (8, 16, 32, 64, 128, 256, 512)
+MAX_BATCH_SIZE = 512
+
+
+def _batch_set_from_config(m: dict) -> tuple[int, ...]:
+    """Derive feasible batch sizes from a model config entry."""
+    max_bs = m.get("max_batch_size", MAX_BATCH_SIZE)
+    return tuple(range(1, int(max_bs) + 1))
 
 
 def _load_logistic_fits_merged(
@@ -100,7 +106,7 @@ def _build_deployments_from_config(
             model_label=m["model_label"],
             num_replicas=m["num_replicas"],
             gpus_per_replica=m["gpus_per_replica"],
-            feasible_batch_sizes=tuple(m.get("feasible_batch_sizes", BATCH_SET)),
+            feasible_batch_sizes=_batch_set_from_config(m),
             initial_batch_size=m.get("initial_batch_size", 128),
             itl_deadline_s=m["itl_deadline_s"],
         )

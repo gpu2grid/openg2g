@@ -31,6 +31,7 @@ from openg2g.datacenter.offline import (
     OfflineDatacenter,
     PowerTraceStore,
 )
+from openg2g.datacenter.training_overlay import TrainingTrace
 from openg2g.grid.opendss import OpenDSSGrid
 from openg2g.metrics.voltage import compute_allbus_voltage_stats
 from openg2g.models.spec import LLMInferenceModelSpec, LLMInferenceWorkload
@@ -78,7 +79,7 @@ def main(args: argparse.Namespace) -> None:
     logging.getLogger().addHandler(file_handler)
 
     data_dir = Path(args.data_dir)
-    training_csv = Path(args.training_trace)
+    training_trace = TrainingTrace.load(Path(args.training_trace))
 
     v_min = 0.95
     v_max = 1.05
@@ -101,7 +102,7 @@ def main(args: argparse.Namespace) -> None:
             t_start=1000.0,
             t_end=2000.0,
             n_gpus=300 * gpus_per_server,
-            trace_csv=training_csv,
+            trace=training_trace,
             target_peak_W_per_gpu=400.0,
         ),
         server_ramps=ServerRamp(t_start=2500.0, t_end=3000.0, target=0.2),

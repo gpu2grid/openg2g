@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from dataclasses import dataclass
-from pathlib import Path
 
 import numpy as np
 
+from openg2g.datacenter.training_overlay import TrainingTrace
 from openg2g.models.spec import LLMInferenceWorkload
 
 
@@ -19,14 +19,14 @@ class TrainingRun:
         t_start: Global simulation time when training becomes active (seconds).
         t_end: Global simulation time when training stops (seconds).
         n_gpus: Number of GPUs running the training workload.
-        trace_csv: Path to CSV with columns `t_s` and `power_W` (1-GPU trace).
+        trace: Single-GPU training power trace.
         target_peak_W_per_gpu: The trace is rescaled so its peak equals this value.
     """
 
     t_start: float
     t_end: float
     n_gpus: int
-    trace_csv: Path
+    trace: TrainingTrace
     target_peak_W_per_gpu: float = 400.0
 
     def __post_init__(self) -> None:
@@ -47,8 +47,8 @@ class TrainingSchedule:
     Example:
 
         schedule = (
-            TrainingRun(t_start=500, t_end=1500, n_gpus=2400, trace_csv=path_a)
-            | TrainingRun(t_start=2000, t_end=3000, n_gpus=1200, trace_csv=path_b)
+            TrainingRun(t_start=500, t_end=1500, n_gpus=2400, trace=trace_a)
+            | TrainingRun(t_start=2000, t_end=3000, n_gpus=1200, trace=trace_b)
         )
     """
 

@@ -79,10 +79,13 @@ For more complex setups (training overlays, server ramp schedules), use the `fro
 from openg2g.datacenter.config import DatacenterConfig, WorkloadConfig
 from openg2g.datacenter.offline import OfflineDatacenter, PowerTraceStore
 from openg2g.models.spec import LLMInferenceModelSpec, LLMInferenceWorkload
+from openg2g.datacenter.training_overlay import TrainingTrace
 from openg2g.types import ServerRamp, TrainingRun
 
 store = PowerTraceStore.load("data/generated/traces_summary.csv")
 store.build_templates(duration_s=3600.0, timestep_s=0.1)
+
+training_trace = TrainingTrace.load("data/generated/synthetic_training_trace.csv")
 
 workload = WorkloadConfig(
     inference=LLMInferenceWorkload(models=(
@@ -93,7 +96,7 @@ workload = WorkloadConfig(
             model_label="Llama-3.1-70B", num_replicas=180, gpus_per_replica=4, initial_batch_size=128,
         ),
     )),
-    training=TrainingRun(t_start=1000.0, t_end=2000.0, n_gpus=2400),
+    training=TrainingRun(t_start=1000.0, t_end=2000.0, n_gpus=2400, trace=training_trace),
     server_ramps=ServerRamp(t_start=2500.0, t_end=3000.0, target=0.2),
 )
 

@@ -3,16 +3,17 @@ ServerRampSchedule, ActivationStrategy, TrainingRun, TrainingSchedule."""
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import numpy as np
 import pytest
 
 from openg2g.datacenter.config import ServerRamp, ServerRampSchedule, TrainingRun, TrainingSchedule
 from openg2g.datacenter.layout import ActivationStrategy, RampActivationStrategy
 from openg2g.datacenter.online import OnlineDatacenterState
+from openg2g.datacenter.training_overlay import TrainingTrace
 from openg2g.grid.base import BusVoltages, GridState, PhaseVoltages
 from openg2g.types import TapPosition, TapSchedule, ThreePhase
+
+_DUMMY_TRACE = TrainingTrace(t_s=np.array([0.0, 1.0]), power_w=np.array([100.0, 200.0]))
 
 
 class TestTapPosition:
@@ -202,8 +203,8 @@ class TestServerRampSchedule:
 
 class TestTrainingRun:
     def test_basic(self) -> None:
-        """TrainingRun should store its time window, GPU count, and trace path."""
-        r = TrainingRun(t_start=100, t_end=200, n_gpus=2400, trace_csv=Path("/tmp/trace.csv"))
+        """TrainingRun should store its time window, GPU count, and trace."""
+        r = TrainingRun(t_start=100, t_end=200, n_gpus=2400, trace=_DUMMY_TRACE)
         assert r.t_start == 100
         assert r.t_end == 200
         assert r.n_gpus == 2400
@@ -211,22 +212,22 @@ class TestTrainingRun:
     def test_invalid_time_order(self) -> None:
         """t_end before t_start should raise ValueError."""
         with pytest.raises(ValueError, match=r"t_end.*must be >= t_start"):
-            TrainingRun(t_start=200, t_end=100, n_gpus=2400, trace_csv=Path("/tmp/trace.csv"))
+            TrainingRun(t_start=200, t_end=100, n_gpus=2400, trace=_DUMMY_TRACE)
 
     def test_negative_gpus(self) -> None:
         """Negative GPU count should raise ValueError."""
         with pytest.raises(ValueError, match="n_gpus must be >= 0"):
-            TrainingRun(t_start=0, t_end=100, n_gpus=-1, trace_csv=Path("/tmp/trace.csv"))
+            TrainingRun(t_start=0, t_end=100, n_gpus=-1, trace=_DUMMY_TRACE)
 
     def test_default_target_peak(self) -> None:
         """target_peak_W_per_gpu should default to 400.0."""
-        r = TrainingRun(t_start=0, t_end=100, n_gpus=100, trace_csv=Path("/tmp/trace.csv"))
+        r = TrainingRun(t_start=0, t_end=100, n_gpus=100, trace=_DUMMY_TRACE)
         assert r.target_peak_W_per_gpu == 400.0
 
     def test_pipe_creates_schedule(self) -> None:
         """Piping two TrainingRuns should produce a TrainingSchedule."""
-        r1 = TrainingRun(t_start=0, t_end=100, n_gpus=100, trace_csv=Path("/tmp/a.csv"))
-        r2 = TrainingRun(t_start=200, t_end=300, n_gpus=50, trace_csv=Path("/tmp/b.csv"))
+        r1 = TrainingRun(t_start=0, t_end=100, n_gpus=100, trace=_DUMMY_TRACE)
+        r2 = TrainingRun(t_start=200, t_end=300, n_gpus=50, trace=_DUMMY_TRACE)
         s = r1 | r2
         assert isinstance(s, TrainingSchedule)
         assert len(s) == 2
@@ -235,17 +236,17 @@ class TestTrainingRun:
 class TestTrainingSchedule:
     def test_sorted_by_start(self) -> None:
         """Runs piped in reverse order should still be sorted by t_start."""
-        r1 = TrainingRun(t_start=200, t_end=300, n_gpus=50, trace_csv=Path("/tmp/b.csv"))
-        r2 = TrainingRun(t_start=0, t_end=100, n_gpus=100, trace_csv=Path("/tmp/a.csv"))
+        r1 = TrainingRun(t_start=200, t_end=300, n_gpus=50, trace=_DUMMY_TRACE)
+        r2 = TrainingRun(t_start=0, t_end=100, n_gpus=100, trace=_DUMMY_TRACE)
         s = r1 | r2
         starts = [r.t_start for r in s]
         assert starts == [0, 200]
 
     def test_pipe_three(self) -> None:
         """Chaining three TrainingRuns with | should accumulate all entries."""
-        r1 = TrainingRun(t_start=0, t_end=100, n_gpus=100, trace_csv=Path("/tmp/a.csv"))
-        r2 = TrainingRun(t_start=200, t_end=300, n_gpus=50, trace_csv=Path("/tmp/b.csv"))
-        r3 = TrainingRun(t_start=400, t_end=500, n_gpus=25, trace_csv=Path("/tmp/c.csv"))
+        r1 = TrainingRun(t_start=0, t_end=100, n_gpus=100, trace=_DUMMY_TRACE)
+        r2 = TrainingRun(t_start=200, t_end=300, n_gpus=50, trace=_DUMMY_TRACE)
+        r3 = TrainingRun(t_start=400, t_end=500, n_gpus=25, trace=_DUMMY_TRACE)
         s = r1 | r2 | r3
         assert len(s) == 3
 
@@ -253,13 +254,13 @@ class TestTrainingSchedule:
         """An empty schedule should be falsy; a non-empty one should be truthy."""
         s = TrainingSchedule(entries=())
         assert not s
-        r = TrainingRun(t_start=0, t_end=100, n_gpus=100, trace_csv=Path("/tmp/a.csv"))
+        r = TrainingRun(t_start=0, t_end=100, n_gpus=100, trace=_DUMMY_TRACE)
         s2 = TrainingSchedule(entries=(r,))
         assert s2
 
     def test_repr(self) -> None:
         """repr should include 'TrainingRun' for debuggability."""
-        r = TrainingRun(t_start=0, t_end=100, n_gpus=100, trace_csv=Path("/tmp/a.csv"))
+        r = TrainingRun(t_start=0, t_end=100, n_gpus=100, trace=_DUMMY_TRACE)
         s = TrainingSchedule(entries=(r,))
         assert "TrainingRun" in repr(s)
 

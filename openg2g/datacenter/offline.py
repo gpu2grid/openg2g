@@ -582,7 +582,7 @@ class OfflineDatacenter(LLMBatchSizeControlledDatacenter[OfflineDatacenterState]
         training_overlays: list[tuple[TrainingOverlayCache, TrainingRun]] = []
         for tr in training_runs:
             overlay = TrainingOverlayCache(
-                tr.trace_csv,
+                tr.trace,
                 target_peak_W_per_gpu=tr.target_peak_W_per_gpu,
             )
             training_overlays.append((overlay, tr))
