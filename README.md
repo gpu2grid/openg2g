@@ -1,21 +1,26 @@
 <div align="center">
 <h1>OpenG2G</h1>
-<a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache_2.0-green.svg" alt="License: Apache-2.0"></a>
+</div>
+
+<div align="center">
+<a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache_2.0-2ea44f.svg" alt="License: Apache-2.0"></a>
 <a href="https://www.python.org/"><img src="https://img.shields.io/badge/Python-3.10%2B-blue.svg" alt="Python 3.10+"></a>
 <a href="https://arxiv.org/abs/2602.05116"><img src="https://img.shields.io/badge/arXiv-2602.05116-b31b1b.svg" alt="arXiv"></a>
 </div>
 
-A modular Python framework for simulating datacenter-grid interaction, with a focus on LLM inference workloads.
+</br>
 
-OpenG2G provides the building blocks for studying how GPU-level controls (batch size, power capping) affect distribution-level voltages. It ships with an implementation of Online Feedback Optimization (OFO) for joint voltage regulation and latency management, alongside a trace-replay datacenter backend and an OpenDSS-based grid simulator.
+A modular Python library for simulating datacenter-grid interaction, with a focus on LLM workloads.
+
+OpenG2G provides the building blocks for studying how datacenter-level controls (e.g., LLM inference batch size) affect distribution-level voltages. It ships with an implementation of Online Feedback Optimization (OFO) for joint voltage regulation and latency management, alongside a trace-replay datacenter backend and an OpenDSS-based grid simulator.
 
 ## Key Features
 
-- **Multi-rate simulation** -- datacenter, grid, and controller components run at independent rates, coordinated by a shared clock.
-- **Pluggable architecture** -- swap datacenter backends (trace-based or live GPU) and controllers (OFO, tap scheduling, or your own) via simple abstract interfaces.
-- **OpenDSS integration** -- power flow analysis on standard IEEE test feeders with tap scheduling (`TapPosition`/`TapSchedule` fluent API) and voltage monitoring.
-- **Online Feedback Optimization** -- primal-dual batch size control balancing voltage regulation, inference latency, and throughput.
-- **Live GPU support** -- `OnlineDatacenter` backend reads real-time GPU power via [Zeus](https://github.com/ml-energy/zeus) for hardware-in-the-loop experiments.
+- **Multi-rate simulation**: datacenter, grid, and controller components run at independent rates, coordinated by a shared clock.
+- **Pluggable architecture**: swap datacenter backends (trace-based or live GPU) and controllers (OFO, tap scheduling, or your own) via simple abstract interfaces.
+- **OpenDSS integration**: power flow analysis on standard IEEE test feeders with tap scheduling (`TapPosition`/`TapSchedule` API) and voltage monitoring.
+- **Online Feedback Optimization**: primal-dual batch size control balancing voltage regulation, inference latency, and throughput.
+- **Live GPU support**: `OnlineDatacenter` backend reads real-time GPU power via [Zeus](https://github.com/ml-energy/zeus) for hardware-in-the-loop experiments.
 
 ## Installation
 
