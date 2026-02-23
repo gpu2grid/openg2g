@@ -1,0 +1,5224 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="A modular framework for datacenter-grid interaction with LLM workloads">
+      
+      
+      
+      
+        <link rel="prev" href="../models/">
+      
+      
+        <link rel="next" href="../config/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../assets/transmission-tower.svg">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.2">
+    
+    
+      
+        <title>openg2g.datacenter - OpenG2G</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/_mkdocstrings.css">
+    
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#openg2gdatacenter" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../.." title="OpenG2G" class="md-header__button md-logo" aria-label="OpenG2G" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m8.28 5.45-1.78-.9L7.76 2h8.47l1.27 2.55-1.78.89L15 4H9zM18.62 8h-4.53l-.79-3h-2.6l-.79 3H5.38L4.1 10.55l1.79.89.73-1.44h10.76l.72 1.45 1.79-.89zm-.85 14H15.7l-.24-.9L12 15.9l-3.47 5.2-.23.9H6.23l2.89-11h2.07l-.36 1.35L12 14.1l1.16-1.75-.35-1.35h2.07zm-6.37-7-.9-1.35-1.18 4.48zm3.28 3.12-1.18-4.48-.9 1.36z"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            OpenG2G
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              openg2g.datacenter
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/TODO/openg2g" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    GitHub
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="OpenG2G" class="md-nav__button md-logo" aria-label="OpenG2G" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m8.28 5.45-1.78-.9L7.76 2h8.47l1.27 2.55-1.78.89L15 4H9zM18.62 8h-4.53l-.79-3h-2.6l-.79 3H5.38L4.1 10.55l1.79.89.73-1.44h10.76l.72 1.45 1.79-.89zm-.85 14H15.7l-.24-.9L12 15.9l-3.47 5.2-.23.9H6.23l2.89-11h2.07l-.36 1.35L12 14.1l1.16-1.75-.35-1.35h2.07zm-6.37-7-.9-1.35-1.18 4.48zm3.28 3.12-1.18-4.48-.9 1.36z"/></svg>
+
+    </a>
+    OpenG2G
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/TODO/openg2g" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    GitHub
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting Started
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Getting Started
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../getting-started/installation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Installation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../getting-started/running/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Running a Simulation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Guide
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Guide
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guide/concepts/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Concepts and Background
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guide/data-pipeline/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Data Pipeline
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guide/architecture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guide/composing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Composing Components
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guide/custom-components/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Custom Components
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    API Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../coordinator/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    openg2g.coordinator
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../clock/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    openg2g.clock
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../types/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    openg2g.types
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../events/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    openg2g.events
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../models/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    openg2g.models
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    openg2g.datacenter
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    openg2g.datacenter
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#base" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Base
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#openg2g.datacenter.base" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        base
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="base">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#openg2g.datacenter.base.DatacenterState" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        DatacenterState
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#openg2g.datacenter.base.LLMDatacenterState" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        LLMDatacenterState
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#openg2g.datacenter.base.DatacenterBackend" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        DatacenterBackend
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="DatacenterBackend">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#openg2g.datacenter.base.DatacenterBackend.dt_s" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        dt_s
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#openg2g.datacenter.base.DatacenterBackend.state" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        state
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#openg2g.datacenter.base.DatacenterBackend.history" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        history
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#openg2g.datacenter.base.DatacenterBackend.step" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        step
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#openg2g.datacenter.base.DatacenterBackend.apply_control" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        apply_control
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#openg2g.datacenter.base.DatacenterBackend.reset" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        reset
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#openg2g.datacenter.base.DatacenterBackend.start" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        start
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#openg2g.datacenter.base.DatacenterBackend.stop" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        stop
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#openg2g.datacenter.base.DatacenterBackend.bind_event_emitter" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        bind_event_emitter
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#openg2g.datacenter.base.LLMBatchSizeControlledDatacenter" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        LLMBatchSizeControlledDatacenter
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="LLMBatchSizeControlledDatacenter">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#openg2g.datacenter.base.LLMBatchSizeControlledDatacenter.phase_share_by_model" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        phase_share_by_model
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#offline" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Offline
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#openg2g.datacenter.offline" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        offline
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="offline">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#openg2g.datacenter.offline.OfflineDatacenterState" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        OfflineDatacenterState
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#openg2g.datacenter.offline.PowerTrace" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        PowerTrace
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#openg2g.datacenter.offline.PowerTraceStore" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        PowerTraceStore
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="PowerTraceStore">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#openg2g.datacenter.offline.PowerTraceStore.model_labels" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        model_labels
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#openg2g.datacenter.offline.PowerTraceStore.load" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        load
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#openg2g.datacenter.offline.PowerTraceStore.from_traces" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        from_traces
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#openg2g.datacenter.offline.PowerTraceStore.trace" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        trace
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#openg2g.datacenter.offline.PowerTraceStore.build_templates" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        build_templates
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#openg2g.datacenter.offline.PowerTraceStore.template" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        template
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#openg2g.datacenter.offline.PowerTraceStore.batch_sizes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        batch_sizes
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#openg2g.datacenter.offline.OfflineDatacenter" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        OfflineDatacenter
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="OfflineDatacenter">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#openg2g.datacenter.offline.OfflineDatacenter.phase_share_by_model" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        phase_share_by_model
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#openg2g.datacenter.offline.OfflineDatacenter.apply_control" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        apply_control
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#openg2g.datacenter.offline.OfflineDatacenter._" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        _
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#openg2g.datacenter.offline.OfflineDatacenter.from_config" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        from_config
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#openg2g.datacenter.offline.OfflineDatacenter.batch_sizes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        batch_sizes
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#online" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Online
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#openg2g.datacenter.online" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        online
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="online">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#openg2g.datacenter.online.OnlineDatacenterState" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        OnlineDatacenterState
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#openg2g.datacenter.online.GPUEndpointMapping" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GPUEndpointMapping
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="GPUEndpointMapping">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#openg2g.datacenter.online.GPUEndpointMapping.endpoint_key" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        endpoint_key
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#openg2g.datacenter.online.OnlineModelDeployment" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        OnlineModelDeployment
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="OnlineModelDeployment">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#openg2g.datacenter.online.OnlineModelDeployment.num_real_gpus" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        num_real_gpus
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#openg2g.datacenter.online.OnlineModelDeployment.num_real_replicas" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        num_real_replicas
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#openg2g.datacenter.online.OnlineModelDeployment.augmentation_factor" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        augmentation_factor
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#openg2g.datacenter.online.LoadGenerationConfig" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        LoadGenerationConfig
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#openg2g.datacenter.online.PowerAugmentationConfig" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        PowerAugmentationConfig
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#openg2g.datacenter.online.OnlineDatacenter" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        OnlineDatacenter
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="OnlineDatacenter">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#openg2g.datacenter.online.OnlineDatacenter.phase_share_by_model" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        phase_share_by_model
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#openg2g.datacenter.online.OnlineDatacenter.start" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        start
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#openg2g.datacenter.online.OnlineDatacenter.stop" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        stop
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#openg2g.datacenter.online.OnlineDatacenter.step" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        step
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#openg2g.datacenter.online.OnlineDatacenter.apply_control" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        apply_control
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#openg2g.datacenter.online.OnlineDatacenter._" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        _
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../config/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    openg2g.datacenter.config
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../grid/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    openg2g.grid
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../controller/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    openg2g.controller
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../metrics/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    openg2g.metrics
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#base" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Base
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#openg2g.datacenter.base" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        base
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="base">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#openg2g.datacenter.base.DatacenterState" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        DatacenterState
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#openg2g.datacenter.base.LLMDatacenterState" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        LLMDatacenterState
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#openg2g.datacenter.base.DatacenterBackend" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        DatacenterBackend
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="DatacenterBackend">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#openg2g.datacenter.base.DatacenterBackend.dt_s" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        dt_s
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#openg2g.datacenter.base.DatacenterBackend.state" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        state
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#openg2g.datacenter.base.DatacenterBackend.history" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        history
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#openg2g.datacenter.base.DatacenterBackend.step" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        step
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#openg2g.datacenter.base.DatacenterBackend.apply_control" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        apply_control
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#openg2g.datacenter.base.DatacenterBackend.reset" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        reset
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#openg2g.datacenter.base.DatacenterBackend.start" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        start
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#openg2g.datacenter.base.DatacenterBackend.stop" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        stop
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#openg2g.datacenter.base.DatacenterBackend.bind_event_emitter" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        bind_event_emitter
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#openg2g.datacenter.base.LLMBatchSizeControlledDatacenter" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        LLMBatchSizeControlledDatacenter
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="LLMBatchSizeControlledDatacenter">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#openg2g.datacenter.base.LLMBatchSizeControlledDatacenter.phase_share_by_model" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        phase_share_by_model
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#offline" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Offline
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#openg2g.datacenter.offline" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        offline
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="offline">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#openg2g.datacenter.offline.OfflineDatacenterState" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        OfflineDatacenterState
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#openg2g.datacenter.offline.PowerTrace" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        PowerTrace
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#openg2g.datacenter.offline.PowerTraceStore" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        PowerTraceStore
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="PowerTraceStore">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#openg2g.datacenter.offline.PowerTraceStore.model_labels" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        model_labels
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#openg2g.datacenter.offline.PowerTraceStore.load" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        load
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#openg2g.datacenter.offline.PowerTraceStore.from_traces" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        from_traces
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#openg2g.datacenter.offline.PowerTraceStore.trace" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        trace
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#openg2g.datacenter.offline.PowerTraceStore.build_templates" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        build_templates
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#openg2g.datacenter.offline.PowerTraceStore.template" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        template
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#openg2g.datacenter.offline.PowerTraceStore.batch_sizes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        batch_sizes
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#openg2g.datacenter.offline.OfflineDatacenter" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        OfflineDatacenter
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="OfflineDatacenter">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#openg2g.datacenter.offline.OfflineDatacenter.phase_share_by_model" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        phase_share_by_model
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#openg2g.datacenter.offline.OfflineDatacenter.apply_control" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        apply_control
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#openg2g.datacenter.offline.OfflineDatacenter._" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        _
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#openg2g.datacenter.offline.OfflineDatacenter.from_config" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        from_config
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#openg2g.datacenter.offline.OfflineDatacenter.batch_sizes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        batch_sizes
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#online" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Online
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#openg2g.datacenter.online" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        online
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="online">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#openg2g.datacenter.online.OnlineDatacenterState" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        OnlineDatacenterState
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#openg2g.datacenter.online.GPUEndpointMapping" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GPUEndpointMapping
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="GPUEndpointMapping">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#openg2g.datacenter.online.GPUEndpointMapping.endpoint_key" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        endpoint_key
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#openg2g.datacenter.online.OnlineModelDeployment" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        OnlineModelDeployment
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="OnlineModelDeployment">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#openg2g.datacenter.online.OnlineModelDeployment.num_real_gpus" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        num_real_gpus
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#openg2g.datacenter.online.OnlineModelDeployment.num_real_replicas" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        num_real_replicas
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#openg2g.datacenter.online.OnlineModelDeployment.augmentation_factor" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        augmentation_factor
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#openg2g.datacenter.online.LoadGenerationConfig" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        LoadGenerationConfig
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#openg2g.datacenter.online.PowerAugmentationConfig" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        PowerAugmentationConfig
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#openg2g.datacenter.online.OnlineDatacenter" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        OnlineDatacenter
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="OnlineDatacenter">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#openg2g.datacenter.online.OnlineDatacenter.phase_share_by_model" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        phase_share_by_model
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#openg2g.datacenter.online.OnlineDatacenter.start" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        start
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#openg2g.datacenter.online.OnlineDatacenter.stop" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        stop
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#openg2g.datacenter.online.OnlineDatacenter.step" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        step
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#openg2g.datacenter.online.OnlineDatacenter.apply_control" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        apply_control
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#openg2g.datacenter.online.OnlineDatacenter._" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        _
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="openg2gdatacenter">openg2g.datacenter<a class="headerlink" href="#openg2gdatacenter" title="Permanent link">&para;</a></h1>
+<h2 id="base">Base<a class="headerlink" href="#base" title="Permanent link">&para;</a></h2>
+
+
+<div class="doc doc-object doc-module">
+
+
+
+<h2 id="openg2g.datacenter.base" class="doc doc-heading">
+            <code>openg2g.datacenter.base</code>
+
+
+<a href="#openg2g.datacenter.base" class="headerlink" title="Permanent link">&para;</a></h2>
+
+    <div class="doc doc-contents first">
+
+        <p>Abstract base class for datacenter backends and base state types.</p>
+
+
+
+
+
+
+
+
+
+
+<div class="doc doc-children">
+
+
+
+
+
+
+
+
+
+<div class="doc doc-object doc-class">
+
+
+
+<h3 id="openg2g.datacenter.base.DatacenterState" class="doc doc-heading">
+            <code>DatacenterState</code>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-dataclass"><code>dataclass</code></small>
+  </span>
+
+<a href="#openg2g.datacenter.base.DatacenterState" class="headerlink" title="Permanent link">&para;</a></h3>
+
+
+    <div class="doc doc-contents ">
+
+
+
+        <p>State emitted by a datacenter backend each timestep.</p>
+<p>Contains only universally applicable fields. LLM-inference-specific
+fields (batch sizes, replicas, latency) live on <code>LLMDatacenterState</code>.</p>
+
+
+
+
+
+
+
+
+
+
+
+<div class="doc doc-children">
+
+
+
+
+
+
+
+
+
+
+
+
+  </div>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-class">
+
+
+
+<h3 id="openg2g.datacenter.base.LLMDatacenterState" class="doc doc-heading">
+            <code>LLMDatacenterState</code>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-dataclass"><code>dataclass</code></small>
+  </span>
+
+<a href="#openg2g.datacenter.base.LLMDatacenterState" class="headerlink" title="Permanent link">&para;</a></h3>
+
+
+    <div class="doc doc-contents ">
+            <p class="doc doc-class-bases">
+              Bases: <code><a class="autorefs autorefs-internal" title="DatacenterState
+
+
+  
+      dataclass
+   (openg2g.datacenter.base.DatacenterState)" href="#openg2g.datacenter.base.DatacenterState">DatacenterState</a></code></p>
+
+
+
+        <p>State from a datacenter serving LLM inference workloads.</p>
+<p>Extends <code>DatacenterState</code> with per-model batch size, replica count,
+and observed inter-token latency fields used by LLM controllers.</p>
+
+
+
+
+
+
+
+
+
+
+
+<div class="doc doc-children">
+
+
+
+
+
+
+
+
+
+
+
+
+  </div>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-class">
+
+
+
+<h3 id="openg2g.datacenter.base.DatacenterBackend" class="doc doc-heading">
+            <code>DatacenterBackend</code>
+
+
+<a href="#openg2g.datacenter.base.DatacenterBackend" class="headerlink" title="Permanent link">&para;</a></h3>
+
+
+    <div class="doc doc-contents ">
+            <p class="doc doc-class-bases">
+              Bases: <code><span title="typing.Generic">Generic</span>[<span title="openg2g.datacenter.base.DCStateT">DCStateT</span>]</code>, <code><span title="abc.ABC">ABC</span></code></p>
+
+
+
+        <p>Interface for datacenter power simulation backends.</p>
+
+
+
+
+
+
+
+
+
+
+
+<div class="doc doc-children">
+
+
+
+
+
+
+
+<div class="doc doc-object doc-attribute">
+
+
+
+<h4 id="openg2g.datacenter.base.DatacenterBackend.dt_s" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">dt_s</span></code>
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-abstractmethod"><code>abstractmethod</code></small>
+      <small class="doc doc-label doc-label-property"><code>property</code></small>
+  </span>
+
+<a href="#openg2g.datacenter.base.DatacenterBackend.dt_s" class="headerlink" title="Permanent link">&para;</a></h4>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Native timestep as a Fraction (seconds).</p>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-attribute">
+
+
+
+<h4 id="openg2g.datacenter.base.DatacenterBackend.state" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">state</span></code>
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-abstractmethod"><code>abstractmethod</code></small>
+      <small class="doc doc-label doc-label-property"><code>property</code></small>
+  </span>
+
+<a href="#openg2g.datacenter.base.DatacenterBackend.state" class="headerlink" title="Permanent link">&para;</a></h4>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Latest emitted state.</p>
+
+
+<p><span class="doc-section-title">Raises:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="RuntimeError">RuntimeError</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If accessed before the first <code>step()</code> call.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+    </div>
+
+</div>
+
+
+
+
+<div class="doc doc-object doc-function">
+
+
+<h4 id="openg2g.datacenter.base.DatacenterBackend.history" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">history</span><span class="p">(</span><span class="n">n</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span></code>
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-abstractmethod"><code>abstractmethod</code></small>
+  </span>
+
+<a href="#openg2g.datacenter.base.DatacenterBackend.history" class="headerlink" title="Permanent link">&para;</a></h4>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Return emitted state history (all, or latest <code>n</code>).</p>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h4 id="openg2g.datacenter.base.DatacenterBackend.step" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">step</span><span class="p">(</span><span class="n">clock</span><span class="p">)</span></code>
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-abstractmethod"><code>abstractmethod</code></small>
+  </span>
+
+<a href="#openg2g.datacenter.base.DatacenterBackend.step" class="headerlink" title="Permanent link">&para;</a></h4>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Advance one native timestep. Return state for this step.</p>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h4 id="openg2g.datacenter.base.DatacenterBackend.apply_control" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">apply_control</span><span class="p">(</span><span class="n">command</span><span class="p">)</span></code>
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-abstractmethod"><code>abstractmethod</code></small>
+  </span>
+
+<a href="#openg2g.datacenter.base.DatacenterBackend.apply_control" class="headerlink" title="Permanent link">&para;</a></h4>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Apply one command. Takes effect on next step() call.</p>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h4 id="openg2g.datacenter.base.DatacenterBackend.reset" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">reset</span><span class="p">()</span></code>
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-abstractmethod"><code>abstractmethod</code></small>
+  </span>
+
+<a href="#openg2g.datacenter.base.DatacenterBackend.reset" class="headerlink" title="Permanent link">&para;</a></h4>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Reset simulation state to initial conditions.</p>
+<p>Called by the coordinator before each <code>start()</code>. Must clear all
+simulation state: history, counters, RNG seeds, cached values.
+Configuration (dt_s, models, templates) is not affected.</p>
+<p>Abstract so every implementation explicitly enumerates its state.
+A forgotten field is a bug -- not clearing it silently corrupts
+the second run.</p>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h4 id="openg2g.datacenter.base.DatacenterBackend.start" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">start</span><span class="p">()</span></code>
+
+<a href="#openg2g.datacenter.base.DatacenterBackend.start" class="headerlink" title="Permanent link">&para;</a></h4>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Acquire per-run resources (threads, solver circuits).</p>
+<p>Called after <code>reset()</code>, before the simulation loop. Override for
+backends that need resource acquisition (e.g., <code>OpenDSSGrid</code>
+compiles its DSS circuit here). No-op by default because most
+offline components have no resources to acquire.</p>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h4 id="openg2g.datacenter.base.DatacenterBackend.stop" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">stop</span><span class="p">()</span></code>
+
+<a href="#openg2g.datacenter.base.DatacenterBackend.stop" class="headerlink" title="Permanent link">&para;</a></h4>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Release per-run resources. Simulation state is preserved.</p>
+<p>Called after the simulation loop in LIFO order. Override for
+backends that acquired resources in <code>start()</code>. No-op by default.</p>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h4 id="openg2g.datacenter.base.DatacenterBackend.bind_event_emitter" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">bind_event_emitter</span><span class="p">(</span><span class="n">emitter</span><span class="p">)</span></code>
+
+<a href="#openg2g.datacenter.base.DatacenterBackend.bind_event_emitter" class="headerlink" title="Permanent link">&para;</a></h4>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Attach a clock-bound emitter for backend-originated events.</p>
+
+
+    </div>
+
+</div>
+
+
+
+  </div>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-class">
+
+
+
+<h3 id="openg2g.datacenter.base.LLMBatchSizeControlledDatacenter" class="doc doc-heading">
+            <code>LLMBatchSizeControlledDatacenter</code>
+
+
+<a href="#openg2g.datacenter.base.LLMBatchSizeControlledDatacenter" class="headerlink" title="Permanent link">&para;</a></h3>
+
+
+    <div class="doc doc-contents ">
+            <p class="doc doc-class-bases">
+              Bases: <code><a class="autorefs autorefs-internal" title="DatacenterBackend (openg2g.datacenter.base.DatacenterBackend)" href="#openg2g.datacenter.base.DatacenterBackend">DatacenterBackend</a>[<span title="openg2g.datacenter.base.DCStateT">DCStateT</span>]</code></p>
+
+
+
+        <p>Datacenter that serves LLM inference and supports batch-size control.</p>
+<p>Marker layer between <code>DatacenterBackend</code> and concrete implementations.
+Controllers that issue <code>set_batch_size</code> commands or read
+<code>active_replicas_by_model</code> / <code>observed_itl_s_by_model</code> from state
+should bind their generic to this class.</p>
+
+
+
+
+
+
+
+
+
+
+
+<div class="doc doc-children">
+
+
+
+
+
+
+
+<div class="doc doc-object doc-attribute">
+
+
+
+<h4 id="openg2g.datacenter.base.LLMBatchSizeControlledDatacenter.phase_share_by_model" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">phase_share_by_model</span></code>
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-property"><code>property</code></small>
+  </span>
+
+<a href="#openg2g.datacenter.base.LLMBatchSizeControlledDatacenter.phase_share_by_model" class="headerlink" title="Permanent link">&para;</a></h4>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Per-model phase share vectors <code>[frac_A, frac_B, frac_C]</code>.</p>
+<p>Returns an empty dict by default. Consumers treat missing keys
+as uniform <code>[1/3, 1/3, 1/3]</code>. Override in subclasses that know
+actual server-to-phase placement.</p>
+
+    </div>
+
+</div>
+
+
+
+
+
+
+  </div>
+
+    </div>
+
+</div>
+
+
+
+
+  </div>
+
+    </div>
+
+</div><h2 id="offline">Offline<a class="headerlink" href="#offline" title="Permanent link">&para;</a></h2>
+
+
+<div class="doc doc-object doc-module">
+
+
+
+<h2 id="openg2g.datacenter.offline" class="doc doc-heading">
+            <code>openg2g.datacenter.offline</code>
+
+
+<a href="#openg2g.datacenter.offline" class="headerlink" title="Permanent link">&para;</a></h2>
+
+    <div class="doc doc-contents first">
+
+        <p>Offline (trace-based) datacenter backend.</p>
+<p>Loads power trace CSVs and serves per-timestep OfflineDatacenterState objects via step().</p>
+
+
+
+
+
+
+
+
+
+
+<div class="doc doc-children">
+
+
+
+
+
+
+
+
+
+<div class="doc doc-object doc-class">
+
+
+
+<h3 id="openg2g.datacenter.offline.OfflineDatacenterState" class="doc doc-heading">
+            <code>OfflineDatacenterState</code>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-dataclass"><code>dataclass</code></small>
+  </span>
+
+<a href="#openg2g.datacenter.offline.OfflineDatacenterState" class="headerlink" title="Permanent link">&para;</a></h3>
+
+
+    <div class="doc doc-contents ">
+            <p class="doc doc-class-bases">
+              Bases: <code><a class="autorefs autorefs-internal" title="LLMDatacenterState
+
+
+  
+      dataclass
+   (openg2g.datacenter.base.LLMDatacenterState)" href="#openg2g.datacenter.base.LLMDatacenterState">LLMDatacenterState</a></code></p>
+
+
+
+        <p>Extended state from the offline (trace-based) backend.</p>
+
+
+
+
+
+
+
+
+
+
+
+<div class="doc doc-children">
+
+
+
+
+
+
+
+
+
+
+
+
+  </div>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-class">
+
+
+
+<h3 id="openg2g.datacenter.offline.PowerTrace" class="doc doc-heading">
+            <code>PowerTrace</code>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-dataclass"><code>dataclass</code></small>
+  </span>
+
+<a href="#openg2g.datacenter.offline.PowerTrace" class="headerlink" title="Permanent link">&para;</a></h3>
+
+
+    <div class="doc doc-contents ">
+
+
+
+        <p>A single power trace measurement.</p>
+
+
+<p><span class="doc-section-title">Attributes:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td><code><span title="openg2g.datacenter.offline.PowerTrace.t_s">t_s</span></code></td>
+            <td>
+                  <code><span title="numpy.ndarray">ndarray</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Time vector (seconds), monotonically increasing.</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td><code><span title="openg2g.datacenter.offline.PowerTrace.power_w">power_w</span></code></td>
+            <td>
+                  <code><span title="numpy.ndarray">ndarray</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Total power vector (watts) across all measured GPUs,
+same length as <code>t_s</code>.</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td><code><span title="openg2g.datacenter.offline.PowerTrace.measured_gpus">measured_gpus</span></code></td>
+            <td>
+                  <code><span title="int">int</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Number of GPUs used in the measurement.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+
+
+
+
+
+
+
+
+
+<div class="doc doc-children">
+
+
+
+
+
+
+
+
+
+
+
+
+  </div>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-class">
+
+
+
+<h3 id="openg2g.datacenter.offline.PowerTraceStore" class="doc doc-heading">
+            <code>PowerTraceStore</code>
+
+
+<a href="#openg2g.datacenter.offline.PowerTraceStore" class="headerlink" title="Permanent link">&para;</a></h3>
+
+
+    <div class="doc doc-contents ">
+
+
+
+        <p>Manages power traces and pre-built per-GPU templates.</p>
+<p>Indexed by <code>(model_label, batch_size)</code>. Provides:
+- <code>load(manifest)</code>: load traces discovered via a manifest CSV
+- <code>from_traces(traces)</code>: construct from pre-built <code>PowerTrace</code> objects
+- <code>build_templates(...)</code>: pre-build per-GPU power templates
+- <code>template(model_label, batch_size)</code>: look up a pre-built template
+- <code>trace(model_label, batch_size)</code>: access the raw trace</p>
+
+
+<p><span class="doc-section-title">Attributes:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td><code><span title="openg2g.datacenter.offline.PowerTraceStore.MANIFEST_COL_MODEL_LABEL">MANIFEST_COL_MODEL_LABEL</span></code></td>
+            <td>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Column name for model label in the manifest.</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td><code><span title="openg2g.datacenter.offline.PowerTraceStore.MANIFEST_COL_NUM_GPUS">MANIFEST_COL_NUM_GPUS</span></code></td>
+            <td>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Column name for measured GPU count in the manifest.</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td><code><span title="openg2g.datacenter.offline.PowerTraceStore.MANIFEST_COL_BATCH_SIZE">MANIFEST_COL_BATCH_SIZE</span></code></td>
+            <td>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Column name for batch size in the manifest.</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td><code><span title="openg2g.datacenter.offline.PowerTraceStore.MANIFEST_COL_TRACE_FILE">MANIFEST_COL_TRACE_FILE</span></code></td>
+            <td>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Column name for trace file path in the manifest.</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td><code><span title="openg2g.datacenter.offline.PowerTraceStore.TRACE_COL_TIME">TRACE_COL_TIME</span></code></td>
+            <td>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Column name for time in trace CSVs.</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td><code><span title="openg2g.datacenter.offline.PowerTraceStore.TRACE_COL_POWER">TRACE_COL_POWER</span></code></td>
+            <td>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Column name for power in trace CSVs.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+
+
+
+
+
+
+
+
+
+<div class="doc doc-children">
+
+
+
+
+
+
+
+<div class="doc doc-object doc-attribute">
+
+
+
+<h4 id="openg2g.datacenter.offline.PowerTraceStore.model_labels" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">model_labels</span></code>
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-property"><code>property</code></small>
+  </span>
+
+<a href="#openg2g.datacenter.offline.PowerTraceStore.model_labels" class="headerlink" title="Permanent link">&para;</a></h4>
+
+
+    <div class="doc doc-contents ">
+
+        <p>List of model labels in the store.</p>
+
+    </div>
+
+</div>
+
+
+
+
+<div class="doc doc-object doc-function">
+
+
+<h4 id="openg2g.datacenter.offline.PowerTraceStore.load" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">load</span><span class="p">(</span><span class="n">manifest</span><span class="p">)</span></code>
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-classmethod"><code>classmethod</code></small>
+  </span>
+
+<a href="#openg2g.datacenter.offline.PowerTraceStore.load" class="headerlink" title="Permanent link">&para;</a></h4>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Load traces discovered via a manifest CSV.</p>
+<p>Trace file paths in the manifest are resolved relative to the
+manifest file's parent directory.</p>
+
+
+<p><span class="doc-section-title">Parameters:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Description</th>
+          <th>Default</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                <code>manifest</code>
+            </td>
+            <td>
+                  <code><span title="pathlib.Path">Path</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Path to the manifest CSV (e.g. <code>traces_summary.csv</code>).
+Expected columns: <code>model_label</code>, <code>num_gpus</code>, <code>max_num_seqs</code>,
+<code>trace_file</code>.</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h4 id="openg2g.datacenter.offline.PowerTraceStore.from_traces" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">from_traces</span><span class="p">(</span><span class="n">traces</span><span class="p">)</span></code>
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-classmethod"><code>classmethod</code></small>
+  </span>
+
+<a href="#openg2g.datacenter.offline.PowerTraceStore.from_traces" class="headerlink" title="Permanent link">&para;</a></h4>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Construct from pre-built <code>PowerTrace</code> objects.</p>
+
+
+<p><span class="doc-section-title">Parameters:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Description</th>
+          <th>Default</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                <code>traces</code>
+            </td>
+            <td>
+                  <code><span title="dict">dict</span>[<span title="str">str</span>, <span title="dict">dict</span>[<span title="int">int</span>, <a class="autorefs autorefs-internal" title="PowerTrace
+
+
+  
+      dataclass
+   (openg2g.datacenter.offline.PowerTrace)" href="#openg2g.datacenter.offline.PowerTrace">PowerTrace</a>]]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Mapping of <code>model_label -&gt; batch_size -&gt; PowerTrace</code>.</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h4 id="openg2g.datacenter.offline.PowerTraceStore.trace" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">trace</span><span class="p">(</span><span class="n">model_label</span><span class="p">,</span> <span class="n">batch_size</span><span class="p">)</span></code>
+
+<a href="#openg2g.datacenter.offline.PowerTraceStore.trace" class="headerlink" title="Permanent link">&para;</a></h4>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Return the raw power trace for a model and batch size.</p>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h4 id="openg2g.datacenter.offline.PowerTraceStore.build_templates" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">build_templates</span><span class="p">(</span><span class="o">*</span><span class="p">,</span> <span class="n">duration_s</span><span class="p">,</span> <span class="n">timestep_s</span><span class="p">,</span> <span class="n">steady_skip_s</span><span class="o">=</span><span class="mf">0.0</span><span class="p">)</span></code>
+
+<a href="#openg2g.datacenter.offline.PowerTraceStore.build_templates" class="headerlink" title="Permanent link">&para;</a></h4>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Pre-build per-GPU power templates for all traces.</p>
+
+
+<p><span class="doc-section-title">Parameters:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Description</th>
+          <th>Default</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                <code>duration_s</code>
+            </td>
+            <td>
+                  <code><span title="fractions.Fraction">Fraction</span> | <span title="float">float</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Total simulation duration (seconds).</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>timestep_s</code>
+            </td>
+            <td>
+                  <code><span title="fractions.Fraction">Fraction</span> | <span title="float">float</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Simulation timestep (seconds).</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>steady_skip_s</code>
+            </td>
+            <td>
+                  <code><span title="float">float</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Skip this many seconds from the start of each
+trace to avoid warm-up transients.</p>
+              </div>
+            </td>
+            <td>
+                  <code>0.0</code>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h4 id="openg2g.datacenter.offline.PowerTraceStore.template" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">template</span><span class="p">(</span><span class="n">model_label</span><span class="p">,</span> <span class="n">batch_size</span><span class="p">)</span></code>
+
+<a href="#openg2g.datacenter.offline.PowerTraceStore.template" class="headerlink" title="Permanent link">&para;</a></h4>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Return a pre-built per-GPU power template.</p>
+<p>Requires a prior call to <code>build_templates</code>.</p>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h4 id="openg2g.datacenter.offline.PowerTraceStore.batch_sizes" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">batch_sizes</span><span class="p">(</span><span class="n">model_label</span><span class="p">)</span></code>
+
+<a href="#openg2g.datacenter.offline.PowerTraceStore.batch_sizes" class="headerlink" title="Permanent link">&para;</a></h4>
+
+
+    <div class="doc doc-contents ">
+
+        <p>List of batch sizes available for a model.</p>
+
+
+    </div>
+
+</div>
+
+
+
+  </div>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-class">
+
+
+
+<h3 id="openg2g.datacenter.offline.OfflineDatacenter" class="doc doc-heading">
+            <code>OfflineDatacenter</code>
+
+
+<a href="#openg2g.datacenter.offline.OfflineDatacenter" class="headerlink" title="Permanent link">&para;</a></h3>
+
+
+    <div class="doc doc-contents ">
+            <p class="doc doc-class-bases">
+              Bases: <code><a class="autorefs autorefs-internal" title="LLMBatchSizeControlledDatacenter (openg2g.datacenter.base.LLMBatchSizeControlledDatacenter)" href="#openg2g.datacenter.base.LLMBatchSizeControlledDatacenter">LLMBatchSizeControlledDatacenter</a>[<a class="autorefs autorefs-internal" title="OfflineDatacenterState
+
+
+  
+      dataclass
+   (openg2g.datacenter.offline.OfflineDatacenterState)" href="#openg2g.datacenter.offline.OfflineDatacenterState">OfflineDatacenterState</a>]</code></p>
+
+
+
+        <p>Trace-based datacenter simulation with step-by-step interface.</p>
+<p>Each <code>step()</code> call computes one timestep of power output by indexing
+into pre-built per-GPU templates, applying per-server amplitude scaling
+and noise, and summing across active servers per phase.</p>
+<p>Batch size changes via <code>apply_control()</code> take effect on the next
+<code>step()</code> call.</p>
+
+
+<p><span class="doc-section-title">Parameters:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Description</th>
+          <th>Default</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                <code>trace_store</code>
+            </td>
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="PowerTraceStore (openg2g.datacenter.offline.PowerTraceStore)" href="#openg2g.datacenter.offline.PowerTraceStore">PowerTraceStore</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p><code>PowerTraceStore</code> with templates for all
+(model, batch) pairs.</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>models</code>
+            </td>
+            <td>
+                  <code><span title="list">list</span>[<a class="autorefs autorefs-internal" title="LLMInferenceModelSpec
+
+
+  
+      dataclass
+   (openg2g.models.spec.LLMInferenceModelSpec)" href="../models/#openg2g.models.spec.LLMInferenceModelSpec">LLMInferenceModelSpec</a>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>List of model specs describing the served models.</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>timestep_s</code>
+            </td>
+            <td>
+                  <code><span title="fractions.Fraction">Fraction</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Simulation timestep (seconds).</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>gpus_per_server</code>
+            </td>
+            <td>
+                  <code><span title="int">int</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Number of GPUs per physical server rack.</p>
+              </div>
+            </td>
+            <td>
+                  <code>8</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>seed</code>
+            </td>
+            <td>
+                  <code><span title="int">int</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Random seed for layout generation and noise.</p>
+              </div>
+            </td>
+            <td>
+                  <code>0</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>amplitude_scale_range</code>
+            </td>
+            <td>
+                  <code><span title="tuple">tuple</span>[<span title="float">float</span>, <span title="float">float</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p><code>(low, high)</code> range for per-server amplitude
+scaling. Each server draws a uniform multiplier from this range.</p>
+              </div>
+            </td>
+            <td>
+                  <code>(1.0, 1.0)</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>noise_fraction</code>
+            </td>
+            <td>
+                  <code><span title="float">float</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Gaussian noise standard deviation as a fraction of
+per-server power.</p>
+              </div>
+            </td>
+            <td>
+                  <code>0.0</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>activation_strategy</code>
+            </td>
+            <td>
+                  <code><span title="openg2g.datacenter.layout.ActivationStrategy">ActivationStrategy</span> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Controls which servers are active at each
+timestep. Subclass <code>ActivationStrategy</code> for custom strategies
+(e.g., phase-aware load balancing). If <code>None</code>, all servers are
+always active.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>base_kw_per_phase</code>
+            </td>
+            <td>
+                  <code><span title="float">float</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Constant base load per phase (kW).</p>
+              </div>
+            </td>
+            <td>
+                  <code>0.0</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>training_overlays</code>
+            </td>
+            <td>
+                  <code><span title="list">list</span>[<span title="tuple">tuple</span>[<a class="autorefs autorefs-internal" title="TrainingOverlayCache (openg2g.datacenter.training_overlay.TrainingOverlayCache)" href="../config/#openg2g.datacenter.training_overlay.TrainingOverlayCache">TrainingOverlayCache</a>, <a class="autorefs autorefs-internal" title="TrainingRun
+
+
+  
+      dataclass
+   (openg2g.datacenter.config.TrainingRun)" href="../config/#openg2g.datacenter.config.TrainingRun">TrainingRun</a>]] | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>List of <code>(TrainingOverlayCache, TrainingRun)</code> pairs
+for training workloads.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>itl_distributions</code>
+            </td>
+            <td>
+                  <code><span title="dict">dict</span>[<span title="str">str</span>, <span title="dict">dict</span>[<span title="int">int</span>, <span title="mlenergy_data.modeling.ITLMixtureModel">ITLMixtureModel</span>]] | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Optional per-model ITL mixture distributions:
+<code>model_label -&gt; batch_size -&gt; ITLMixtureModel</code>.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>latency_exact_threshold</code>
+            </td>
+            <td>
+                  <code><span title="int">int</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Exact-sampling threshold for latency averaging.</p>
+              </div>
+            </td>
+            <td>
+                  <code>30</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>latency_seed</code>
+            </td>
+            <td>
+                  <code><span title="int">int</span> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Optional seed for latency RNG. Defaults to <code>seed + 54321</code>.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+
+
+
+
+
+
+
+
+
+<div class="doc doc-children">
+
+
+
+
+
+
+
+<div class="doc doc-object doc-attribute">
+
+
+
+<h4 id="openg2g.datacenter.offline.OfflineDatacenter.phase_share_by_model" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">phase_share_by_model</span></code>
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-property"><code>property</code></small>
+  </span>
+
+<a href="#openg2g.datacenter.offline.OfflineDatacenter.phase_share_by_model" class="headerlink" title="Permanent link">&para;</a></h4>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Per-model phase share vectors derived from server placement.</p>
+
+
+    <p><span class="doc-section-title">Returns:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="dict">dict</span>[<span title="str">str</span>, <span title="numpy.ndarray">ndarray</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Mapping of model label to a 3-element array <code>[frac_A, frac_B, frac_C]</code></p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="dict">dict</span>[<span title="str">str</span>, <span title="numpy.ndarray">ndarray</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>representing the fraction of servers on each phase.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+    </div>
+
+</div>
+
+
+
+
+<div class="doc doc-object doc-function">
+
+
+<h4 id="openg2g.datacenter.offline.OfflineDatacenter.apply_control" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">apply_control</span><span class="p">(</span><span class="n">command</span><span class="p">)</span></code>
+
+<a href="#openg2g.datacenter.offline.OfflineDatacenter.apply_control" class="headerlink" title="Permanent link">&para;</a></h4>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Apply a control command. Dispatches on command type.</p>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h4 id="openg2g.datacenter.offline.OfflineDatacenter._" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">_</span><span class="p">(</span><span class="n">command</span><span class="p">)</span></code>
+
+<a href="#openg2g.datacenter.offline.OfflineDatacenter._" class="headerlink" title="Permanent link">&para;</a></h4>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Record new batch sizes. Changes take effect on the next step.</p>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h4 id="openg2g.datacenter.offline.OfflineDatacenter.from_config" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">from_config</span><span class="p">(</span><span class="n">datacenter</span><span class="p">,</span> <span class="n">workload</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">trace_store</span><span class="p">,</span> <span class="n">timestep_s</span><span class="p">,</span> <span class="n">seed</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span> <span class="n">amplitude_scale_range</span><span class="o">=</span><span class="p">(</span><span class="mf">1.0</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">),</span> <span class="n">noise_fraction</span><span class="o">=</span><span class="mf">0.0</span><span class="p">,</span> <span class="n">itl_distributions</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">latency_seed</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">latency_exact_threshold</span><span class="o">=</span><span class="mi">30</span><span class="p">)</span></code>
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-classmethod"><code>classmethod</code></small>
+  </span>
+
+<a href="#openg2g.datacenter.offline.OfflineDatacenter.from_config" class="headerlink" title="Permanent link">&para;</a></h4>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Create an OfflineDatacenter from config objects.</p>
+<p>If <code>workload.server_ramps</code> is set, it is wrapped in a
+<code>RampActivationStrategy</code>. For custom activation strategies,
+use the direct constructor with <code>activation_strategy=</code>.</p>
+
+
+<p><span class="doc-section-title">Parameters:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Description</th>
+          <th>Default</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                <code>datacenter</code>
+            </td>
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="DatacenterConfig
+
+
+  
+      dataclass
+   (openg2g.datacenter.config.DatacenterConfig)" href="../config/#openg2g.datacenter.config.DatacenterConfig">DatacenterConfig</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Facility configuration (GPUs per server, base load).</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>workload</code>
+            </td>
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="WorkloadConfig (openg2g.datacenter.config.WorkloadConfig)" href="../config/#openg2g.datacenter.config.WorkloadConfig">WorkloadConfig</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Workload configuration (inference models, training, ramps).</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>trace_store</code>
+            </td>
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="PowerTraceStore (openg2g.datacenter.offline.PowerTraceStore)" href="#openg2g.datacenter.offline.PowerTraceStore">PowerTraceStore</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Power trace store with templates for all (model, batch).</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>timestep_s</code>
+            </td>
+            <td>
+                  <code><span title="fractions.Fraction">Fraction</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Simulation timestep (seconds).</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>seed</code>
+            </td>
+            <td>
+                  <code><span title="int">int</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Random seed for layout generation and noise.</p>
+              </div>
+            </td>
+            <td>
+                  <code>0</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>amplitude_scale_range</code>
+            </td>
+            <td>
+                  <code><span title="tuple">tuple</span>[<span title="float">float</span>, <span title="float">float</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p><code>(low, high)</code> for per-server amplitude scaling.</p>
+              </div>
+            </td>
+            <td>
+                  <code>(1.0, 1.0)</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>noise_fraction</code>
+            </td>
+            <td>
+                  <code><span title="float">float</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Noise std as fraction of per-server power.</p>
+              </div>
+            </td>
+            <td>
+                  <code>0.0</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>itl_distributions</code>
+            </td>
+            <td>
+                  <code><span title="dict">dict</span>[<span title="str">str</span>, <span title="dict">dict</span>[<span title="int">int</span>, <span title="mlenergy_data.modeling.ITLMixtureModel">ITLMixtureModel</span>]] | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Optional per-model ITL mixture distributions.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>latency_seed</code>
+            </td>
+            <td>
+                  <code><span title="int">int</span> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Optional seed for latency RNG.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>latency_exact_threshold</code>
+            </td>
+            <td>
+                  <code><span title="int">int</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Exact-sampling threshold for latency averaging.</p>
+              </div>
+            </td>
+            <td>
+                  <code>30</code>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h4 id="openg2g.datacenter.offline.OfflineDatacenter.batch_sizes" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">batch_sizes</span><span class="p">(</span><span class="n">model_label</span><span class="p">)</span></code>
+
+<a href="#openg2g.datacenter.offline.OfflineDatacenter.batch_sizes" class="headerlink" title="Permanent link">&para;</a></h4>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Delegate to the trace store for available batch sizes.</p>
+
+
+    </div>
+
+</div>
+
+
+
+  </div>
+
+    </div>
+
+</div>
+
+
+
+
+  </div>
+
+    </div>
+
+</div><h2 id="online">Online<a class="headerlink" href="#online" title="Permanent link">&para;</a></h2>
+
+
+<div class="doc doc-object doc-module">
+
+
+
+<h2 id="openg2g.datacenter.online" class="doc doc-heading">
+            <code>openg2g.datacenter.online</code>
+
+
+<a href="#openg2g.datacenter.online" class="headerlink" title="Permanent link">&para;</a></h2>
+
+    <div class="doc doc-contents first">
+
+        <p>Online (live GPU) datacenter backend with power augmentation.</p>
+<p>Connects to real vLLM inference servers for load generation and ITL
+measurement, and to zeusd instances for live GPU power monitoring.
+Power readings from a small number of real GPUs are augmented to
+datacenter scale using temporal staggering.</p>
+<p>Requires <code>pip install zeus aiohttp</code>.</p>
+
+
+
+
+
+
+
+
+
+
+<div class="doc doc-children">
+
+
+
+
+
+
+
+
+
+<div class="doc doc-object doc-class">
+
+
+
+<h3 id="openg2g.datacenter.online.OnlineDatacenterState" class="doc doc-heading">
+            <code>OnlineDatacenterState</code>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-dataclass"><code>dataclass</code></small>
+  </span>
+
+<a href="#openg2g.datacenter.online.OnlineDatacenterState" class="headerlink" title="Permanent link">&para;</a></h3>
+
+
+    <div class="doc doc-contents ">
+            <p class="doc doc-class-bases">
+              Bases: <code><a class="autorefs autorefs-internal" title="LLMDatacenterState
+
+
+  
+      dataclass
+   (openg2g.datacenter.base.LLMDatacenterState)" href="#openg2g.datacenter.base.LLMDatacenterState">LLMDatacenterState</a></code></p>
+
+
+
+        <p>Extended state from the online (live GPU) backend.</p>
+<p>The base <code>power_w</code> field carries the augmented three-phase power
+(what the grid sees). This subclass adds the measured (pre-augmentation)
+breakdown for post-hoc analysis.</p>
+
+
+<p><span class="doc-section-title">Attributes:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td><code><span title="openg2g.datacenter.online.OnlineDatacenterState.measured_power_w">measured_power_w</span></code></td>
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="ThreePhase
+
+
+  
+      dataclass
+   (openg2g.types.ThreePhase)" href="../types/#openg2g.types.ThreePhase">ThreePhase</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Total measured three-phase power from real GPUs
+(before augmentation), plus base load.</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td><code><span title="openg2g.datacenter.online.OnlineDatacenterState.measured_power_w_by_model">measured_power_w_by_model</span></code></td>
+            <td>
+                  <code><span title="dict">dict</span>[<span title="str">str</span>, <span title="float">float</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Per-model total measured power from real
+GPUs (watts).</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td><code><span title="openg2g.datacenter.online.OnlineDatacenterState.augmented_power_w_by_model">augmented_power_w_by_model</span></code></td>
+            <td>
+                  <code><span title="dict">dict</span>[<span title="str">str</span>, <span title="float">float</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Per-model augmented power (watts). This
+is the power fed to the grid for each model after scaling up.</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td><code><span title="openg2g.datacenter.online.OnlineDatacenterState.augmentation_factor_by_model">augmentation_factor_by_model</span></code></td>
+            <td>
+                  <code><span title="dict">dict</span>[<span title="str">str</span>, <span title="float">float</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Per-model augmentation multiplier
+(virtual replicas / real replicas).</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td><code><span title="openg2g.datacenter.online.OnlineDatacenterState.prometheus_metrics_by_model">prometheus_metrics_by_model</span></code></td>
+            <td>
+                  <code><span title="dict">dict</span>[<span title="str">str</span>, <span title="dict">dict</span>[<span title="str">str</span>, <span title="float">float</span>]]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Per-model Prometheus metrics snapshot.
+Keys are model labels, values are dicts with metric names like
+<code>num_requests_running</code>, <code>num_requests_waiting</code>,
+<code>kv_cache_usage_perc</code>, <code>num_preemptions_total</code>.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+
+
+
+
+
+
+
+
+
+<div class="doc doc-children">
+
+
+
+
+
+
+
+
+
+
+
+
+  </div>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-class">
+
+
+
+<h3 id="openg2g.datacenter.online.GPUEndpointMapping" class="doc doc-heading">
+            <code>GPUEndpointMapping</code>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-dataclass"><code>dataclass</code></small>
+  </span>
+
+<a href="#openg2g.datacenter.online.GPUEndpointMapping" class="headerlink" title="Permanent link">&para;</a></h3>
+
+
+    <div class="doc doc-contents ">
+
+
+
+        <p>Maps a zeusd endpoint to specific GPUs on a specific electrical phase.</p>
+
+
+<p><span class="doc-section-title">Parameters:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Description</th>
+          <th>Default</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                <code>host</code>
+            </td>
+            <td>
+                  <code><span title="str">str</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Hostname or IP of the zeusd instance.</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>port</code>
+            </td>
+            <td>
+                  <code><span title="int">int</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>TCP port of the zeusd instance.</p>
+              </div>
+            </td>
+            <td>
+                  <code>4938</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>gpu_indices</code>
+            </td>
+            <td>
+                  <code><span title="tuple">tuple</span>[<span title="int">int</span>, ...]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>GPU device indices to monitor on this endpoint.</p>
+              </div>
+            </td>
+            <td>
+                  <code>(0,)</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>phase</code>
+            </td>
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="Phase (openg2g.grid.base.Phase)" href="../grid/#openg2g.grid.base.Phase">Phase</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Electrical phase this endpoint's GPUs are connected to.</p>
+              </div>
+            </td>
+            <td>
+                  <code><span title="openg2g.grid.base.Phase.A">A</span></code>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+
+
+
+
+
+
+
+
+
+<div class="doc doc-children">
+
+
+
+
+
+
+
+<div class="doc doc-object doc-attribute">
+
+
+
+<h4 id="openg2g.datacenter.online.GPUEndpointMapping.endpoint_key" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">endpoint_key</span></code>
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-property"><code>property</code></small>
+  </span>
+
+<a href="#openg2g.datacenter.online.GPUEndpointMapping.endpoint_key" class="headerlink" title="Permanent link">&para;</a></h4>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Return the <code>host:port</code> key used by <code>PowerStreamingClient</code>.</p>
+
+    </div>
+
+</div>
+
+
+
+
+
+
+  </div>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-class">
+
+
+
+<h3 id="openg2g.datacenter.online.OnlineModelDeployment" class="doc doc-heading">
+            <code>OnlineModelDeployment</code>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-dataclass"><code>dataclass</code></small>
+  </span>
+
+<a href="#openg2g.datacenter.online.OnlineModelDeployment" class="headerlink" title="Permanent link">&para;</a></h3>
+
+
+    <div class="doc doc-contents ">
+
+
+
+        <p>Deployment of one model on physical hardware.</p>
+<p>Pairs a reusable <code>LLMInferenceModelSpec</code> with physical deployment
+details.  <code>spec.num_replicas</code> is the simulated (augmented) count
+for grid simulation.  The real replica count is derived from
+<code>gpu_endpoints</code> and <code>spec.gpus_per_replica</code>.</p>
+
+
+<p><span class="doc-section-title">Parameters:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Description</th>
+          <th>Default</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                <code>spec</code>
+            </td>
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="LLMInferenceModelSpec
+
+
+  
+      dataclass
+   (openg2g.models.spec.LLMInferenceModelSpec)" href="../models/#openg2g.models.spec.LLMInferenceModelSpec">LLMInferenceModelSpec</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Model specification (shared with offline datacenter).</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>vllm_base_url</code>
+            </td>
+            <td>
+                  <code><span title="str">str</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Base URL of the vLLM server (e.g. <code>http://node1:8000</code>).</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>model_name</code>
+            </td>
+            <td>
+                  <code><span title="str">str</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>OpenAI API model name served by vLLM.</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>gpu_endpoints</code>
+            </td>
+            <td>
+                  <code><span title="tuple">tuple</span>[<a class="autorefs autorefs-internal" title="GPUEndpointMapping
+
+
+  
+      dataclass
+   (openg2g.datacenter.online.GPUEndpointMapping)" href="#openg2g.datacenter.online.GPUEndpointMapping">GPUEndpointMapping</a>, ...]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>GPU endpoint mappings for power monitoring.</p>
+              </div>
+            </td>
+            <td>
+                  <code>()</code>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+
+
+
+
+
+
+
+
+
+<div class="doc doc-children">
+
+
+
+
+
+
+
+<div class="doc doc-object doc-attribute">
+
+
+
+<h4 id="openg2g.datacenter.online.OnlineModelDeployment.num_real_gpus" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">num_real_gpus</span></code>
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-property"><code>property</code></small>
+  </span>
+
+<a href="#openg2g.datacenter.online.OnlineModelDeployment.num_real_gpus" class="headerlink" title="Permanent link">&para;</a></h4>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Total number of real GPUs for this model across all endpoints.</p>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-attribute">
+
+
+
+<h4 id="openg2g.datacenter.online.OnlineModelDeployment.num_real_replicas" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">num_real_replicas</span></code>
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-property"><code>property</code></small>
+  </span>
+
+<a href="#openg2g.datacenter.online.OnlineModelDeployment.num_real_replicas" class="headerlink" title="Permanent link">&para;</a></h4>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Number of real replicas (real GPUs / GPUs per replica).</p>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-attribute">
+
+
+
+<h4 id="openg2g.datacenter.online.OnlineModelDeployment.augmentation_factor" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">augmentation_factor</span></code>
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-property"><code>property</code></small>
+  </span>
+
+<a href="#openg2g.datacenter.online.OnlineModelDeployment.augmentation_factor" class="headerlink" title="Permanent link">&para;</a></h4>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Ratio of simulated replicas to real replicas.</p>
+
+    </div>
+
+</div>
+
+
+
+
+
+
+  </div>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-class">
+
+
+
+<h3 id="openg2g.datacenter.online.LoadGenerationConfig" class="doc doc-heading">
+            <code>LoadGenerationConfig</code>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-dataclass"><code>dataclass</code></small>
+  </span>
+
+<a href="#openg2g.datacenter.online.LoadGenerationConfig" class="headerlink" title="Permanent link">&para;</a></h3>
+
+
+    <div class="doc doc-contents ">
+
+
+
+        <p>Configuration for the request load generator.</p>
+
+
+<p><span class="doc-section-title">Parameters:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Description</th>
+          <th>Default</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                <code>max_output_tokens</code>
+            </td>
+            <td>
+                  <code><span title="int">int</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Maximum output tokens per request.</p>
+              </div>
+            </td>
+            <td>
+                  <code>512</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>concurrency_multiplier</code>
+            </td>
+            <td>
+                  <code><span title="float">float</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Number of concurrent requests per unit
+of batch size (<code>N_concurrent = batch_size * this</code>).</p>
+              </div>
+            </td>
+            <td>
+                  <code>3.0</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>itl_window_s</code>
+            </td>
+            <td>
+                  <code><span title="float">float</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Seconds of ITL history to average over.</p>
+              </div>
+            </td>
+            <td>
+                  <code>1.0</code>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+
+
+
+
+
+
+
+
+
+<div class="doc doc-children">
+
+
+
+
+
+
+
+
+
+
+
+
+  </div>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-class">
+
+
+
+<h3 id="openg2g.datacenter.online.PowerAugmentationConfig" class="doc doc-heading">
+            <code>PowerAugmentationConfig</code>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-dataclass"><code>dataclass</code></small>
+  </span>
+
+<a href="#openg2g.datacenter.online.PowerAugmentationConfig" class="headerlink" title="Permanent link">&para;</a></h3>
+
+
+    <div class="doc doc-contents ">
+
+
+
+        <p>Configuration for scaling real GPU power to datacenter level.</p>
+
+
+<p><span class="doc-section-title">Parameters:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Description</th>
+          <th>Default</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                <code>base_kw_per_phase</code>
+            </td>
+            <td>
+                  <code><span title="float">float</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Constant base load per electrical phase (kW).</p>
+              </div>
+            </td>
+            <td>
+                  <code>0.0</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>noise_frac</code>
+            </td>
+            <td>
+                  <code><span title="float">float</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Noise standard deviation as a fraction of augmented power.</p>
+              </div>
+            </td>
+            <td>
+                  <code>0.02</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>stagger_buffer_s</code>
+            </td>
+            <td>
+                  <code><span title="float">float</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Seconds of power history for temporal staggering.</p>
+              </div>
+            </td>
+            <td>
+                  <code>10.0</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>num_virtual_groups</code>
+            </td>
+            <td>
+                  <code><span title="int">int</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Number of virtual server groups for staggering.
+Each group reads from the power buffer at a different time offset,
+smoothing batch-size-change transients.</p>
+              </div>
+            </td>
+            <td>
+                  <code>64</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>seed</code>
+            </td>
+            <td>
+                  <code><span title="int">int</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Random seed for staggering offsets and noise.</p>
+              </div>
+            </td>
+            <td>
+                  <code>0</code>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+
+
+
+
+
+
+
+
+
+<div class="doc doc-children">
+
+
+
+
+
+
+
+
+
+
+
+
+  </div>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-class">
+
+
+
+<h3 id="openg2g.datacenter.online.OnlineDatacenter" class="doc doc-heading">
+            <code>OnlineDatacenter</code>
+
+
+<a href="#openg2g.datacenter.online.OnlineDatacenter" class="headerlink" title="Permanent link">&para;</a></h3>
+
+
+    <div class="doc doc-contents ">
+            <p class="doc doc-class-bases">
+              Bases: <code><a class="autorefs autorefs-internal" title="LLMBatchSizeControlledDatacenter (openg2g.datacenter.base.LLMBatchSizeControlledDatacenter)" href="#openg2g.datacenter.base.LLMBatchSizeControlledDatacenter">LLMBatchSizeControlledDatacenter</a>[<a class="autorefs autorefs-internal" title="OnlineDatacenterState
+
+
+  
+      dataclass
+   (openg2g.datacenter.online.OnlineDatacenterState)" href="#openg2g.datacenter.online.OnlineDatacenterState">OnlineDatacenterState</a>]</code></p>
+
+
+
+        <p>Live GPU datacenter backend with power augmentation.</p>
+<p>Dispatches inference load to vLLM servers, streams GPU power from
+zeusd, measures ITL from streaming responses, and augments power
+readings to datacenter scale for grid simulation.</p>
+<p>Call <code>start()</code> before the first <code>step()</code> and <code>stop()</code> after the
+simulation loop finishes.</p>
+
+
+<p><span class="doc-section-title">Parameters:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Description</th>
+          <th>Default</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                <code>deployments</code>
+            </td>
+            <td>
+                  <code><span title="collections.abc.Sequence">Sequence</span>[<a class="autorefs autorefs-internal" title="OnlineModelDeployment
+
+
+  
+      dataclass
+   (openg2g.datacenter.online.OnlineModelDeployment)" href="#openg2g.datacenter.online.OnlineModelDeployment">OnlineModelDeployment</a>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>List of model deployments with physical hardware mapping.</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>power_client</code>
+            </td>
+            <td>
+                  <code><span title="zeus.monitor.power_streaming.PowerStreamingClient">PowerStreamingClient</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Zeus <code>PowerStreamingClient</code> connected to zeusd instances.</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>augmentation</code>
+            </td>
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="PowerAugmentationConfig
+
+
+  
+      dataclass
+   (openg2g.datacenter.online.PowerAugmentationConfig)" href="#openg2g.datacenter.online.PowerAugmentationConfig">PowerAugmentationConfig</a> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Power augmentation configuration.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>load_gen</code>
+            </td>
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="LoadGenerationConfig
+
+
+  
+      dataclass
+   (openg2g.datacenter.online.LoadGenerationConfig)" href="#openg2g.datacenter.online.LoadGenerationConfig">LoadGenerationConfig</a> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Load generation configuration.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>requests_by_model</code>
+            </td>
+            <td>
+                  <code><span title="dict">dict</span>[<span title="str">str</span>, <span title="list">list</span>[<span title="dict">dict</span>]]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Mapping of model_label -&gt; list of pre-built
+OpenAI Chat Completion request dicts (from <code>data/online/build_requests.py</code>).
+Each dict should contain at least <code>model</code>, <code>messages</code>, and
+<code>max_completion_tokens</code>. Streaming fields are added automatically.</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>dt_s</code>
+            </td>
+            <td>
+                  <code><span title="fractions.Fraction">Fraction</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Simulation timestep (seconds).</p>
+              </div>
+            </td>
+            <td>
+                  <code><span title="fractions.Fraction">Fraction</span>(1, 10)</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>prometheus_poll_interval_s</code>
+            </td>
+            <td>
+                  <code><span title="float">float</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>How often to poll vLLM /metrics (seconds).
+Set to 0 to disable Prometheus polling.</p>
+              </div>
+            </td>
+            <td>
+                  <code>0.5</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>health_check</code>
+            </td>
+            <td>
+                  <code><span title="bool">bool</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If True, run health checks on start().</p>
+              </div>
+            </td>
+            <td>
+                  <code>True</code>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+
+
+
+
+
+
+
+
+
+<div class="doc doc-children">
+
+
+
+
+
+
+
+<div class="doc doc-object doc-attribute">
+
+
+
+<h4 id="openg2g.datacenter.online.OnlineDatacenter.phase_share_by_model" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">phase_share_by_model</span></code>
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-property"><code>property</code></small>
+  </span>
+
+<a href="#openg2g.datacenter.online.OnlineDatacenter.phase_share_by_model" class="headerlink" title="Permanent link">&para;</a></h4>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Per-model phase share vectors derived from GPU endpoint placement.</p>
+
+    </div>
+
+</div>
+
+
+
+
+<div class="doc doc-object doc-function">
+
+
+<h4 id="openg2g.datacenter.online.OnlineDatacenter.start" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">start</span><span class="p">()</span></code>
+
+<a href="#openg2g.datacenter.online.OnlineDatacenter.start" class="headerlink" title="Permanent link">&para;</a></h4>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Start load generation and wait for initial readings.</p>
+
+
+<details class="sequence" open>
+  <summary>Sequence</summary>
+  <ol>
+<li>Run health checks on all vLLM servers and zeusd instances.</li>
+<li>Wait for at least one power reading per endpoint (10 s timeout).</li>
+<li>Set initial batch sizes on all vLLM servers.</li>
+<li>Start load generation threads.</li>
+<li>Wait for at least one ITL sample per model (30 s timeout).</li>
+</ol>
+</details>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h4 id="openg2g.datacenter.online.OnlineDatacenter.stop" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">stop</span><span class="p">()</span></code>
+
+<a href="#openg2g.datacenter.online.OnlineDatacenter.stop" class="headerlink" title="Permanent link">&para;</a></h4>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Stop load generation and power streaming.</p>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h4 id="openg2g.datacenter.online.OnlineDatacenter.step" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">step</span><span class="p">(</span><span class="n">clock</span><span class="p">)</span></code>
+
+<a href="#openg2g.datacenter.online.OnlineDatacenter.step" class="headerlink" title="Permanent link">&para;</a></h4>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Read live power, augment to datacenter scale, and return state.</p>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h4 id="openg2g.datacenter.online.OnlineDatacenter.apply_control" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">apply_control</span><span class="p">(</span><span class="n">command</span><span class="p">)</span></code>
+
+<a href="#openg2g.datacenter.online.OnlineDatacenter.apply_control" class="headerlink" title="Permanent link">&para;</a></h4>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Apply a control command. Dispatches on command type.</p>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h4 id="openg2g.datacenter.online.OnlineDatacenter._" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">_</span><span class="p">(</span><span class="n">command</span><span class="p">)</span></code>
+
+<a href="#openg2g.datacenter.online.OnlineDatacenter._" class="headerlink" title="Permanent link">&para;</a></h4>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Apply batch size command by sending HTTP requests to vLLM servers.</p>
+
+
+    </div>
+
+</div>
+
+
+
+  </div>
+
+    </div>
+
+</div>
+
+
+
+
+  </div>
+
+    </div>
+
+</div>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["content.code.copy", "navigation.sections", "navigation.expand", "toc.follow"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+    
+  </body>
+</html>
