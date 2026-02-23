@@ -1,4 +1,11 @@
-# OpenG2G
+<div align="center">
+<h1>OpenG2G</h1>
+<h2>GPU-to-Grid Simulation under LLM workloads</h2>
+</div>
+
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+[![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
+[![arXiv](https://img.shields.io/badge/arXiv-2602.05116-b31b1b.svg)](https://arxiv.org/abs/2602.05116)
 
 A modular Python framework for simulating datacenter-grid interaction, with a focus on LLM inference workloads.
 
@@ -91,13 +98,12 @@ Simulation data (power traces, latency fits, logistic fits) can be built from ML
 
 ### 1. Build simulation data from benchmarks
 
-The build script reads benchmark data and produces the trace CSVs, latency fit parameters, and logistic fit parameters that the simulation consumes. Model selection is controlled by a JSON config file ([`data/offline/models.json`](data/offline/models.json)).
+The build script uses the [`mlenergy-data`](https://ml.energy/data) toolkit to download and process GPU benchmark data from the [ML.ENERGY Benchmark v3 dataset](https://huggingface.co/datasets/ml-energy/benchmark-v3) (gated -- [request access](https://huggingface.co/datasets/ml-energy/benchmark-v3) first). It produces the trace CSVs, latency fit parameters, and logistic fit parameters that the simulation consumes. Model selection is controlled by a JSON config file ([`data/offline/models.json`](data/offline/models.json)).
 
 Generated artifacts go into `data/generated/` (gitignored). Source files (`data/offline/*.py`, `data/offline/models.json`) are versioned.
 
 ```bash
 uv run python data/offline/build_mlenergy_data.py \
-  --mlenergy-data-dir /path/to/compiled/data \
   --config data/offline/models.json \
   --out-dir data/generated
 ```
@@ -154,7 +160,7 @@ Current controller contract:
 
 ## Documentation
 
-Full documentation is available at the [documentation site](https://TODO.github.io/openg2g/), including:
+Full documentation is available at [https://TODO/openg2g](https://TODO/openg2g), including:
 
 - Installation and setup guide
 - Running simulations

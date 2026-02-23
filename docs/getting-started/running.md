@@ -1,5 +1,48 @@
 # Running a Simulation
 
+## End-to-End Example
+
+The commands below go from a fresh clone to running all three simulations.
+
+!!! note "Dataset access required"
+    The data build step uses the [`mlenergy-data`](https://ml.energy/data) toolkit to download and process GPU benchmark data from the [ML.ENERGY Benchmark v3 dataset](https://huggingface.co/datasets/ml-energy/benchmark-v3). This is a gated dataset -- you must request access on Hugging Face before running the build.
+
+```bash
+# Clone and install
+git clone https://github.com/TODO/openg2g.git
+cd openg2g
+uv sync
+uv pip install -e mlenergy-data --config-setting editable_mode=compat
+
+# Build simulation data from ML.ENERGY benchmark
+# Requires access to the gated dataset: https://huggingface.co/datasets/ml-energy/benchmark-v3
+uv run python data/offline/build_mlenergy_data.py \
+  --config data/offline/models.json \
+  --out-dir data/generated \
+  --no-plot
+
+# Generate synthetic training power trace
+uv run python data/offline/generate_training_trace.py \
+  --out-csv data/generated/synthetic_training_trace.csv --seed 2
+
+# Run all three simulations
+uv run python examples/offline/run_baseline.py --mode no-tap \
+  --data-dir data/generated \
+  --training-trace data/generated/synthetic_training_trace.csv
+
+uv run python examples/offline/run_baseline.py --mode tap-change \
+  --data-dir data/generated \
+  --training-trace data/generated/synthetic_training_trace.csv
+
+uv run python examples/offline/run_ofo.py \
+  --data-dir data/generated \
+  --training-trace data/generated/synthetic_training_trace.csv
+```
+
+Outputs (plots and logs) are saved to `outputs/baseline_no-tap/`, `outputs/baseline_tap-change/`, and `outputs/ofo/`.
+
+## Example Scripts
+
 OpenG2G ships with example simulations in the `examples/` directory:
 
 - `offline/run_baseline.py`: Uncontrolled baseline (no OFO, capacitor banks active), with two modes:
@@ -93,6 +136,15 @@ run_baseline INFO   integral_violation     = 30.3320 pu·s
 - **violation_time**: total time any bus-phase voltage is outside [0.95, 1.05] pu
 - **worst_vmin / worst_vmax**: extremes across all buses, phases, and time
 - **integral_violation**: time-integrated sum of voltage violations across all bus-phase pairs (see Section IV-C of the [paper](https://arxiv.org/abs/2602.05116))
+
+### Expected Metrics
+
+| Metric | No-tap | Tap-change | OFO |
+|---|---|---|---|
+| `integral_violation` (pu*s) | 30.33 | 42.25 | 0.121 |
+| `voltage_violation_time` (s) | 1007.0 | 1050.8 | 220.7 |
+| `worst_vmin` (pu) | 0.9354 | 0.9354 | 0.9430 |
+| `worst_vmax` (pu) | 1.0505 | 1.0640 | 1.0506 |
 
 ### Batch Schedule (OFO only)
 

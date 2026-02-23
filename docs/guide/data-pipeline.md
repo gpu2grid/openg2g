@@ -19,7 +19,7 @@ Two Python packages work together:
        Data supply side                  Simulation & control side
 ```
 
-- **mlenergy-data**: Loads, filters, and fits models to real GPU benchmark data (power, latency, throughput vs. batch size) from the [ML.ENERGY Benchmark](https://ml.energy/data).
+- **[mlenergy-data](https://ml.energy/data)**: Loads, filters, and fits models to real GPU benchmark data (power, latency, throughput vs. batch size) from the [ML.ENERGY Benchmark](https://github.com/ml-energy/benchmark) ([v3 dataset](https://huggingface.co/datasets/ml-energy/benchmark-v3)).
 - **OpenG2G**: Multi-rate time-domain simulation of an LLM inference datacenter connected to an IEEE 13-bus distribution feeder, with OFO batch-size control.
 
 ## The mlenergy-data Toolkit
@@ -108,13 +108,14 @@ Raw GPU benchmarks are processed into simulation-ready CSV artifacts by `data/of
 
 ```bash
 python data/offline/build_mlenergy_data.py \
-  --mlenergy-data-dir /path/to/compiled/data \
   --config data/offline/models.json \
   --out-dir data/generated
 
 python data/offline/generate_training_trace.py \
   --out-csv data/generated/synthetic_training_trace.csv --seed 2
 ```
+
+The [`mlenergy-data`](https://ml.energy/data) toolkit automatically downloads benchmark data from the [ML.ENERGY Benchmark v3 dataset](https://huggingface.co/datasets/ml-energy/benchmark-v3) on first run. This is a gated dataset -- you must [request access on Hugging Face](https://huggingface.co/datasets/ml-energy/benchmark-v3) before running the build. To use a local copy instead, pass `--mlenergy-data-dir /path/to/compiled/data`.
 
 The config file (`data/offline/models.json`) maps benchmark model IDs to simulation labels.
 
