@@ -506,7 +506,7 @@ class OfflineDatacenter(LLMBatchSizeControlledDatacenter[OfflineDatacenterState]
         raise TypeError(f"OfflineDatacenter does not support {type(command).__name__}")
 
     @apply_control.register
-    def _(self, command: SetBatchSize) -> None:
+    def apply_control_set_batch_size(self, command: SetBatchSize) -> None:
         """Record new batch sizes. Changes take effect on the next step."""
         if command.ramp_up_rate_by_model:
             raise ValueError(

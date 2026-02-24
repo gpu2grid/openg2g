@@ -20,8 +20,8 @@ from openg2g.datacenter.online import (
     GPUEndpointMapping,
     LoadGenerationConfig,
     OnlineDatacenter,
-    OnlineModelDeployment,
     PowerAugmentationConfig,
+    VLLMDeployment,
     _parse_prometheus_text,
     _RollingPowerBuffer,
 )
@@ -37,7 +37,7 @@ def _make_deployment(
     port: int = 4938,
     gpu_indices: tuple[int, ...] = (0,),
     phase: Phase = Phase.A,
-) -> OnlineModelDeployment:
+) -> VLLMDeployment:
     spec = LLMInferenceModelSpec(
         model_label=label,
         num_replicas=num_replicas,
@@ -45,7 +45,7 @@ def _make_deployment(
         initial_batch_size=128,
         itl_deadline_s=0.1,
     )
-    return OnlineModelDeployment(
+    return VLLMDeployment(
         spec=spec,
         vllm_base_url=f"http://{host}:8000",
         model_name=f"org/{label}",
@@ -314,7 +314,7 @@ class TestOnlineDatacenterStep:
 
     @staticmethod
     def _make_fake_power_client(
-        deployments: list[OnlineModelDeployment],
+        deployments: list[VLLMDeployment],
         per_gpu_w: float = 300.0,
     ) -> PowerStreamingClient:
         """Create a fake PowerStreamingClient that returns static readings."""
@@ -446,7 +446,7 @@ class TestWarmup:
 
     @staticmethod
     def _make_dc(
-        dep: OnlineModelDeployment,
+        dep: VLLMDeployment,
         per_gpu_w: float = 300.0,
         stagger_buffer_s: float = 0.5,
         prometheus_poll_interval_s: float = 0.5,
