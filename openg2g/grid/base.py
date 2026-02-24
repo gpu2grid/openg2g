@@ -96,7 +96,8 @@ class GridBackend(Generic[GridStateT], ABC):
     @property
     @abstractmethod
     def v_index(self) -> list[tuple[str, int]]:
-        """Fixed (bus, phase) ordering used by `voltages_vector`."""
+        """Fixed (bus, phase) ordering used by
+        [`voltages_vector`][..voltages_vector]."""
 
     @abstractmethod
     def step(
@@ -116,15 +117,17 @@ class GridBackend(Generic[GridStateT], ABC):
 
     @abstractmethod
     def estimate_sensitivity(self, perturbation_kw: float = 100.0) -> tuple[np.ndarray, np.ndarray]:
-        """Estimate voltage sensitivity matrix (H = dv/dp) and return `(H, v0)`."""
+        """Estimate voltage sensitivity matrix (H = dv/dp) and return
+        `(H, v0)`."""
 
     @abstractmethod
     def reset(self) -> None:
         """Reset simulation state to initial conditions.
 
-        Called by the coordinator before each `start()`. Must clear all
-        simulation state: history, counters, cached values.
-        Configuration (dt_s, case files, tap schedules) is not affected.
+        Called by the coordinator before each [`start`][..start]. Must
+        clear all simulation state: history, counters, cached values.
+        Configuration (dt_s, case files, tap schedules) is not
+        affected.
 
         Abstract so every implementation explicitly enumerates its state.
         A forgotten field is a bug -- not clearing it silently corrupts
@@ -134,18 +137,21 @@ class GridBackend(Generic[GridStateT], ABC):
     def start(self) -> None:
         """Acquire per-run resources (solver circuits, connections).
 
-        Called after `reset()`, before the simulation loop. Override for
-        backends that need resource acquisition (e.g., `OpenDSSGrid`
-        compiles its DSS circuit here). No-op by default because most
-        offline components have no resources to acquire.
+        Called after [`reset`][..reset], before the simulation loop.
+        Override for backends that need resource acquisition (e.g.,
+        [`OpenDSSGrid`][openg2g.grid.opendss.OpenDSSGrid] compiles its
+        DSS circuit here). No-op by default because most offline
+        components have no resources to acquire.
         """
 
     def stop(self) -> None:
         """Release per-run resources. Simulation state is preserved.
 
         Called after the simulation loop in LIFO order. Override for
-        backends that acquired resources in `start()`. No-op by default.
+        backends that acquired resources in [`start`][..start]. No-op
+        by default.
         """
 
     def bind_event_emitter(self, emitter: EventEmitter) -> None:
-        """Attach a clock-bound emitter for backend-originated events."""
+        """Attach a clock-bound [`EventEmitter`][openg2g.events.EventEmitter]
+        for backend-originated events."""

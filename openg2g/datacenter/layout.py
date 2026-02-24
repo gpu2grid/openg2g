@@ -23,8 +23,8 @@ from openg2g.utils import split_integer_evenly
 class ActivationPolicy(ABC):
     """Per-model activation policy that answers "which servers are active?"
 
-    Created by `ActivationStrategy.for_model` and bound to a specific
-    model's server pool.
+    Created by [`ActivationStrategy.for_model`][..ActivationStrategy.for_model]
+    and bound to a specific model's server pool.
     """
 
     @abstractmethod
@@ -38,8 +38,9 @@ class ActivationPolicy(ABC):
     def active_indices(self, t: float) -> np.ndarray:
         """Indices of active servers at time *t*.
 
-        The default implementation returns indices in ascending order via
-        `np.where(active_mask(t))`. Subclasses may override to return
+        The default implementation returns indices in ascending order
+        via `np.where(`[`active_mask`][..active_mask]`(t))`. Subclasses
+        may override to return
         indices in a specific order (e.g., priority order) to control
         floating-point summation order in the datacenter.
 
@@ -50,14 +51,17 @@ class ActivationPolicy(ABC):
 
 
 class ActivationStrategy(ABC):
-    """Factory that creates per-model `ActivationPolicy` instances.
+    """Factory that creates per-model
+    [`ActivationPolicy`][..ActivationPolicy] instances.
 
     A strategy is instantiated once and passed to the datacenter. When
     the datacenter builds each model's server layout, it calls
-    `for_model` to create a model-specific `ActivationPolicy`.
+    [`for_model`][.for_model] to create a model-specific
+    [`ActivationPolicy`][..ActivationPolicy].
 
     Subclass to implement custom activation strategies. The `phase_list`
-    argument in `for_model` enables phase-aware load balancing.
+    argument in [`for_model`][.for_model] enables phase-aware load
+    balancing.
     """
 
     @abstractmethod
@@ -79,12 +83,14 @@ class ActivationStrategy(ABC):
                 so that downstream layout generation is reproducible.
 
         Returns:
-            Policy that answers `active_mask(t)` queries.
+            Policy that answers
+                [`active_mask`][...ActivationPolicy.active_mask]
+                queries.
         """
 
 
 class _RampActivationPolicy(ActivationPolicy):
-    """Policy for `RampActivationStrategy`."""
+    """Policy for [`RampActivationStrategy`][..RampActivationStrategy]."""
 
     __slots__ = ("_n", "_priority", "_schedule")
 
@@ -113,12 +119,14 @@ class _RampActivationPolicy(ActivationPolicy):
 
 
 class RampActivationStrategy(ActivationStrategy):
-    """Activate servers by fixed random priority, following a `ServerRampSchedule`.
+    """Activate servers by fixed random priority, following a
+    [`ServerRampSchedule`][openg2g.datacenter.config.ServerRampSchedule].
 
-    At time *t*, the top-*k* servers (by random priority) are active, where
-    `k = round(schedule.fraction_at(t) * num_servers)`.
+    At time *t*, the top-*k* servers (by random priority) are active,
+    where `k = round(schedule.fraction_at(t) * num_servers)`.
 
-    This is the default strategy used by `OfflineDatacenter`.
+    This is the default strategy used by
+    [`OfflineDatacenter`][openg2g.datacenter.offline.OfflineDatacenter].
 
     Args:
         schedule: Temporal ramp schedule mapping time to active-server fraction.
@@ -202,7 +210,7 @@ class ServerLayout:
                 activation policy, stagger offsets, and amplitude scales).
 
         Returns:
-            Frozen `ServerLayout` for the model.
+            Frozen [`ServerLayout`][...ServerLayout] for the model.
         """
         num_replicas = int(model_spec.num_replicas)
         gpus_per_replica = int(model_spec.gpus_per_replica)
@@ -305,8 +313,9 @@ class PowerAugmenter:
                 policies.
 
         Returns:
-            `AugmentedPower` with three-phase power, per-model power,
-            and per-model active replica counts.
+            [`AugmentedPower`][...AugmentedPower] with three-phase
+                power, per-model power, and per-model active replica
+                counts.
         """
         phase_power = np.full(3, self._base_w_per_phase, dtype=float)
         power_by_model: dict[str, float] = {}

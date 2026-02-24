@@ -43,7 +43,8 @@ class LLMInferenceModelSpec:
 
 @dataclass(frozen=True)
 class LLMInferenceWorkload:
-    """Aggregation of model specs into a workload description.
+    """Aggregation of [`LLMInferenceModelSpec`][..LLMInferenceModelSpec]
+    instances into a workload description.
 
     Attributes:
         models: Tuple of model specifications served in the datacenter.

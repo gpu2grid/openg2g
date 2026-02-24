@@ -30,6 +30,8 @@ jobs:
           enable-cache: true
       - run: uv sync --only-group docs
       - run: uv run --no-sync bash scripts/docs.sh build
+        env:
+          ZENSICAL_ENABLE_ANALYTICS: "1"
       - uses: actions/upload-pages-artifact@v4
         with:
           path: site

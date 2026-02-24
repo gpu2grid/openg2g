@@ -1,6 +1,6 @@
 """OpenDSS-based grid simulator.
 
-Requires `pip install opendssdirect.py` (optional dependency).
+Requires `pip install openg2g[opendss]`.
 """
 
 from __future__ import annotations
@@ -35,8 +35,8 @@ _PHASE_TO_ATTR = {1: "a", 2: "b", 3: "c"}
 
 
 def _require_dss() -> None:
-    if dss is None:  # runtime guard
-        raise ImportError("opendssdirect is required for OpenDSSGrid. Install it with: pip install opendssdirect.py")
+    if dss is None:
+        raise ImportError("opendssdirect is required for OpenDSSGrid. Install it with: pip install openg2g[opendss]")
 
 
 class OpenDSSGrid(GridBackend[GridState]):
@@ -50,8 +50,11 @@ class OpenDSSGrid(GridBackend[GridState]):
     - `dss_controls=False` (default): Uses `SolveNoControl()`. OpenDSS runs
       a single power flow without iterating any built-in control loops.
       RegControls are disabled after initial tap setting. All voltage
-      regulation is managed externally through `apply_control()` commands
-      (e.g., from `TapScheduleController` or `OFOBatchController`).
+      regulation is managed externally through
+      [`apply_control`][.apply_control] commands (e.g., from
+      [`TapScheduleController`][openg2g.controller.tap_schedule.TapScheduleController]
+      or
+      [`OFOBatchController`][openg2g.controller.ofo.OFOBatchController]).
 
     - `dss_controls=True`: Uses `Solve()`. OpenDSS iterates its built-in
       control loops (RegControls, CapControls, etc.) as defined in the case
@@ -159,11 +162,13 @@ class OpenDSSGrid(GridBackend[GridState]):
 
         Args:
             clock: Current simulation clock.
-            power_samples_w: List of `ThreePhase` power samples (Watts)
-                accumulated since the last grid step.
+            power_samples_w: List of
+                [`ThreePhase`][openg2g.types.ThreePhase] power samples
+                (Watts) accumulated since the last grid step.
 
         Returns:
-            GridState with voltages from the solve.
+            [`GridState`][openg2g.grid.base.GridState] with voltages
+                from the solve.
         """
         if not power_samples_w:
             if self._prev_power is None:
@@ -257,7 +262,8 @@ class OpenDSSGrid(GridBackend[GridState]):
         self._events = emitter
 
     def voltages_vector(self) -> np.ndarray:
-        """Return voltage magnitudes (pu) in the fixed v_index ordering."""
+        """Return voltage magnitudes (pu) in the fixed
+        [`v_index`][..v_index] ordering."""
         if not self._started:
             raise RuntimeError("OpenDSSGrid.voltages_vector() called before start().")
         vmag = np.asarray(dss.Circuit.AllBusMagPu())
@@ -273,8 +279,9 @@ class OpenDSSGrid(GridBackend[GridState]):
 
         Returns:
             Tuple of `(sensitivity, baseline_voltages)` where
-            `sensitivity` has shape `(M, 3)` (M = len(v_index)) and
-            `baseline_voltages` has shape `(M,)`.
+            `sensitivity` has shape `(M, 3)` (M = len(
+            [`v_index`][..v_index])) and `baseline_voltages` has
+            shape `(M,)`.
         """
         perturbation_kw = float(perturbation_kw)
         if perturbation_kw <= 0:

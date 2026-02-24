@@ -4,10 +4,14 @@ Walks the openg2g package tree, groups modules by top-level package,
 and writes one docs/api/<name>.md per group. Each file contains an h1
 title and a sequence of ::: directives for mkdocstrings. The API
 Reference section in zensical.toml is updated to match.
+
+Google Analytics is injected only when ZENSICAL_ENABLE_ANALYTICS=1 is set, so local
+previews don't accumulate pageviews.
 """
 
 from __future__ import annotations
 
+import os
 from collections import defaultdict
 from pathlib import Path
 
@@ -93,6 +97,14 @@ def update_zensical_nav(nav_entries: list[tuple[str, str]]) -> None:
             del nav[i]
             break
     nav.append(api_ref)
+
+    # Inject Google Analytics only when ZENSICAL_ENABLE_ANALYTICS=1.
+    if os.environ.get("ZENSICAL_ENABLE_ANALYTICS") == "1":
+        extra = doc["project"].setdefault("extra", tomlkit.table())
+        analytics = tomlkit.table()
+        analytics.add("provider", "google")
+        analytics.add("property", "G-Y720KPY1TN")
+        extra["analytics"] = analytics
 
     ZENSICAL_TOML_OUT.write_text(tomlkit.dumps(doc))
 

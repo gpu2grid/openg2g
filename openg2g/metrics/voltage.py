@@ -37,21 +37,26 @@ def compute_allbus_voltage_stats(
 ) -> VoltageStats:
     """Compute voltage violation statistics across all buses and phases.
 
+    Returns [`VoltageStats`][..VoltageStats].
+
     For each snapshot the integral violation sums
     `max(v_min - v, 0) + max(v - v_max, 0)` over every non-excluded
     bus-phase pair, then integrates over time.  A snapshot counts as
     "violated" when this sum is positive.
 
     Args:
-        grid_states: Sequence of GridState objects from a simulation run.
+        grid_states: Sequence of
+            [`GridState`][openg2g.grid.base.GridState] objects from a
+            simulation run.
         v_min: Lower voltage bound (pu).
         v_max: Upper voltage bound (pu).
         exclude_buses: Bus names to exclude from statistics
             (case-insensitive).
 
     Returns:
-        VoltageStats with worst-case min/max voltages, violation time,
-        and integral violation magnitude.
+        [`VoltageStats`][..VoltageStats] with worst-case min/max
+            voltages, violation time, and integral violation
+            magnitude.
     """
     if not grid_states:
         return VoltageStats(

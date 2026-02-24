@@ -31,7 +31,8 @@ class TapPosition:
     Phases set to `None` are left unchanged when applied.  At least
     one phase must be specified.
 
-    Combine with `at()` and `|` to build a `TapSchedule`:
+    Combine with [`at`][.at] and `|` to build a
+    [`TapSchedule`][..TapSchedule]:
 
         TAP_STEP = 0.00625  # standard 5/8% tap step
         schedule = (
@@ -57,7 +58,8 @@ class TapPosition:
 class TapSchedule:
     """Ordered sequence of scheduled tap positions.
 
-    Build using `TapPosition.at()` and the `|` operator:
+    Build using [`TapPosition.at`][..TapPosition.at] and the `|`
+    operator:
 
         TAP_STEP = 0.00625  # standard 5/8% tap step
         schedule = (
@@ -140,7 +142,8 @@ class SetTaps(GridCommand):
     """Set regulator tap positions.
 
     Attributes:
-        tap_position: Per-phase tap ratios. Phases set to `None` are unchanged.
+        tap_position: Per-phase tap ratios. Phases set to `None` are
+            unchanged.
     """
 
     tap_position: TapPosition

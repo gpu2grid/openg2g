@@ -38,13 +38,15 @@ class SimulationLog(Generic[DCStateT, GridStateT]):
     """Accumulated simulation data from a coordinator run.
 
     Generic over the datacenter and grid state types. When constructed
-    via `Coordinator.run()`, the type parameters are inferred from the
-    backends, giving typed access to backend-specific state fields.
+    via [`Coordinator.run`][..Coordinator.run], the type parameters are
+    inferred from the backends, giving typed access to backend-specific
+    state fields.
 
     Attributes:
         dc_states: Every datacenter state produced by the datacenter.
         grid_states: Every grid state produced by the grid.
-        actions: Every `ControlAction` emitted by controllers.
+        actions: Every [`ControlAction`][openg2g.types.ControlAction]
+            emitted by controllers.
         commands: Flattened list of all commands from all actions.
         time_s: Simulation time at each grid step (seconds).
         voltage_a_pu: DC-bus voltage phase A at each grid step (pu).
@@ -105,10 +107,12 @@ class Coordinator(Generic[DCStateT, GridStateT]):
     """Multi-rate simulation coordinator.
 
     Orchestrates datacenter, grid, and controller components at their
-    respective rates.  The base tick is the GCD of all component periods.
+    respective rates.  The base tick is the GCD of all component
+    periods.
 
     Generic over datacenter and grid state types. The type parameters
-    are inferred from the backends and propagated to `SimulationLog`.
+    are inferred from the backends and propagated to
+    [`SimulationLog`][..SimulationLog].
 
     Args:
         datacenter: Datacenter backend (offline or online).

@@ -30,7 +30,8 @@ class EventSink(Protocol):
 
 @dataclass
 class EventEmitter:
-    """Source-bound event helper that stamps events with clock metadata."""
+    """Source-bound event helper that stamps [`SimEvent`][..SimEvent]
+    instances with clock metadata."""
 
     clock: SimulationClock
     sink: EventSink

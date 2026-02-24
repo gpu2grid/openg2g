@@ -44,7 +44,11 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class OfflineDatacenterState(LLMDatacenterState):
-    """Extended state from the offline (trace-based) backend."""
+    """Extended state from the offline (trace-based) backend.
+
+    Adds per-model power breakdown to
+    [`LLMDatacenterState`][openg2g.datacenter.base.LLMDatacenterState].
+    """
 
     power_by_model_w: dict[str, float] = field(default_factory=dict)
 
@@ -122,11 +126,14 @@ class PowerTraceStore:
     """Manages power traces and pre-built per-GPU templates.
 
     Indexed by `(model_label, batch_size)`. Provides:
-    - `load(manifest)`: load traces discovered via a manifest CSV
-    - `from_traces(traces)`: construct from pre-built `PowerTrace` objects
-    - `build_templates(...)`: pre-build per-GPU power templates
-    - `template(model_label, batch_size)`: look up a pre-built template
-    - `trace(model_label, batch_size)`: access the raw trace
+
+    - [`load`][.load]: load traces discovered via a manifest CSV
+    - [`from_traces`][.from_traces]: construct from pre-built
+      `PowerTrace` objects
+    - [`build_templates`][.build_templates]: pre-build per-GPU power
+      templates
+    - [`template`][.template]: look up a pre-built template
+    - [`trace`][.trace]: access the raw trace
 
     Attributes:
         MANIFEST_COL_MODEL_LABEL: Column name for model label in the manifest.
@@ -210,7 +217,7 @@ class PowerTraceStore:
 
     @classmethod
     def from_traces(cls, traces: dict[str, dict[int, PowerTrace]]) -> PowerTraceStore:
-        """Construct from pre-built `PowerTrace` objects.
+        """Construct from pre-built [`PowerTrace`][...PowerTrace] objects.
 
         Args:
             traces: Mapping of `model_label -> batch_size -> PowerTrace`.
@@ -260,7 +267,8 @@ class PowerTraceStore:
     def template(self, model_label: str, batch_size: int) -> np.ndarray:
         """Return a pre-built per-GPU power template.
 
-        Requires a prior call to `build_templates`.
+        Requires a prior call to
+        [`build_templates`][..build_templates].
         """
         if not self._built:
             raise RuntimeError("Call build_templates() first.")
@@ -285,16 +293,16 @@ class PowerTraceStore:
 class OfflineDatacenter(LLMBatchSizeControlledDatacenter[OfflineDatacenterState]):
     """Trace-based datacenter simulation with step-by-step interface.
 
-    Each `step()` call computes one timestep of power output by indexing
-    into pre-built per-GPU templates, applying per-server amplitude scaling
-    and noise, and summing across active servers per phase.
+    Each `step` call computes one timestep of power output by indexing
+    into pre-built per-GPU templates, applying per-server amplitude
+    scaling and noise, and summing across active servers per phase.
 
-    Batch size changes via `apply_control()` take effect on the next
-    `step()` call.
+    Batch size changes via `apply_control` take effect on the next
+    `step` call.
 
     Args:
-        trace_store: `PowerTraceStore` with templates for all
-            (model, batch) pairs.
+        trace_store: [`PowerTraceStore`][..PowerTraceStore] with
+            templates for all (model, batch) pairs.
         models: List of model specs describing the served models.
         timestep_s: Simulation timestep (seconds).
         gpus_per_server: Number of GPUs per physical server rack.
@@ -304,9 +312,10 @@ class OfflineDatacenter(LLMBatchSizeControlledDatacenter[OfflineDatacenterState]
         noise_fraction: Gaussian noise standard deviation as a fraction of
             per-server power.
         activation_strategy: Controls which servers are active at each
-            timestep. Subclass `ActivationStrategy` for custom strategies
-            (e.g., phase-aware load balancing). If `None`, all servers are
-            always active.
+            timestep. Subclass
+            [`ActivationStrategy`][openg2g.datacenter.layout.ActivationStrategy]
+            for custom strategies (e.g., phase-aware load balancing).
+            If `None`, all servers are always active.
         base_kw_per_phase: Constant base load per phase (kW).
         training_overlays: List of `(TrainingOverlayCache, TrainingRun)` pairs
             for training workloads.
@@ -551,11 +560,13 @@ class OfflineDatacenter(LLMBatchSizeControlledDatacenter[OfflineDatacenterState]
         latency_seed: int | None = None,
         latency_exact_threshold: int = 30,
     ) -> OfflineDatacenter:
-        """Create an OfflineDatacenter from config objects.
+        """Create an [`OfflineDatacenter`][...OfflineDatacenter] from
+        config objects.
 
         If `workload.server_ramps` is set, it is wrapped in a
-        `RampActivationStrategy`. For custom activation strategies,
-        use the direct constructor with `activation_strategy=`.
+        [`RampActivationStrategy`][openg2g.datacenter.layout.RampActivationStrategy].
+        For custom activation strategies, use the direct constructor
+        with `activation_strategy=`.
 
         Args:
             datacenter: Facility configuration (GPUs per server, base load).
