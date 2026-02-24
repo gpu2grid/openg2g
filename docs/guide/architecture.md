@@ -143,7 +143,7 @@ for config in sweep_configs:
 
 ## The Datacenter Model
 
-The [`OfflineDatacenter`][openg2g.datacenter.offline.OfflineDatacenter] replays real GPU power traces at controlled batch sizes (see Section IV-A of the [paper](https://arxiv.org/abs/2602.05116)):
+The [`OfflineDatacenter`][openg2g.datacenter.offline.OfflineDatacenter] replays real GPU power traces at controlled batch sizes (see Section IV-A of the [G2G paper](https://arxiv.org/abs/2602.05116)):
 
 ```
   Per-model server fleet                Power assembly (3-phase)
@@ -173,7 +173,7 @@ The [`OfflineDatacenter`][openg2g.datacenter.offline.OfflineDatacenter] replays 
 
 ## The OFO Controller
 
-Online Feedback Optimization (primal-dual) regulates batch sizes to keep voltages safe. For the full mathematical formulation, see Section III of the [paper](https://arxiv.org/abs/2602.05116).
+Online Feedback Optimization (primal-dual) regulates batch sizes to keep voltages safe. For the full mathematical formulation, see Section III of the [G2G paper](https://arxiv.org/abs/2602.05116).
 
 ```
   ┌──────────────────────────────────────────────────────────────┐
@@ -185,7 +185,7 @@ Online Feedback Optimization (primal-dual) regulates batch sizes to keep voltage
   │    ITL(t) ← observed inter-token latency per model           │
   │    H     ← voltage sensitivity dV/dP (re-estimated slowly)   │
   │                                                              │
-  │  DUAL UPDATES (Eq. 5-7):                                    │
+  │  DUAL UPDATES (G2G paper Eqs. 5-7):                         │
   │                                                              │
   │    Voltage:  λ⁺ ← [λ⁺ + ρ_v (V - V_max)]⁺                  │
   │              λ⁻ ← [λ⁻ + ρ_v (V_min - V)]⁺                  │
@@ -193,12 +193,11 @@ Online Feedback Optimization (primal-dual) regulates batch sizes to keep voltage
   │                                                              │
   │    Latency:  μ_i ← [μ_i + ρ_l (ITL_i - L_thresh)]⁺         │
   │                                                              │
-  │  PRIMAL UPDATE (Eq. 8):                                     │
+  │  PRIMAL UPDATE (G2G paper Eq. 8):                            │
   │                                                              │
   │    x_i = log₂(batch_i)                                      │
   │                                                              │
-  │    ∇_i = w_L · dL/dx           (latency penalty)            │
-  │         - w_T · dTh/dx         (throughput reward)           │
+  │    ∇_i = - w_T · dTh/dx         (throughput reward)           │
   │         + ηᵀ H eᵢ · dP/dx     (voltage dual × sensitivity)  │
   │         + μ_i · dL/dx          (latency dual)               │
   │         + w_S · (x - x_prev)   (switching cost)             │
@@ -212,7 +211,7 @@ Online Feedback Optimization (primal-dual) regulates batch sizes to keep voltage
 
   Key: dP/dx, dL/dx, dTh/dx come from LogisticModel fits
        H comes from OpenDSS finite-difference perturbation
-       Full gradient derivation: Appendix B (Eq. 18) of the paper
+       Full gradient derivation: G2G paper, Appendix B (Eq. 18)
 ```
 
 ## Data Flow

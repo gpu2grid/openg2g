@@ -145,7 +145,7 @@ def _build_controller() -> OFOBatchController:
         latency_fits=latency_fits,
         throughput_fits=throughput_fits,
         itl_deadline_by_model={"M1": 0.1},
-        primal_config=PrimalConfig(descent_step_size=0.05, w_latency=1.0, w_throughput=0.0, w_switch=0.0),
+        primal_config=PrimalConfig(descent_step_size=0.05, w_throughput=0.0, w_switch=0.0),
         voltage_dual_config=VoltageDualConfig(v_min=0.95, v_max=1.05, ascent_step_size=0.5),
         feasible_batch_sizes=[8, 16, 32, 64, 128],
         latency_dual_step_size=1.0,

@@ -13,12 +13,13 @@ Traditional grid controls (capacitor banks, voltage regulators) operate on times
 The central insight is that **GPU batch size** is a controllable knob that simultaneously affects:
 
 - **Power consumption**: Larger batches use more GPU power
-- **Inference latency**: Larger batches increase per-request latency
-- **Grid voltages**: Power changes propagate through the distribution feeder
+- **Inter-token latency**: Larger batches increase inter-token latency
+- **Token throughput**: Larger batches increase token throughput
+- **Grid voltages**: Power changes propagate through the distribution feeder. In distribution systems, an increase in power consumption at a node typically causes a decrease in voltage magnitude at that node and nearby electrically connected nodes, while a reduction in power consumption generally leads to higher voltages.
 
 By adjusting batch sizes in response to grid voltage measurements, a datacenter can regulate its own impact on the distribution network while maintaining acceptable service quality.
 
-These relationships are modeled with four-parameter logistic curves fit to real GPU benchmark data from the [ML.ENERGY Benchmark](https://ml.energy/data) (see Section II-C of the [paper](https://arxiv.org/abs/2602.05116)):
+These relationships are modeled with four-parameter logistic curves fit to real GPU benchmark data from the [ML.ENERGY Benchmark](https://ml.energy/data) (see Section II-C of the [G2G paper](https://arxiv.org/abs/2602.05116)):
 
 ```
   Power (W)                              Latency (s)
@@ -33,7 +34,7 @@ These relationships are modeled with four-parameter logistic curves fit to real 
 
 ## Online Feedback Optimization (OFO)
 
-OpenG2G implements an **Online Feedback Optimization** controller that solves this coordination problem in real time (Section III of the [paper](https://arxiv.org/abs/2602.05116)). At each control step, the OFO controller:
+OpenG2G implements an **Online Feedback Optimization** controller that solves this coordination problem in real time (Section III of the [G2G paper](https://arxiv.org/abs/2602.05116)). At each control step, the OFO controller:
 
 1. **Reads** the latest grid voltages and datacenter state
 2. **Computes** a gradient step that balances:
@@ -60,7 +61,7 @@ The grid simulator runs AC power flow on standard IEEE test feeders using OpenDS
 
 ### Controllers
 
-Controllers close the feedback loop. They read the latest datacenter and grid state, compute control actions (batch size changes, tap adjustments), and apply them. Multiple controllers compose in order within the simulation coordinator.
+Controllers close the feedback loop. They read the latest datacenter and grid state, and issue control actions. The OFO controller computes batch size adjustments via gradient descent, while the tap schedule controller applies pre-defined regulator tap changes at specified times. Multiple controllers compose in order within the simulation coordinator.
 
 ## End-to-End System
 
@@ -89,14 +90,16 @@ The full system connects GPU benchmark data through simulation to voltage regula
   Power traces ─────────>│  │ Datacenter │   │  OpenDSS     │   │
   Latency fits ─────────>│  │ (offline)  │──>│  Grid        │   │
                          │  │            │   │  (13-bus)    │   │
-                         │  └────────────┘   └───────┬──────┘   │
-                         │        ^                  │          │
-                         │        │   batch cmd      │ voltages │
-                         │        │                  v          │
-  Logistic fits ────────>│  ┌─────┴───────────────────────────┐ │
-                         │  │       OFO Controller            │ │
-                         │  │  min cost s.t. V_min ≤ V ≤ V_max│ │
-                         │  └─────────────────────────────────┘ │
+                         │  └──────┬─────┘   └───────┬──────┘   │
+                         │     ^   │ latency         │          │
+                         │     │   │                 │ voltages │
+                         │     │   v batch cmd       v          │
+  Logistic fits ────────>│  ┌──┴─────────────────────────────┐  │
+                         │  │       OFO Controller           │  │
+                         │  │  max throughput                │  │
+                         │  │  s.t. V_min ≤ V ≤ V_max       │  │
+                         │  │       ITL ≤ threshold          │  │
+                         │  └────────────────────────────────┘  │
                          └──────────────────────────────────────┘
                                           │
                                           v

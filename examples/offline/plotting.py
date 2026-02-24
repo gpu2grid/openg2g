@@ -1,7 +1,7 @@
 """Plotting functions and data-loading helpers for openg2g simulation results.
 
 Faithfully ports the matplotlib code from ``baseline_wo_control.py`` and
-``final_ofo_test.py`` (the paper reference scripts), adapted to read data
+``final_ofo_test.py`` (the G2G paper reference scripts), adapted to read data
 from the library's ``SimulationLog`` and ``LLMDatacenterState`` objects.
 
 This module lives outside the ``openg2g`` library on purpose: the library

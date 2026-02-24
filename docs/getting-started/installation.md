@@ -57,4 +57,4 @@ All tests should pass. Tests that require OpenDSS will be skipped if `opendssdir
 
 ## Next Steps
 
-To run simulations, you'll need to build the data artifacts first. See [Running a Simulation](running.md) for data requirements and [Data Pipeline](../guide/data-pipeline.md) for the full build process.
+To run simulations, you'll need to build the data artifacts first. See [Running Simulation](running.md) for data requirements and [Data Pipeline](../guide/data-pipeline.md) for the full build process.
