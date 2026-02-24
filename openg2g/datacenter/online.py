@@ -103,16 +103,22 @@ class GPUEndpointMapping:
         return f"{self.host}:{self.port}"
 
 
-@dataclass(frozen=True)
-class OnlineModelDeployment:
-    """Deployment of one model on physical hardware.
+@dataclass
+class VLLMDeployment:
+    """Deployment of one LLM model on a vLLM server.
+
+    !!! Warning
+        vLLM must be a patched version with the `POST /set_max_num_seqs`
+        endpoint implemented.
 
     Pairs a reusable
     [`LLMInferenceModelSpec`][openg2g.models.spec.LLMInferenceModelSpec]
     with physical deployment details. `spec.num_replicas` is the
     simulated (augmented) count for grid simulation. The real replica
-    count is derived from `gpu_endpoints` and
-    `spec.gpus_per_replica`.
+    count is derived from `gpu_endpoints` and `spec.gpus_per_replica`.
+
+    Tracks the current batch size (`max_num_seqs`) and provides
+    `set_batch_size()` to update it on the vLLM server.
 
     Args:
         spec: Model specification (shared with offline datacenter).
@@ -125,6 +131,10 @@ class OnlineModelDeployment:
     vllm_base_url: str
     model_name: str
     gpu_endpoints: tuple[GPUEndpointMapping, ...] = ()
+    batch_size: int = field(init=False)
+
+    def __post_init__(self) -> None:
+        self.batch_size = self.spec.initial_batch_size
 
     @property
     def model_label(self) -> str:
@@ -145,20 +155,53 @@ class OnlineModelDeployment:
         """Ratio of simulated replicas to real replicas."""
         return self.spec.num_replicas / max(self.num_real_replicas, 1)
 
+    def set_batch_size(self, batch_size: int, ramp_up_rate: float = 0.0) -> None:
+        """Update batch size on the vLLM server and track it locally.
+
+        Sends `POST /set_max_num_seqs` to the vLLM server. The previous
+        batch size is available via `batch_size` after the call.
+
+        Args:
+            batch_size: New batch size (max_num_seqs) to set.
+            ramp_up_rate: Optional ramp-up rate for gradual increase.
+        """
+        old = self.batch_size
+        self.batch_size = batch_size
+        url = f"{self.vllm_base_url}/set_max_num_seqs?max_num_seqs={batch_size}"
+        if ramp_up_rate > 0:
+            url += f"&ramp_up_rate={ramp_up_rate}"
+        try:
+            req = urllib.request.Request(url, method="POST", data=b"")
+            with urllib.request.urlopen(req, timeout=2.0) as resp:
+                if resp.status >= 400:
+                    logger.warning(
+                        "Failed to set batch size %d on %s: HTTP %d",
+                        batch_size,
+                        self.vllm_base_url,
+                        resp.status,
+                    )
+        except Exception:
+            logger.warning(
+                "Failed to set batch size %d on %s",
+                batch_size,
+                self.vllm_base_url,
+                exc_info=True,
+            )
+        if old != batch_size:
+            logger.info("Batch size %s: %d -> %d", self.model_label, old, batch_size)
+
 
 @dataclass(frozen=True)
 class LoadGenerationConfig:
     """Configuration for the request load generator.
 
     Args:
-        max_output_tokens: Maximum output tokens per request.
-        concurrency_multiplier: Number of concurrent requests per unit
-            of batch size (`N_concurrent = batch_size * this`).
+        max_output_tokens: Maximum output tokens per request (used by
+            the fallback request when no JSONL requests are provided).
         itl_window_s: Seconds of ITL history to average over.
     """
 
     max_output_tokens: int = 512
-    concurrency_multiplier: float = 3.0
     itl_window_s: float = 1.0
 
 
@@ -307,7 +350,7 @@ class _PrometheusPoller:
 
     def __init__(
         self,
-        deployments: Sequence[OnlineModelDeployment],
+        deployments: Sequence[VLLMDeployment],
         poll_interval_s: float = 0.5,
     ) -> None:
         self._deployments = {d.model_label: d for d in deployments}
@@ -341,16 +384,18 @@ class _PrometheusPoller:
 class _LoadGenerator:
     """Background load generator that saturates vLLM servers and measures ITL.
 
-    Runs a daemon thread with an asyncio event loop.  For each model, a
-    supervisor coroutine maintains `batch_size * concurrency_multiplier`
-    concurrent streaming requests.  Per-token inter-token latency (ITL)
-    is measured from SSE chunk arrival times using `usage.completion_tokens`
-    increments to correctly handle multi-token bundles.
+    Runs a daemon thread with an asyncio event loop. For each model, a
+    semaphore-gated producer loop cycles through pre-built request dicts
+    endlessly. The semaphore size is `2 * max(feasible_batch_sizes)`,
+    ensuring the vLLM queue never drains even at the largest batch size
+    the OFO controller can set. Per-token inter-token latency (ITL) is
+    measured from SSE chunk arrival times using `usage.completion_tokens`
+    increments; first-token latency (TTFT) is excluded from ITL samples.
     """
 
     def __init__(
         self,
-        deployments: Sequence[OnlineModelDeployment],
+        deployments: Sequence[VLLMDeployment],
         requests_by_model: dict[str, list[dict]],
         config: LoadGenerationConfig,
         prometheus_poller: _PrometheusPoller | None = None,
@@ -361,12 +406,9 @@ class _LoadGenerator:
         self._prometheus = prometheus_poller
 
         self._lock = threading.Lock()
-        self._batch_by_model: dict[str, int] = {}
         self._itl_samples: dict[str, collections.deque[tuple[float, float]]] = {}
         for d in deployments:
-            label = d.model_label
-            self._batch_by_model[label] = d.spec.initial_batch_size
-            self._itl_samples[label] = collections.deque()
+            self._itl_samples[d.model_label] = collections.deque()
 
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
@@ -390,10 +432,6 @@ class _LoadGenerator:
         if self._thread is not None:
             self._thread.join(timeout=10.0)
             self._thread = None
-
-    def set_batch_size(self, model_label: str, batch_size: int) -> None:
-        with self._lock:
-            self._batch_by_model[model_label] = batch_size
 
     def get_observed_itl(self, model_label: str, window_s: float | None = None) -> float:
         """Return the windowed-average ITL for *model_label*, or NaN."""
@@ -425,7 +463,7 @@ class _LoadGenerator:
         tasks: list[asyncio.Task] = []
 
         for label, dep in self._deployments.items():
-            tasks.append(asyncio.create_task(self._model_supervisor(label, dep)))
+            tasks.append(asyncio.create_task(self._model_producer(label, dep)))
 
         if self._prometheus is not None:
             tasks.append(asyncio.create_task(self._prometheus.run(self._stop_event)))
@@ -437,11 +475,18 @@ class _LoadGenerator:
             t.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
 
-    async def _model_supervisor(self, label: str, dep: OnlineModelDeployment) -> None:
-        """Maintain target concurrency of streaming requests for one model."""
-        active: set[asyncio.Task[None]] = set()
-        req_idx = 0
+    async def _model_producer(self, label: str, dep: VLLMDeployment) -> None:
+        """Semaphore-gated loop that continuously submits requests for one model.
+
+        Cycles through the JSONL request list endlessly. The semaphore
+        limits in-flight requests to `2 * max(feasible_batch_sizes)`,
+        ensuring the vLLM server always has a non-empty queue.
+        """
+        max_batch = max(dep.spec.feasible_batch_sizes)
+        sem = asyncio.Semaphore(2 * max_batch)
         requests = self._requests.get(label, [])
+        req_idx = 0
+        active: set[asyncio.Task[None]] = set()
 
         connector = aiohttp.TCPConnector(limit=0, ssl=False)
         async with aiohttp.ClientSession(
@@ -449,26 +494,19 @@ class _LoadGenerator:
             connector=connector,
         ) as session:
             while not self._stop_event.is_set():
-                with self._lock:
-                    batch = self._batch_by_model.get(label, 1)
-                target = max(1, int(batch * self._config.concurrency_multiplier))
-
-                while len(active) < target and not self._stop_event.is_set():
-                    if requests:
-                        request_dict = requests[req_idx % len(requests)]
-                        req_idx += 1
-                    else:
-                        request_dict = self._default_request(dep)
-                    task = asyncio.create_task(self._single_request(label, dep, request_dict, session))
-                    active.add(task)
-                    task.add_done_callback(active.discard)
-
-                if active:
-                    await asyncio.wait(active, timeout=0.5, return_when=asyncio.FIRST_COMPLETED)
+                await sem.acquire()
+                if self._stop_event.is_set():
+                    break
+                if requests:
+                    request_dict = requests[req_idx % len(requests)]
+                    req_idx += 1
                 else:
-                    await asyncio.sleep(0.1)
+                    request_dict = self._default_request(dep)
+                task = asyncio.create_task(self._single_request(label, dep, request_dict, session, sem))
+                active.add(task)
+                task.add_done_callback(active.discard)
 
-    def _default_request(self, dep: OnlineModelDeployment) -> dict:
+    def _default_request(self, dep: VLLMDeployment) -> dict:
         """Build a minimal fallback request dict."""
         return {
             "model": dep.model_name,
@@ -479,27 +517,29 @@ class _LoadGenerator:
     async def _single_request(
         self,
         label: str,
-        dep: OnlineModelDeployment,
+        dep: VLLMDeployment,
         request_dict: dict,
         session: aiohttp.ClientSession,
+        sem: asyncio.Semaphore,
     ) -> None:
-        """Send one streaming chat-completion request and measure per-token ITL.
+        """Send one streaming chat-completion request and measure decoding ITL.
 
         Uses `usage.completion_tokens` increments to correctly handle
-        multi-token bundles. Stores individual per-token ITL samples.
+        multi-token bundles. First-token samples (TTFT) are skipped;
+        only decoding-phase ITL is recorded.
         """
-        url = f"{dep.vllm_base_url}/v1/chat/completions"
-        body = dict(request_dict)
-        body["stream"] = True
-        body["stream_options"] = {"include_usage": True, "continuous_usage_stats": True}
-        if "max_tokens" in body and "max_completion_tokens" not in body:
-            body["max_completion_tokens"] = body.pop("max_tokens")
-
-        current_completion_tokens = 0
-        most_recent_timestamp = time.perf_counter()
-        ttft_recorded = False
-
         try:
+            url = f"{dep.vllm_base_url}/v1/chat/completions"
+            body = dict(request_dict)
+            body["stream"] = True
+            body["stream_options"] = {"include_usage": True, "continuous_usage_stats": True}
+            if "max_tokens" in body and "max_completion_tokens" not in body:
+                body["max_completion_tokens"] = body.pop("max_tokens")
+
+            current_completion_tokens = 0
+            most_recent_timestamp = time.perf_counter()
+            ttft_recorded = False
+
             async with session.post(url, json=body) as response:
                 if response.status != 200:
                     return
@@ -512,7 +552,6 @@ class _LoadGenerator:
 
                     chunk_str = chunk_bytes.decode("utf-8")
 
-                    # Skip SSE comments (often used as pings)
                     if chunk_str.startswith(":"):
                         continue
 
@@ -531,26 +570,18 @@ class _LoadGenerator:
                         continue
 
                     timestamp = time.perf_counter()
-                    now_mono = time.monotonic()
 
                     if not ttft_recorded:
-                        # First token(s)
                         ttft_recorded = True
-                        inc = completion_tokens - current_completion_tokens
                         current_completion_tokens = completion_tokens
-                        # Record zero ITL for bundled first tokens
-                        with self._lock:
-                            for _ in range(inc):
-                                self._itl_samples[label].append((now_mono, 0.0))
                     else:
-                        # Decoding phase
                         itl = timestamp - most_recent_timestamp
                         inc = completion_tokens - current_completion_tokens
                         current_completion_tokens = completion_tokens
 
+                        now_mono = time.monotonic()
                         with self._lock:
                             self._itl_samples[label].append((now_mono, itl))
-                            # Bundled tokens get zero ITL
                             for _ in range(max(inc - 1, 0)):
                                 self._itl_samples[label].append((now_mono, 0.0))
 
@@ -559,6 +590,8 @@ class _LoadGenerator:
         except Exception:
             if not self._stop_event.is_set():
                 logger.debug("Request to %s failed for %s", dep.vllm_base_url, label, exc_info=True)
+        finally:
+            sem.release()
 
 
 class _RollingPowerBuffer:
@@ -656,7 +689,7 @@ class OnlineDatacenter(LLMBatchSizeControlledDatacenter[OnlineDatacenterState]):
     def __init__(
         self,
         *,
-        deployments: Sequence[OnlineModelDeployment],
+        deployments: Sequence[VLLMDeployment],
         power_client: PowerStreamingClient,
         augmentation: PowerAugmentationConfig | None = None,
         load_gen: LoadGenerationConfig | None = None,
@@ -708,8 +741,6 @@ class OnlineDatacenter(LLMBatchSizeControlledDatacenter[OnlineDatacenterState]):
             [d.model_label for d in deployments],
             max_samples=max(int(augmentation.stagger_buffer_s * 100), 1000),
         )
-
-        self._batch_by_model: dict[str, int] = {d.model_label: d.spec.initial_batch_size for d in deployments}
 
         self._state: OnlineDatacenterState | None = None
         self._history: list[OnlineDatacenterState] = []
@@ -798,7 +829,8 @@ class OnlineDatacenter(LLMBatchSizeControlledDatacenter[OnlineDatacenterState]):
             seed=self._augmentation_config.seed + 12345,
         )
         self._rolling_buffer.clear()
-        self._batch_by_model = {d.model_label: d.spec.initial_batch_size for d in self._deployments}
+        for d in self._deployments:
+            d.batch_size = d.spec.initial_batch_size
         self._state = None
         self._history = []
         self._started = False
@@ -851,9 +883,7 @@ class OnlineDatacenter(LLMBatchSizeControlledDatacenter[OnlineDatacenterState]):
 
         # 3. Set initial batch sizes on vLLM servers
         for d in self._deployments:
-            batch = d.spec.initial_batch_size
-            _set_vllm_batch_size(d.vllm_base_url, batch)
-            logger.info("Set initial batch size for %s: %d", d.model_label, batch)
+            d.set_batch_size(d.spec.initial_batch_size)
 
         # 4. Start load generation (and Prometheus poller)
         self._load_gen.start()
@@ -1072,7 +1102,7 @@ class OnlineDatacenter(LLMBatchSizeControlledDatacenter[OnlineDatacenterState]):
         state = OnlineDatacenterState(
             time_s=clock.time_s,
             power_w=aug.power_w,
-            batch_size_by_model=dict(self._batch_by_model),
+            batch_size_by_model={d.model_label: d.batch_size for d in self._deployments},
             active_replicas_by_model=aug.active_replicas_by_model,
             observed_itl_s_by_model=observed_itl,
             measured_power_w=ThreePhase(
@@ -1095,52 +1125,22 @@ class OnlineDatacenter(LLMBatchSizeControlledDatacenter[OnlineDatacenterState]):
         raise TypeError(f"OnlineDatacenter does not support {type(command).__name__}")
 
     @apply_control.register
-    def _(self, command: SetBatchSize) -> None:
+    def apply_control_set_batch_size(self, command: SetBatchSize) -> None:
         """Apply batch size command by sending HTTP requests to vLLM servers."""
         for label, b in command.batch_size_by_model.items():
             label = str(label)
             b_int = int(b)
             if b_int <= 0:
                 raise ValueError(f"Batch size must be positive for model {label!r}, got {b_int}.")
-            old = self._batch_by_model.get(label)
-            self._batch_by_model[label] = b_int
-            if old != b_int:
-                dep = self._deployment_map.get(label)
-                if dep is not None:
-                    _set_vllm_batch_size(
-                        dep.vllm_base_url, b_int, ramp_up_rate=command.ramp_up_rate_by_model.get(label, 0.0)
-                    )
-                    self._load_gen.set_batch_size(label, b_int)
-                logger.info("Batch size %s: %s -> %d", label, old, b_int)
+            dep = self._deployment_map.get(label)
+            if dep is not None:
+                dep.set_batch_size(b_int, ramp_up_rate=command.ramp_up_rate_by_model.get(label, 0.0))
 
         if self._events is not None:
             self._events.emit(
                 "datacenter.batch_size.updated",
-                {"batch_size_by_model": dict(self._batch_by_model)},
+                {"batch_size_by_model": {d.model_label: d.batch_size for d in self._deployments}},
             )
 
     def bind_event_emitter(self, emitter: EventEmitter) -> None:
         self._events = emitter
-
-
-def _set_vllm_batch_size(
-    vllm_base_url: str,
-    batch_size: int,
-    ramp_up_rate: float = 0.0,
-) -> None:
-    """Send HTTP POST to set batch size on the vLLM server."""
-    url = f"{vllm_base_url}/set_max_num_seqs?max_num_seqs={batch_size}"
-    if ramp_up_rate > 0:
-        url += f"&ramp_up_rate={ramp_up_rate}"
-    try:
-        req = urllib.request.Request(url, method="POST", data=b"")
-        with urllib.request.urlopen(req, timeout=2.0) as resp:
-            if resp.status >= 400:
-                logger.warning("Failed to set batch size %d on %s: HTTP %d", batch_size, vllm_base_url, resp.status)
-    except Exception:
-        logger.warning(
-            "Failed to set batch size %d on %s",
-            batch_size,
-            vllm_base_url,
-            exc_info=True,
-        )

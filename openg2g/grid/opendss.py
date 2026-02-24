@@ -228,7 +228,7 @@ class OpenDSSGrid(GridBackend[GridState]):
         raise TypeError(f"OpenDSSGrid does not support {type(command).__name__}")
 
     @apply_control.register
-    def _(self, command: SetTaps) -> None:
+    def apply_control_set_taps(self, command: SetTaps) -> None:
         tap_map = self._tap_position_to_reg_dict(command.tap_position)
         self._set_reg_taps(tap_map)
         if self._events is not None:

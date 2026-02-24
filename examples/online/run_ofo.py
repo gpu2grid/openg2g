@@ -35,8 +35,8 @@ from openg2g.datacenter.online import (
     GPUEndpointMapping,
     LoadGenerationConfig,
     OnlineDatacenter,
-    OnlineModelDeployment,
     PowerAugmentationConfig,
+    VLLMDeployment,
 )
 from openg2g.grid.base import Phase
 from openg2g.grid.opendss import OpenDSSGrid
@@ -52,7 +52,7 @@ INITIAL_TAPS = TapPosition(a=1.0 + 14 * TAP_STEP, b=1.0 + 6 * TAP_STEP, c=1.0 + 
 MAX_BATCH_SIZE = 512
 
 DEPLOYMENTS = [
-    OnlineModelDeployment(
+    VLLMDeployment(
         spec=LLMInferenceModelSpec(
             model_label="Llama-3.1-8B",
             num_replicas=720,
@@ -68,7 +68,7 @@ DEPLOYMENTS = [
             GPUEndpointMapping(host="node1", port=4938, gpu_indices=(4, 5, 6, 7), phase=Phase.B),
         ),
     ),
-    OnlineModelDeployment(
+    VLLMDeployment(
         spec=LLMInferenceModelSpec(
             model_label="Llama-3.1-70B",
             num_replicas=180,
@@ -183,7 +183,6 @@ def main(args: argparse.Namespace) -> None:
 
     load_gen = LoadGenerationConfig(
         max_output_tokens=512,
-        concurrency_multiplier=3.0,
         itl_window_s=1.0,
     )
 
