@@ -1903,7 +1903,6 @@ wheels = [
 
 [[package]]
 name = "openg2g"
-version = "0.0.1"
 source = { editable = "." }
 dependencies = [
     { name = "aiohttp" },
@@ -1961,7 +1960,7 @@ requires-dist = [
     { name = "numpy" },
     { name = "opendssdirect-py", marker = "extra == 'opendss'" },
     { name = "pandas" },
-    { name = "zeus", git = "https://github.com/ml-energy/zeus.git?rev=master" },
+    { name = "zeus", specifier = ">=0.15.0" },
 ]
 provides-extras = ["opendss"]
 
@@ -3552,8 +3551,8 @@ wheels = [
 
 [[package]]
 name = "zeus"
-version = "0.14.0"
-source = { git = "https://github.com/ml-energy/zeus.git?rev=master#bd1242028497d2ab2124bae866883dd07d7fc9d7" }
+version = "0.15.0"
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "amdsmi" },
     { name = "httpx" },
@@ -3568,4 +3567,8 @@ dependencies = [
     { name = "scikit-learn", version = "1.7.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "scikit-learn", version = "1.8.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "tyro" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/d0/ba/7ab1557636503ddd47e90ba31224fbb08f24be02f47f7f1441dcf1f4008d/zeus-0.15.0.tar.gz", hash = "sha256:d4c4caa3799a2539d15a7099981b07d17300cdf421ae65080078862b39f1cf86", size = 220622, upload-time = "2026-02-24T05:17:14.973Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a5/44/8267d956f2fd7906fe261fb1a203a6b116c80c455c907b13ce6da10603b9/zeus-0.15.0-py3-none-any.whl", hash = "sha256:44bd532c18ab51c1d68561fb6b97d7a495f2e742815e9bd05fc546c21f20cd3a", size = 277969, upload-time = "2026-02-24T05:17:13.428Z" },
 ]
