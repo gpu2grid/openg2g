@@ -59,7 +59,7 @@ See [Concepts and Background](guide/concepts.md#what-can-you-explore) for the fu
 ## Getting Started
 
 - [Installation](getting-started/installation.md)
-- [Running a Simulation](getting-started/running.md)
+- [Running Simulation](getting-started/running.md)
 
 ## Guide
 

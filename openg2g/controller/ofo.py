@@ -33,12 +33,12 @@ class VoltageDualConfig:
     Attributes:
         v_min: Lower voltage limit (pu).
         v_max: Upper voltage limit (pu).
-        ascent_step_size: Step size for the voltage dual ascent (ρ_v in Eqs. 5-6).
+        ascent_step_size: Step size for the voltage dual ascent (ρ_v in G2G paper Eqs. 5-6).
     """
 
     v_min: float = 0.95
     v_max: float = 1.05
-    ascent_step_size: float = 0.5  # ρ_v in Eqs. 5-6
+    ascent_step_size: float = 0.5  # ρ_v in G2G paper Eqs. 5-6
 
 
 @dataclass
@@ -46,20 +46,16 @@ class PrimalConfig:
     """Configuration for the primal batch-size optimizer.
 
     Attributes:
-        descent_step_size: Primal gradient descent step size (ρ_x in Eq. 8).
-        w_latency: Weight on the direct latency penalty term
-            `w_L * dL/dx`.  This is an implementation extension beyond
-            the paper's Eq. 18, which only has the dual term.
+        descent_step_size: Primal gradient descent step size (ρ_x in G2G paper Eq. 8).
         w_throughput: Weight on the (negative) throughput gradient.
         w_switch: Weight on the switching cost regularizer
-            `gamma * ||x - x_prev||^2`.
+            `gamma * ||x - x_prev||^2` (γ in G2G paper Eq. 4a).
         voltage_gradient_scale: Scaling factor applied to the voltage gradient
-            term.  Multiplies `eta^T H e_i dP/dx`.  Not present in the paper's
-            equations; used here as a tuning knob.
+            term.  Multiplies `eta^T H e_i dP/dx`.  Not present in the G2G
+            paper's equations; used here as a tuning knob.
     """
 
-    descent_step_size: float = 0.05  # ρ_x in Eq. 8
-    w_latency: float = 0.0
+    descent_step_size: float = 0.05  # ρ_x in G2G paper Eq. 8
     w_throughput: float = 0.1
     w_switch: float = 0.0
     voltage_gradient_scale: float = 1e6
@@ -81,8 +77,8 @@ class VoltageDualVariables:
 
     def __init__(self, n_bus_phases: int, config: VoltageDualConfig) -> None:
         self.config = config
-        self.dual_undervoltage = np.zeros(int(n_bus_phases), dtype=float)  # λ in Eq. 5
-        self.dual_overvoltage = np.zeros(int(n_bus_phases), dtype=float)  # λ̄ in Eq. 6
+        self.dual_undervoltage = np.zeros(int(n_bus_phases), dtype=float)  # λ in G2G paper Eq. 5
+        self.dual_overvoltage = np.zeros(int(n_bus_phases), dtype=float)  # λ̄ in G2G paper Eq. 6
 
     def update(self, observed_voltages: np.ndarray) -> None:
         """Update duals given observed voltage vector.
@@ -223,7 +219,6 @@ class PrimalBatchOptimizer:
         replica_count_by_model = {} if replica_count_by_model is None else dict(replica_count_by_model)
 
         step_size = float(self.config.descent_step_size)  # ρ_x
-        w_latency = float(self.config.w_latency)
         w_throughput = float(self.config.w_throughput)
         w_switch = float(self.config.w_switch)
         voltage_gradient_scale = float(self.config.voltage_gradient_scale)
@@ -272,15 +267,13 @@ class PrimalBatchOptimizer:
                 latency_dual = 0.0
 
             # Gradient of the Lagrangian w.r.t. x_i = log2(batch_i).
-            # Paper Eq. 18 has:  nabla_x L = mu_i * dL/dx  (latency dual)
-            #                               + eta^T H e_i dP/dx  (voltage dual)
-            # Implementation extensions (tuning knobs not in the paper):
-            #   wL * dL/dx      : direct latency penalty (separate from dual mu_i)
-            #   -wT * dTh/dx    : throughput incentive
-            #   k_v * (...)     : scaling factor on the voltage term
-            #   wS * (x-x_prev) : switching cost regularizer
+            # G2G paper Eq. 18: nabla_x L = -dR/dx (throughput)
+            #                              + 2*gamma*(x - x_prev) (switching)
+            #                              + eta^T H e_i dP/dx (voltage dual)
+            #                              + mu_i * dL/dx (latency dual)
+            # Implementation extensions: wT scaling on throughput,
+            #                            k_v scaling on voltage term
             grad = 0.0
-            grad += w_latency * dLdx
             grad -= w_throughput * dThdx
             grad += voltage_gradient_scale * voltage_gradient * dPdx
             grad += latency_dual * dLdx
@@ -350,7 +343,7 @@ class OFOBatchController(Controller[LLMBatchSizeControlledDatacenter[LLMDatacent
         self._voltage_dual: VoltageDualVariables | None = None
         self._voltage_dual_config = voltage_dual_config
 
-        # Latency duals (μ_i per model, Eq. 7)
+        # Latency duals (μ_i per model, G2G paper Eq. 7)
         self._latency_dual_by_model: dict[str, float] = {ms.model_label: 0.0 for ms in models}
 
         # Primal optimizer
@@ -364,7 +357,7 @@ class OFOBatchController(Controller[LLMBatchSizeControlledDatacenter[LLMDatacent
         )
         self._optimizer.init_from_batches({ms.model_label: ms.initial_batch_size for ms in models})
 
-        # Sensitivity estimation state (H = ∂v/∂p, Eq. 13)
+        # Sensitivity estimation state (H = ∂v/∂p, G2G paper Eq. 13)
         self._sensitivity_matrix: np.ndarray | None = None
         self._control_step_count: int = 0
 

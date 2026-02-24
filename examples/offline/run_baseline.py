@@ -3,7 +3,7 @@
 Reproduces the results of baseline_wo_control.py using the modular library
 components: OfflineDatacenter + OpenDSSGrid + TapScheduleController + Coordinator.
 
-Two modes correspond to two baselines in the paper:
+Two modes correspond to two baselines in the G2G paper:
   no-tap       "No control, no tap": tap positions are fixed throughout.
   tap-change   "Tap change only": regulator taps change at t=1500s and t=3300s.
 """
@@ -182,13 +182,12 @@ def main(args: argparse.Namespace) -> None:
         title_template="Voltage trajectories without GPU flexibility (Phase {label})",
     )
 
-    # Standalone power plot (backward-compatible)
     plot_power_3ph(
         time_s,
         kW_A,
         kW_B,
         kW_C,
-        save_path=save_dir / "power_profiles.png",
+        save_path=save_dir / "dc_power_3ph.png",
         title="DC Power by Phase",
     )
 

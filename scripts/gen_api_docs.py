@@ -1,4 +1,4 @@
-"""Generate API reference markdown stubs and update zensical.toml nav.
+"""Generate API reference markdown stubs and save to zensical.toml.
 
 Walks the openg2g package tree, groups modules by top-level package,
 and writes one docs/api/<name>.md per group. Each file contains an h1

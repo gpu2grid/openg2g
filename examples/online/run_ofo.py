@@ -218,7 +218,6 @@ def main(args: argparse.Namespace) -> None:
         throughput_fits=throughput_fits,
         primal_config=PrimalConfig(
             descent_step_size=0.1,
-            w_latency=1.0,
             w_throughput=1e-3,
             w_switch=1.0,
             voltage_gradient_scale=1e6,

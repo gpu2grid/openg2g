@@ -130,7 +130,6 @@ class TestPrimalStep:
             feasible_batch_sizes=[8, 16, 32, 64, 128],
             config=PrimalConfig(
                 descent_step_size=0.1,
-                w_latency=0.0,
                 w_throughput=0.0,
                 w_switch=0.0,
                 voltage_gradient_scale=0.0,
@@ -147,7 +146,6 @@ class TestPrimalStep:
             feasible_batch_sizes=[8, 16, 32, 64, 128],
             config=PrimalConfig(
                 descent_step_size=0.5,
-                w_latency=0.0,
                 w_throughput=0.0,
                 w_switch=0.0,
                 voltage_gradient_scale=0.0,
@@ -171,7 +169,6 @@ class TestPrimalStep:
             feasible_batch_sizes=[8, 16, 32, 64, 128],
             config=PrimalConfig(
                 descent_step_size=0.1,
-                w_latency=0.0,
                 w_throughput=0.0,
                 w_switch=0.0,
                 voltage_gradient_scale=0.0,
@@ -194,7 +191,6 @@ class TestPrimalStep:
             feasible_batch_sizes=[8, 128],
             config=PrimalConfig(
                 descent_step_size=100.0,
-                w_latency=0.0,
                 w_throughput=0.0,
                 w_switch=0.0,
                 voltage_gradient_scale=1e9,
