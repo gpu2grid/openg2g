@@ -33,7 +33,11 @@ class BatchSizeChange:
             raise ValueError(f"ramp_up_rate must be >= 0, got {self.ramp_up_rate}.")
 
     def at(self, t: float) -> BatchSizeSchedule:
-        """Schedule this change at time *t* seconds."""
+        """Schedule this change at time *t* seconds.
+
+        Returns:
+            A single-entry [`BatchSizeSchedule`][...BatchSizeSchedule].
+        """
         return BatchSizeSchedule(((t, self),))
 
 
@@ -85,8 +89,9 @@ class BatchSizeSchedule:
 class BatchSizeScheduleController(Controller[DatacenterBackend, GridBackend]):
     """Applies pre-defined batch size changes at scheduled times.
 
-    Walks each model's schedule and emits `set_batch_size` commands when
-    the simulation clock reaches the scheduled time.
+    Walks each model's schedule and emits
+    [`SetBatchSize`][openg2g.types.SetBatchSize] commands when the
+    simulation clock reaches the scheduled time.
 
     Args:
         schedules: Per-model batch size schedules, keyed by model label.

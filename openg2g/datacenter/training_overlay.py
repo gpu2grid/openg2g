@@ -55,7 +55,8 @@ class TrainingTrace:
 
 
 class TrainingOverlayCache:
-    """Rescales a training trace and provides periodic overlay evaluation.
+    """Rescales a [`TrainingTrace`][..TrainingTrace] and provides
+    periodic overlay evaluation.
 
     Args:
         trace: Single-GPU training power trace.

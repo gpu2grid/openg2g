@@ -115,9 +115,10 @@ class Controller(Generic[DCBackendT, GridBackendT], ABC):
     def reset(self) -> None:
         """Reset simulation state to initial conditions.
 
-        Called by the coordinator before each `start()`. Must clear all
-        simulation state: dual variables, counters, cached matrices.
-        Configuration (dt_s, fits, step sizes) is not affected.
+        Called by the coordinator before each [`start`][..start]. Must
+        clear all simulation state: dual variables, counters, cached
+        matrices. Configuration (dt_s, fits, step sizes) is not
+        affected.
 
         Abstract so every implementation explicitly enumerates its state.
         A forgotten field is a bug -- not clearing it silently corrupts
@@ -127,8 +128,9 @@ class Controller(Generic[DCBackendT, GridBackendT], ABC):
     def start(self) -> None:
         """Acquire per-run resources.
 
-        Called after `reset()`, before the simulation loop. No-op by
-        default because most controllers have no resources to acquire.
+        Called after [`reset`][..reset], before the simulation loop.
+        No-op by default because most controllers have no resources to
+        acquire.
         """
 
     def stop(self) -> None:

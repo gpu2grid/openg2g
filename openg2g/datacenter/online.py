@@ -3,8 +3,8 @@
 Connects to real vLLM inference servers for load generation and ITL
 measurement, and to zeusd instances for live GPU power monitoring.
 Power readings from a small number of real GPUs are augmented to
-datacenter scale using the shared `PowerAugmenter` pipeline from
-`openg2g.datacenter.layout`.
+datacenter scale using the shared
+[`PowerAugmenter`][openg2g.datacenter.layout.PowerAugmenter] pipeline.
 
 Requires `pip install zeus aiohttp`.
 """
@@ -54,9 +54,10 @@ logger = logging.getLogger(__name__)
 class OnlineDatacenterState(LLMDatacenterState):
     """Extended state from the online (live GPU) backend.
 
-    The base `power_w` field carries the augmented three-phase power
-    (what the grid sees). This subclass adds the measured (pre-augmentation)
-    breakdown for post-hoc analysis.
+    The base `power_w`
+    field carries the augmented three-phase power (what the grid sees).
+    This subclass adds the measured (pre-augmentation) breakdown for
+    post-hoc analysis.
 
     Attributes:
         measured_power_w: Total measured three-phase power from real GPUs
@@ -106,10 +107,12 @@ class GPUEndpointMapping:
 class OnlineModelDeployment:
     """Deployment of one model on physical hardware.
 
-    Pairs a reusable `LLMInferenceModelSpec` with physical deployment
-    details.  `spec.num_replicas` is the simulated (augmented) count
-    for grid simulation.  The real replica count is derived from
-    `gpu_endpoints` and `spec.gpus_per_replica`.
+    Pairs a reusable
+    [`LLMInferenceModelSpec`][openg2g.models.spec.LLMInferenceModelSpec]
+    with physical deployment details. `spec.num_replicas` is the
+    simulated (augmented) count for grid simulation. The real replica
+    count is derived from `gpu_endpoints` and
+    `spec.gpus_per_replica`.
 
     Args:
         spec: Model specification (shared with offline datacenter).
@@ -167,9 +170,10 @@ class PowerAugmentationConfig:
         base_kw_per_phase: Constant base load per electrical phase (kW).
         noise_fraction: Gaussian noise standard deviation as a fraction
             of per-server power. Applied per-server by the shared
-            `PowerAugmenter`.
-        stagger_buffer_s: Seconds of power history for temporal staggering.
-            Also used as the stagger range when building `ServerLayout`
+            [`PowerAugmenter`][openg2g.datacenter.layout.PowerAugmenter].
+        stagger_buffer_s: Seconds of power history for temporal
+            staggering. Also used as the stagger range when building
+            [`ServerLayout`][openg2g.datacenter.layout.ServerLayout]
             (float offsets drawn from `[0, stagger_buffer_s)`).
         gpus_per_server: Number of GPUs per virtual server for layout
             computation.
@@ -624,11 +628,13 @@ class OnlineDatacenter(LLMBatchSizeControlledDatacenter[OnlineDatacenterState]):
 
     Dispatches inference load to vLLM servers, streams GPU power from
     zeusd, measures ITL from streaming responses, and augments power
-    readings to datacenter scale using the shared `PowerAugmenter`
-    pipeline (same as `OfflineDatacenter`).
+    readings to datacenter scale using the shared
+    [`PowerAugmenter`][openg2g.datacenter.layout.PowerAugmenter]
+    pipeline (same as
+    [`OfflineDatacenter`][openg2g.datacenter.offline.OfflineDatacenter]).
 
-    Call `start()` before the first `step()` and `stop()` after the
-    simulation loop finishes.
+    Call [`start`][.start] before the first [`step`][.step] and
+    [`stop`][.stop] after the simulation loop finishes.
 
     Args:
         deployments: List of model deployments with physical hardware mapping.

@@ -20,7 +20,8 @@ class DatacenterState:
     """State emitted by a datacenter backend each timestep.
 
     Contains only universally applicable fields. LLM-inference-specific
-    fields (batch sizes, replicas, latency) live on `LLMDatacenterState`.
+    fields (batch sizes, replicas, latency) live on
+    [`LLMDatacenterState`][..LLMDatacenterState].
     """
 
     time_s: float
@@ -31,8 +32,9 @@ class DatacenterState:
 class LLMDatacenterState(DatacenterState):
     """State from a datacenter serving LLM workloads.
 
-    Extends `DatacenterState` with per-model batch size, replica count,
-    and observed inter-token latency fields used by LLM controllers.
+    Extends [`DatacenterState`][..DatacenterState] with per-model batch
+    size, replica count, and observed inter-token latency fields used
+    by LLM controllers.
     """
 
     batch_size_by_model: dict[str, int] = field(default_factory=dict)
@@ -76,9 +78,10 @@ class DatacenterBackend(Generic[DCStateT], ABC):
     def reset(self) -> None:
         """Reset simulation state to initial conditions.
 
-        Called by the coordinator before each `start()`. Must clear all
-        simulation state: history, counters, RNG seeds, cached values.
-        Configuration (dt_s, models, templates) is not affected.
+        Called by the coordinator before each [`start`][..start]. Must
+        clear all simulation state: history, counters, RNG seeds,
+        cached values. Configuration (dt_s, models, templates) is not
+        affected.
 
         Abstract so every implementation explicitly enumerates its state.
         A forgotten field is a bug -- not clearing it silently corrupts
@@ -88,30 +91,34 @@ class DatacenterBackend(Generic[DCStateT], ABC):
     def start(self) -> None:
         """Acquire per-run resources (threads, solver circuits).
 
-        Called after `reset()`, before the simulation loop. Override for
-        backends that need resource acquisition (e.g., `OpenDSSGrid`
-        compiles its DSS circuit here). No-op by default because most
-        offline components have no resources to acquire.
+        Called after [`reset`][..reset], before the simulation loop.
+        Override for backends that need resource acquisition (e.g.,
+        [`OpenDSSGrid`][openg2g.grid.opendss.OpenDSSGrid] compiles its
+        DSS circuit here). No-op by default because most offline
+        components have no resources to acquire.
         """
 
     def stop(self) -> None:
         """Release per-run resources. Simulation state is preserved.
 
         Called after the simulation loop in LIFO order. Override for
-        backends that acquired resources in `start()`. No-op by default.
+        backends that acquired resources in [`start`][..start]. No-op
+        by default.
         """
 
     def bind_event_emitter(self, emitter: EventEmitter) -> None:
-        """Attach a clock-bound emitter for backend-originated events."""
+        """Attach a clock-bound [`EventEmitter`][openg2g.events.EventEmitter]
+        for backend-originated events."""
 
 
 class LLMBatchSizeControlledDatacenter(DatacenterBackend[DCStateT]):
     """Datacenter that serves LLM workloads and supports batch-size control.
 
-    Marker layer between `DatacenterBackend` and concrete implementations.
-    Controllers that issue `set_batch_size` commands or read
-    `active_replicas_by_model` / `observed_itl_s_by_model` from state
-    should bind their generic to this class.
+    Marker layer between [`DatacenterBackend`][..DatacenterBackend] and
+    concrete implementations. Controllers that issue
+    [`SetBatchSize`][openg2g.types.SetBatchSize] commands or read
+    `active_replicas_by_model` / `observed_itl_s_by_model`
+    from state should bind their generic to this class.
     """
 
     @property

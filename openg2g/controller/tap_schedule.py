@@ -16,7 +16,8 @@ class TapScheduleController(Controller[DatacenterBackend, GridBackend]):
     """Applies pre-defined tap changes at scheduled times.
 
     Args:
-        schedule: Tap schedule built via `TapPosition(...).at(t=...) | ...`.
+        schedule: Tap schedule built via
+            [`TapPosition(...).at(t=...) | ...`][openg2g.types.TapSchedule].
         dt_s: How often the controller checks the schedule (seconds).
     """
 

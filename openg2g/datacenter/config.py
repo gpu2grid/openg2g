@@ -16,10 +16,12 @@ class TrainingRun:
     """A single training workload window.
 
     Attributes:
-        t_start: Global simulation time when training becomes active (seconds).
+        t_start: Global simulation time when training becomes active
+            (seconds).
         t_end: Global simulation time when training stops (seconds).
         n_gpus: Number of GPUs running the training workload.
-        trace: Single-GPU training power trace.
+        trace: Single-GPU
+            [`TrainingTrace`][openg2g.datacenter.training_overlay.TrainingTrace].
         target_peak_W_per_gpu: The trace is rescaled so its peak equals this value.
     """
 
@@ -42,7 +44,8 @@ class TrainingRun:
 
 
 class TrainingSchedule:
-    """Ordered collection of training windows, built with `|`.
+    """Ordered collection of [`TrainingRun`][..TrainingRun] windows,
+    built with `|`.
 
     Example:
 
@@ -106,7 +109,8 @@ class ServerRamp:
 
 
 class ServerRampSchedule:
-    """Ordered collection of server ramp events, built with `|`.
+    """Ordered collection of [`ServerRamp`][..ServerRamp] events,
+    built with `|`.
 
     Semantics: before the first ramp, fraction = 1.0.  During each
     `[t_start, t_end]` window, the fraction linearly interpolates from
@@ -201,8 +205,11 @@ class WorkloadConfig:
     """What runs in the datacenter: inference, training, and ramp events.
 
     Accepts flexible input types and normalizes them internally:
-    - A single `TrainingRun` is wrapped in a `TrainingSchedule`.
-    - A single `ServerRamp` is wrapped in a `ServerRampSchedule`.
+
+    - A single [`TrainingRun`][..TrainingRun] is wrapped in a
+      [`TrainingSchedule`][..TrainingSchedule].
+    - A single [`ServerRamp`][..ServerRamp] is wrapped in a
+      [`ServerRampSchedule`][..ServerRampSchedule].
     - `None` yields an empty schedule.
 
     Properties always return schedule types, eliminating `isinstance`

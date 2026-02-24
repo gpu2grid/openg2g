@@ -292,8 +292,9 @@ class OFOBatchController(Controller[LLMBatchSizeControlledDatacenter[LLMDatacent
     """Online Feedback Optimization controller for batch-size regulation.
 
     Reads grid voltage and datacenter state, updates voltage and latency
-    duals, runs the primal batch-size optimizer, and returns new batch sizes.
-    Latency dual updates use `dc_state.observed_itl_s_by_model`.
+    duals, runs the primal batch-size optimizer, and returns new batch
+    sizes. Latency dual updates use [`dc_state.observed_itl_s_by_model`
+    ][openg2g.datacenter.base.LLMDatacenterState.observed_itl_s_by_model].
 
     Args:
         models: Model specifications.
@@ -390,7 +391,8 @@ class OFOBatchController(Controller[LLMBatchSizeControlledDatacenter[LLMDatacent
         sensitivity_update_interval: int = 0,
         sensitivity_perturbation_kw: float = 100.0,
     ) -> OFOBatchController:
-        """Create an OFO controller from an LLMInferenceWorkload.
+        """Create an OFO controller from an
+        [`LLMInferenceWorkload`][openg2g.models.spec.LLMInferenceWorkload].
 
         Derives `feasible_batch_sizes` and `itl_deadline_by_model`
         from the workload's model specs.
