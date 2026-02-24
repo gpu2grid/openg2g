@@ -8,6 +8,7 @@ dynamic = ["version"]
 description = "A GPU-to-Grid simulation library for datacenter-grid cooperation."
 requires-python = ">=3.10"
 license = "Apache-2.0"
+readme = "README.md"
 dependencies = [
     "numpy",
     "pandas",
@@ -15,6 +16,11 @@ dependencies = [
     "zeus>=0.15.0",
     "mlenergy-data",
 ]
+
+[project.urls]
+Homepage = "https://gpu2grid.io/openg2g"
+Repository = "https://github.com/gpu2grid/openg2g"
+Documentation = "https://gpu2grid.io/openg2g"
 
 [project.optional-dependencies]
 opendss = ["opendssdirect.py"]
