@@ -93,6 +93,11 @@ alternate_style = true
 custom_checkbox = true
 [project.markdown_extensions.pymdownx.tilde]
 
+[project.plugins.mkdocstrings.handlers.python]
+inventories = [
+  "https://ml.energy/data/objects.inv",
+]
+
 [project.plugins.mkdocstrings.handlers.python.options]
 show_source = true
 show_root_heading = true
