@@ -102,6 +102,8 @@ class OpenDSSGrid(GridBackend[GridState]):
         self._dc_bus = str(dc_bus)
         self._dc_bus_kv = float(dc_bus_kv)
         self._power_factor = float(power_factor)
+        pf = max(min(self._power_factor, 0.999999), 1e-6)
+        self._tanphi = math.tan(math.acos(pf))
         self._dt_s = dt_s
         self._connection_type = str(connection_type)
         self._dss_controls = bool(dss_controls)
@@ -177,9 +179,6 @@ class OpenDSSGrid(GridBackend[GridState]):
                 raise RuntimeError("OpenDSSGrid.step() called with no power samples and no previous power.")
             power_samples_w = [self._prev_power]
 
-        pf = max(min(self._power_factor, 0.999999), 1e-6)
-        tanphi = math.tan(math.acos(pf))
-
         resampled = len(power_samples_w) > 1
         if resampled:
             trace = list(power_samples_w)
@@ -199,13 +198,13 @@ class OpenDSSGrid(GridBackend[GridState]):
 
             dss.Loads.Name("DataCenterA")
             dss.Loads.kW(kW_A)
-            dss.Loads.kvar(kW_A * tanphi)
+            dss.Loads.kvar(kW_A * self._tanphi)
             dss.Loads.Name("DataCenterB")
             dss.Loads.kW(kW_B)
-            dss.Loads.kvar(kW_B * tanphi)
+            dss.Loads.kvar(kW_B * self._tanphi)
             dss.Loads.Name("DataCenterC")
             dss.Loads.kW(kW_C)
-            dss.Loads.kvar(kW_C * tanphi)
+            dss.Loads.kvar(kW_C * self._tanphi)
 
             self._solve()
 
@@ -249,6 +248,7 @@ class OpenDSSGrid(GridBackend[GridState]):
         self._init_dss()
         self._v_index = self._build_v_index()
         self._build_vmag_indices()
+        self._build_snapshot_indices()
         self._started = True
         logger.info(
             "OpenDSSGrid: case=%s, dc_bus=%s, dt=%s s, dss_controls=%s, %d buses, %d bus-phase pairs",
@@ -289,9 +289,7 @@ class OpenDSSGrid(GridBackend[GridState]):
         if perturbation_kw <= 0:
             raise ValueError("perturbation_kw must be positive.")
 
-        pf = max(min(self._power_factor, 0.999999), 1e-6)
-        tanphi = math.tan(math.acos(pf))
-        dq_kvar = perturbation_kw * tanphi
+        dq_kvar = perturbation_kw * self._tanphi
 
         # Baseline solve
         self._solve()
@@ -310,18 +308,16 @@ class OpenDSSGrid(GridBackend[GridState]):
         sensitivity = np.zeros((M, 3), dtype=float)
 
         for j, ld in enumerate(load_names):
-            new_p = p0[j] + perturbation_kw
-            new_q = q0[j] + dq_kvar
-
-            dss.Text.Command(f"Edit Load.{ld} kW={new_p:.6f} kvar={new_q:.6f}")
+            dss.Text.Command(f"Edit Load.{ld} kW={p0[j] + perturbation_kw:.6f} kvar={q0[j] + dq_kvar:.6f}")
             self._solve()
 
-            v_plus = self.voltages_vector()
-            sensitivity[:, j] = (v_plus - baseline_voltages) / perturbation_kw
+            sensitivity[:, j] = (self.voltages_vector() - baseline_voltages) / perturbation_kw
 
-            # Restore
+            # Restore load to baseline before next perturbation
             dss.Text.Command(f"Edit Load.{ld} kW={p0[j]:.6f} kvar={q0[j]:.6f}")
-            self._solve()
+
+        # Re-solve once with all loads restored
+        self._solve()
 
         return sensitivity, baseline_voltages
 
@@ -417,19 +413,37 @@ class OpenDSSGrid(GridBackend[GridState]):
             dtype=int,
         )
 
+    def _build_snapshot_indices(self) -> None:
+        """Pre-compute index arrays for `_snapshot_bus_voltages`.
+
+        Builds a `(num_buses, 3)` array where entry `[b, p]` is the
+        index into `AllBusMagPu()` for bus `b`, phase `p+1`, or -1 if
+        that bus-phase pair doesn't exist (mapped to NaN at read time).
+        """
+        bus_to_idx = {bus: i for i, bus in enumerate(self.all_buses)}
+        n_buses = len(self.all_buses)
+        # -1 means "missing phase -> NaN"
+        self._snap_indices = np.full((n_buses, 3), -1, dtype=int)
+        for vmag_idx, (bus, phase) in enumerate(self._node_map):
+            if 1 <= phase <= 3:
+                bus_idx = bus_to_idx.get(bus)
+                if bus_idx is not None:
+                    self._snap_indices[bus_idx, phase - 1] = vmag_idx
+
     def _snapshot_bus_voltages(self) -> BusVoltages:
         """Snapshot all per-bus, per-phase voltage magnitudes into BusVoltages.
 
-        Uses `dss.Circuit.AllBusMagPu()` for a single bulk read instead
-        of per-bus `SetActiveBus` calls, reducing DSS API overhead from
-        ~9N calls to 1 (where N = number of buses).
+        Uses pre-computed index arrays and a single `AllBusMagPu()` bulk
+        read. Missing bus-phase pairs (index == -1) are set to NaN.
         """
         vmag = dss.Circuit.AllBusMagPu()
-        vals: dict[str, list[float]] = {bus: [float("nan"), float("nan"), float("nan")] for bus in self.all_buses}
-        for i, (bus, phase) in enumerate(self._node_map):
-            if 1 <= phase <= 3:
-                vals[bus][phase - 1] = float(vmag[i])
-        data = {bus: PhaseVoltages(a=v[0], b=v[1], c=v[2]) for bus, v in vals.items()}
+        # Append a NaN sentinel so index -1 reads as NaN
+        vmag_ext = np.append(vmag, float("nan"))
+        volts = vmag_ext[self._snap_indices]
+        data = {
+            bus: PhaseVoltages(a=float(volts[i, 0]), b=float(volts[i, 1]), c=float(volts[i, 2]))
+            for i, bus in enumerate(self.all_buses)
+        }
         return BusVoltages(_data=data)
 
     def _build_v_index(self) -> list[tuple[str, int]]:
