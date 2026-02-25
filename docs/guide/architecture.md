@@ -22,74 +22,83 @@ The core abstractions provided by OpenG2G are the multi-rate simulation loop ([`
 │  Datacenter   │                 v                  │  Controller(s)    │
 │  Backend      │         ┌────────────────┐         │                   │
 │               │         │  Grid Backend  │         │  Read DC & grid   │
-│  Produces:    │──power─>│                │         │  state, compute   │
-│  power (kW)   │  (kW)   │  Power flow    │         │  ControlActions   │
+│  Produces:    │<─power─>│                │         │  state, compute   │
+│  power load   │         │  Power flow    │         │  ControlActions   │
 │  latency      │         │  solver        │<──cmds──│                   │
 │  throughput   │         └────────────────┘         │ e.g. SetBatchSize │
 │               │<────────────────cmds───────────────│      SetTaps      │
 └───────────────┘                                    └───────────────────┘
 ```
 
-Controllers produce [`ControlAction`][openg2g.types.ControlAction] objects — a list of [`GridCommand`][openg2g.types.GridCommand] (e.g., [`SetTaps`][openg2g.types.SetTaps]) and/or [`DatacenterCommand`][openg2g.types.DatacenterCommand] (e.g., [`SetBatchSize`][openg2g.types.SetBatchSize]) that the coordinator dispatches to the appropriate backend before the next tick. Multiple controllers run in sequence each control step, so their actions compose naturally.
+Controllers produce [`ControlAction`][openg2g.types.ControlAction] objects, which are a list of [`GridCommand`][openg2g.types.GridCommand] (e.g., [`SetTaps`][openg2g.types.SetTaps]) and/or [`DatacenterCommand`][openg2g.types.DatacenterCommand] (e.g., [`SetBatchSize`][openg2g.types.SetBatchSize]) that the coordinator dispatches to the appropriate backend before the next tick.
+Multiple controllers run in sequence each control step, so their actions compose naturally.
 
 ## Simulation Loop
 
-The [`Coordinator`][openg2g.coordinator.Coordinator] drives the simulation. It computes a base tick as the GCD of all component periods and advances a [`SimulationClock`][openg2g.clock.SimulationClock] each tick.
-
-The pseudocode for each tick:
+The [`Coordinator`][openg2g.coordinator.Coordinator] drives the simulation.
+It computes a base tick as the GCD of all component periods and advances a [`SimulationClock`][openg2g.clock.SimulationClock] each tick.
 
 ```
 for each tick:
-    1. if datacenter is due:  dc_state = datacenter.step(clock)
-    2. if grid is due:        grid_state = grid.step(clock, dc_buffer)
-    3. for each controller:
+  1. if datacenter is due:    dc_state = datacenter.step(clock)
+  2. if grid is due:          grid_state = grid.step(clock, power_samples, ...)
+  3. for each controller:
        if controller is due:  action = controller.step(clock, datacenter, grid, events)
                               apply action to datacenter and/or grid
 ```
 
-The clock uses integer tick counting to avoid floating-point drift. Components check `clock.is_due(period)` to determine if they should run.
+The period of each component (`dt_s`) is specified as a `fractions.Fraction` object in seconds (e.g., `Fraction(1, 10)` for 0.1 s), which allows for exact representation of intervals and GCD calculation without floating-point issues.
+The coordinator checks `clock.is_due(component.dt_s)` to determine if they should run.
 
 ### What Happens in One Tick
 
 Zooming into a sequence of coordinator ticks (DC at 0.1 s, grid and controller at 1.0 s):
 
 ```
-  t = 5.0 s                    t = 5.1 s
+  ...
+
+  simulation clock = 5.1 s      simulation clock = 5.2 s
   │                             │
-  ├─ DC step                    ├─ DC step
+  ├─ DC step -- YES             ├─ DC step -- YES
   │  └─ Return power sample     │  └─ Return power sample
-  │     (3-phase kW + ITL)      │     ...
+  │     (+ workload metrics)    │     (+ workload metrics)
   │                             │
-  ├─ Grid step? ── NO           ├─ Grid step? ── NO
+  ├─ Grid step? -- NO           ├─ Grid step? -- NO
   │  (grid runs at 1.0 s)       │
   │                             │
-  ├─ Controller step? ── NO     ├─ Controller step? ── NO
+  ├─ Controller step? -- NO     ├─ Controller step? -- NO
   │  (ctrl runs at 1.0 s)       │
   │                             │
-  │  Accumulate in dc_buffer    │  Accumulate in dc_buffer
+  │  Accumulate power samples   │  Accumulate power samples
 
   ...
 
-  t = 6.0 s
+  simulation clock = 6.0 s
   │
-  ├─ DC step
+  ├─ DC step -- YES
   │  └─ Return power sample
   │
-  ├─ Grid step? ── YES (due at 6.0 s)
-  │  ├─ Receives 10 power samples from dc_buffer
-  │  ├─ Resamples to 2 DSS points via interpolation
-  │  ├─ Runs 2 OpenDSS power flow solves
+  ├─ Grid step? -- YES
+  │  ├─ Receives accumulated power samples
+  │  ├─ Runs power flow
   │  └─ Returns bus voltages
   │
-  ├─ Controller step? ── YES (due at 6.0 s)
+  ├─ Controller step? -- YES
   │  ├─ Reads voltages from grid
   │  ├─ Reads ITL, replica counts from datacenter
   │  ├─ Updates voltage & latency dual variables
   │  ├─ Gradient descent on batch sizes (log2 space)
   │  └─ Issues SetBatchSize command → datacenter
   │
-  └─ Clear dc_buffer, save last power for next interval
+  └─ Clear accumulated power samples
 ```
+
+### Live Mode
+
+When `live=True` is passed to the [`Coordinator`][openg2g.coordinator.Coordinator], it instantiates [`SimulationClock`][openg2g.clock.SimulationClock] in live mode.
+In this mode, the simulation clock synchronizes with the wall-clock.
+That is, when [`clock.advance()`][openg2g.clock.SimulationClock.advance] is called, the clock checks how much time has elapsed since the last tick and sleeps for the remaining time until the next tick is due at the wall clock.
+This enables hardware-in-the-loop experiments where the [`OnlineDatacenter`][openg2g.datacenter.online.OnlineDatacenter] reads live GPU power and the controller reacts in real time, while sharing most of the code path with offline simulation.
 
 ## Component Interfaces
 
@@ -119,7 +128,7 @@ Defined in [`openg2g.grid.base`][openg2g.grid.base.GridBackend]. Key methods:
 - `step(clock, power_samples_w)`: Run power flow on accumulated DC power samples, return per-bus per-phase voltages
 - `apply_control(command)`: Accept a command (e.g., [`SetTaps`][openg2g.types.SetTaps])
 
-The only built-in implementation is [`OpenDSSGrid`][openg2g.grid.opendss.OpenDSSGrid] — see [Case Study: The OpenDSS Grid](building-simulators.md#case-study-the-opendss-grid) for details.
+The only built-in implementation is [`OpenDSSGrid`][openg2g.grid.opendss.OpenDSSGrid]; see [Case Study: The OpenDSS Grid](building-simulators.md#case-study-the-opendss-grid) for details.
 
 ### Controller
 

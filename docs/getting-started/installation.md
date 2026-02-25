@@ -11,7 +11,8 @@
 pip install openg2g
 ```
 
-This installs the core library with trace-replay datacenter support and plotting utilities.
+!!! Warning
+    OpenG2G is currently under active development. For the latest features and bug fixes, we recommend installing from the `master` branch on GitHub. See [Quickstart](quickstart.md) for instructions.
 
 ## With Grid Simulation
 

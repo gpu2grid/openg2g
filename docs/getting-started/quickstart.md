@@ -1,8 +1,5 @@
 # Quickstart
 
-!!! Tip "Prerequisite"
-    Make sure you installed OpenG2G with OpenDSS support following the [Installation guide](installation.md).
-
 Let's get you from zero to up and running with an end-to-end simulation example.
 
 ## Power Trace Data
@@ -24,7 +21,7 @@ This is to get the example scripts and data build utilities.
 ```bash
 git clone https://github.com/gpu2grid/openg2g.git
 cd openg2g
-uv sync  # or: pip install -e ".[opendss]"
+uv sync && source .venv/bin/activate  # or: pip install -e ".[opendss]"
 ```
 
 ## Build Simulation Data

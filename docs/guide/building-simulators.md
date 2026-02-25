@@ -195,7 +195,7 @@ grid = OpenDSSGrid(
 )
 ```
 
-The grid auto-detects its sub-step behavior based on how many DC power samples it receives per step. When `dt_grid == dt_dc` (e.g., both 0.1s), it receives one sample and runs one DSS solve. When `dt_grid > dt_dc` (e.g., grid at 1.0s, DC at 0.1s), it resamples the accumulated DC buffer to 2 DSS grid points via `np.interp`.
+When the grid runs at a coarser rate than the datacenter, multiple power samples accumulate between grid steps. The grid uses the most recent power sample and runs a single power flow solve.
 
 ## Stacking Controllers
 
@@ -337,7 +337,7 @@ The [`OfflineDatacenter`][openg2g.datacenter.offline.OfflineDatacenter] replays 
 - `voltages_vector()`: Flat numpy array of all bus-phase voltages (used by the OFO controller for gradient computation)
 - `estimate_sensitivity(perturbation_kw)`: Finite-difference estimate of the voltage sensitivity matrix dV/dP
 
-When the grid runs at a coarser rate than the datacenter, it internally resamples the accumulated power buffer via interpolation. For example, with DC at 0.1s and grid at 1.0s, 10 accumulated power samples are resampled to 2 DSS solve points via `np.interp`.
+When the grid runs at a coarser rate than the datacenter, multiple power samples accumulate between grid steps. The grid uses the most recent sample and runs a single power flow solve.
 
 ### Case Study: The OFO Controller
 
