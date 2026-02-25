@@ -10,6 +10,7 @@ on:
       - "data/**"
       - "scripts/lint.sh"
       - "pyproject.toml"
+      - "uv.lock"
       - ".github/workflows/ci.yml"
   pull_request:
     paths:
@@ -19,6 +20,7 @@ on:
       - "data/**"
       - "scripts/lint.sh"
       - "pyproject.toml"
+      - "uv.lock"
       - ".github/workflows/ci.yml"
 
 jobs:
