@@ -12,22 +12,22 @@ The core abstractions provided by OpenG2G are the multi-rate simulation loop ([`
                     │   (main simulation loop)    │
                     │                             │
                     │   tick = GCD of all rates   │
-                    │   e.g. tick = 0.1 s         │
+                    │   e.g., tick = 0.1 s        │
                     └──┬──────────┬──────────┬────┘
                        │          │          │
         every 0.1 s    │          │          │   every 1.0 s
       ┌────────────────┘          │          └────────────────┐
-      v                           │                           v
-┌───────────────┐        every 0.5 s              ┌───────────────────┐
-│  Datacenter   │                 │               │  Controller(s)    │
-│  Backend      │                 v               │                   │
-│               │        ┌────────────────┐       │  Read DC & grid   │
-│  Produces:    │─power─>│  Grid Backend  │       │  state, compute   │
-│  power (kW)   │  (kW)  │               │       │  ControlActions   │
-│  latency      │        │  Power flow    │       │                   │
-│  batch sizes  │<─cmds──│  solver        │<─cmds─│ e.g. SetBatchSize│
-└───────────────┘        └────────────────┘       │      SetTaps      │
-                                                  └───────────────────┘
+      v                      every 0.5 s                      v
+┌───────────────┐                 │                  ┌───────────────────┐
+│  Datacenter   │                 v                  │  Controller(s)    │
+│  Backend      │         ┌────────────────┐         │                   │
+│               │         │  Grid Backend  │         │  Read DC & grid   │
+│  Produces:    │──power─>│                │         │  state, compute   │
+│  power (kW)   │  (kW)   │  Power flow    │         │  ControlActions   │
+│  latency      │         │  solver        │<──cmds──│                   │
+│  throughput   │         └────────────────┘         │ e.g. SetBatchSize │
+│               │<────────────────cmds───────────────│      SetTaps      │
+└───────────────┘                                    └───────────────────┘
 ```
 
 Controllers produce [`ControlAction`][openg2g.types.ControlAction] objects — a list of [`GridCommand`][openg2g.types.GridCommand] (e.g., [`SetTaps`][openg2g.types.SetTaps]) and/or [`DatacenterCommand`][openg2g.types.DatacenterCommand] (e.g., [`SetBatchSize`][openg2g.types.SetBatchSize]) that the coordinator dispatches to the appropriate backend before the next tick. Multiple controllers run in sequence each control step, so their actions compose naturally.
@@ -111,17 +111,15 @@ Two implementations ship with OpenG2G:
 - **[`OfflineDatacenter`][openg2g.datacenter.offline.OfflineDatacenter]** replays pre-recorded GPU power traces with configurable noise, jitter, ramp profiles, and training overlays.
 - **[`OnlineDatacenter`][openg2g.datacenter.online.OnlineDatacenter]** reads live GPU power via Zeus and dispatches batch size changes through a callback.
 
-### GridBackend / OpenDSSGrid
+### GridBackend
 
-Defined in [`openg2g.grid.base`][openg2g.grid.base.GridBackend] (implemented by [`OpenDSSGrid`][openg2g.grid.opendss.OpenDSSGrid]). Key methods:
+Defined in [`openg2g.grid.base`][openg2g.grid.base.GridBackend]. Key methods:
 
 - `dt_s`: The grid solver's timestep
 - `step(clock, power_samples_w)`: Run power flow on accumulated DC power samples, return per-bus per-phase voltages
 - `apply_control(command)`: Accept a command (e.g., [`SetTaps`][openg2g.types.SetTaps])
-- `voltages_vector()`: Flat numpy array of all bus-phase voltages (used by the OFO controller)
-- `estimate_sensitivity(perturbation_kw)`: Finite-difference estimate of the voltage sensitivity matrix dV/dP
 
-When the grid runs at a coarser rate than the datacenter, it internally resamples the accumulated power buffer via interpolation.
+The only built-in implementation is [`OpenDSSGrid`][openg2g.grid.opendss.OpenDSSGrid] — see [Case Study: The OpenDSS Grid](building-simulators.md#case-study-the-opendss-grid) for details.
 
 ### Controller
 
@@ -169,79 +167,6 @@ for config in sweep_configs:
     ctrl = OFOBatchController(...)
     coord = Coordinator(dc, grid, [ctrl], total_duration_s=3600, dc_bus="671")
     log = coord.run()  # reset -> start (compile DSS) -> loop -> stop
-```
-
-## The Datacenter Model
-
-The [`OfflineDatacenter`][openg2g.datacenter.offline.OfflineDatacenter] replays real GPU power traces at controlled batch sizes (see Section IV-A of the [G2G paper](https://arxiv.org/abs/2602.05116)):
-
-```
-  Per-model server fleet                Power assembly (3-phase)
-
-  ┌─────────────────────┐              Phase A     Phase B     Phase C
-  │ Llama-3.1-8B        │                │           │           │
-  │  48 servers × 8 GPU │──┐             │  ┌─────┐  │  ┌─────┐  │  ┌─────┐
-  │  batch = 256        │  │             ├──│srv 1│  ├──│srv 2│  ├──│srv 3│
-  ├─────────────────────┤  │             │  └─────┘  │  └─────┘  │  └─────┘
-  │ Llama-3.1-70B       │  │             │  ┌─────┐  │           │  ┌─────┐
-  │  30 servers × 8 GPU │──┤  sum kW     ├──│srv 4│  │           ├──│srv 6│
-  │  batch = 128        │  │──per phase─>│  └─────┘  │           │  └─────┘
-  ├─────────────────────┤  │             │    ...    │    ...    │    ...
-  │ Llama-3.1-405B      │  │             │           │           │
-  │  16 servers × 8 GPU │──┤             │           │           │
-  │  batch = 64         │  │             │  + training overlay   │
-  ├─────────────────────┤  │             │  + noise + jitter     │
-  │ (+ 2 MoE models)    │──┘             │                       │
-  └─────────────────────┘                v           v           v
-                                       P_A(t)     P_B(t)     P_C(t)
-```
-
-- Each server plays back a per-GPU power trace (from [ML.ENERGY Benchmark](https://ml.energy/data) data) scaled by GPU count
-- Random restart offsets make servers desynchronized (realistic)
-- An [`ActivationStrategy`][openg2g.datacenter.layout.ActivationStrategy] determines which servers are active at each timestep, supporting both ramp-up and ramp-down schedules. The default [`RampActivationStrategy`][openg2g.datacenter.layout.RampActivationStrategy] follows a [`ServerRampSchedule`][openg2g.datacenter.config.ServerRampSchedule] with random priority ordering. Custom strategies (e.g., phase-aware load balancing) can be implemented by subclassing [`ActivationStrategy`][openg2g.datacenter.layout.ActivationStrategy].
-- Training workload overlays add transient high-power phases
-
-## The OFO Controller
-
-Online Feedback Optimization (primal-dual) regulates batch sizes to keep voltages safe. For the full mathematical formulation, see Section III of the [G2G paper](https://arxiv.org/abs/2602.05116).
-
-```
-  ┌──────────────────────────────────────────────────────────────┐
-  │                  OFO Controller (every 1 s)                  │
-  │                                                              │
-  │  INPUTS:                                                     │
-  │    V(t)  ← grid voltages (all bus-phase pairs)               │
-  │    P(t)  ← datacenter power                                  │
-  │    ITL(t) ← observed inter-token latency per model           │
-  │    H     ← voltage sensitivity dV/dP (re-estimated slowly)   │
-  │                                                              │
-  │  DUAL UPDATES (G2G paper Eqs. 5-7):                         │
-  │                                                              │
-  │    Voltage:  λ⁺ ← [λ⁺ + ρ_v (V - V_max)]⁺                  │
-  │              λ⁻ ← [λ⁻ + ρ_v (V_min - V)]⁺                  │
-  │              η  = λ⁺ - λ⁻                                    │
-  │                                                              │
-  │    Latency:  μ_i ← [μ_i + ρ_l (ITL_i - L_thresh)]⁺         │
-  │                                                              │
-  │  PRIMAL UPDATE (G2G paper Eq. 8):                            │
-  │                                                              │
-  │    x_i = log₂(batch_i)                                      │
-  │                                                              │
-  │    ∇_i = - w_T · dTh/dx         (throughput reward)           │
-  │         + ηᵀ H eᵢ · dP/dx     (voltage dual × sensitivity)  │
-  │         + μ_i · dL/dx          (latency dual)               │
-  │         + w_S · (x - x_prev)   (switching cost)             │
-  │                                                              │
-  │    x_new = project(x - ρ_x · ∇)                             │
-  │    batch_new = nearest_valid(2^x_new)                        │
-  │                                                              │
-  │  OUTPUT:                                                     │
-  │    {model: batch_new} → sent as SetBatchSize to datacenter   │
-  └──────────────────────────────────────────────────────────────┘
-
-  Key: dP/dx, dL/dx, dTh/dx come from LogisticModel fits
-       H comes from OpenDSS finite-difference perturbation
-       Full gradient derivation: G2G paper, Appendix B (Eq. 18)
 ```
 
 ## Data Flow

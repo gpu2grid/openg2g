@@ -41,31 +41,37 @@ This makes workload parameters a natural **demand-side control** for voltage reg
 
 Controlling batch size shows promise for leveraging datacenter-side knobs for grid support.
 This opens the door to a rich design space of control strategies for voltage regulation, with knobs existing in both the datacenter and the grid.
-That's where OpenG2G comes in: it is a library for simulating and developing these strategies based on 
 
-OpenG2G provides a modular simulation framework with three interacting component types.
+That's where OpenG2G comes in.
+OpenG2G is a modular library that provides abstractions for simulating and developing these strategies for datacenter-grid coordination.
 
 ### Datacenter
 
-The datacenter backend generates three-phase power over time. In **offline mode**, it replays pre-recorded GPU power traces with configurable noise, server ramp-down schedules, and training overlays. In **online mode**, it reads live GPU power via Zeus.
+The datacenter backend generates three-phase power load over time.
+In **offline mode**, it replays prerecorded GPU power traces with configurable noise, server ramp-down schedules, and training load overlays.
+In **online mode**, it reads live GPU power from live vLLM servers via [Zeus](https://ml.energy/zeus).
 
 ### Grid
 
-The grid backend runs AC power flow on standard IEEE test feeders using OpenDSS. It takes three-phase power injections from the datacenter and returns per-bus, per-phase voltages. Voltage regulator tap positions can be scheduled or controlled dynamically.
+The grid backend runs AC power flow on standard IEEE test feeders using OpenDSS.
+It takes three-phase power injections from the datacenter and returns per-bus, per-phase voltages.
+Voltage regulator tap positions can be scheduled statically or controlled dynamically.
 
 ### Controllers
 
-Controllers close the feedback loop. They read the latest datacenter and grid state, and issue control actions (e.g., adjusting batch sizes, changing tap positions). Multiple controllers compose in order within the simulation coordinator, so you can combine strategies — for instance, a tap schedule controller alongside a batch size optimizer.
+Controllers close the feedback loop.
+They read the latest datacenter and grid state, and issue control actions (e.g., adjusting batch sizes, changing tap positions) to either the datacenter or to the grid.
+Multiple controllers compose in order within the simulation coordinator, so you can combine strategies, e.g., a tap schedule controller alongside an LLM inference batch size controller.
 
-OpenG2G ships with several built-in controllers including an [Online Feedback Optimization (OFO)](architecture.md#the-ofo-controller) controller for batch size regulation, a tap schedule controller, and a no-op controller for baselines. You can also implement your own by subclassing the [`Controller`][openg2g.controller.base.Controller] interface — see [Writing Custom Components](building-simulators.md#writing-custom-components).
+OpenG2G ships with several built-in controllers including an [Online Feedback Optimization (OFO)](building-simulators.md#case-study-the-ofo-controller) controller for batch size regulation, a tap schedule controller, and a no-op controller for baselines. You can also implement your own by subclassing the [`Controller`][openg2g.controller.base.Controller] interface — see [Writing Custom Components](building-simulators.md#writing-custom-components).
 
 ## What Can You Explore?
 
 OpenG2G is designed for researchers studying questions like:
 
-- **Voltage regulation strategies**: How do different control algorithms (OFO, rule-based, MPC) compare in maintaining voltage limits?
+- **Voltage regulation strategies**: How do different control algorithms (OFO, rule-based, MPC) compare in maintaining grid stability metrics?
 - **Latency-voltage tradeoffs**: What is the Pareto frontier between inference latency and voltage violation severity?
 - **Datacenter sizing**: How large can an AI datacenter be on a given feeder before voltage violations become unmanageable?
-- **Grid topology effects**: How does the choice of feeder (IEEE 13-bus, 123-bus, etc.) affect controllability?
-- **Multi-workload coordination**: How do inference and training workloads interact in their grid impact?
+- **Grid topology effects**: How does the choice of feeder (IEEE 13-bus, 123-bus, etc.) affect datacenter impact and controllability?
+- **Multi-workload coordination**: How do inference and training workloads and their workload parameters change their grid impact and controllability?
 - **Hardware-in-the-loop validation**: Do controllers work on real GPUs with a simulated grid?
