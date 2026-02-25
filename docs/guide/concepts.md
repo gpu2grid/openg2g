@@ -11,37 +11,45 @@ This is why understanding the interactions between large AI datacenters and the 
 
 ## Datacenter as a Control Knob
 
-A key observation is that AI workload parameters — most notably **batch size** for LLM inference — can be adjusted programmatically in real time, far faster than any grid-side control. These parameters simultaneously affect multiple quantities of interest:
+A key observation is that AI workload parameters (e.g., **batch size** for LLM inference) can be adjusted programmatically very quickly, which can be faster than many grid-side control knobs.
+These parameters simultaneously affect multiple quantities of interest:
 
 - **Power consumption**: Larger batches draw more GPU power
 - **Inter-token latency**: Larger batches increase generation latency
 - **Token throughput**: Larger batches process more tokens per second
 - **Grid voltages**: Changes in datacenter power propagate through the distribution feeder, affecting voltage magnitudes at nearby buses
 
-This makes workload parameters a natural **demand-side control** for voltage regulation: by adjusting them in response to grid measurements, a datacenter can actively manage its impact on the local grid while maintaining acceptable service quality.
-
-OpenG2G models these relationships with four-parameter logistic curves fit to real GPU benchmark data from the [ML.ENERGY Benchmark](https://ml.energy/data):
-
 ```
   Power (W)                              Latency (s)
+    ^                                       ^
     |          ___________                  |              ________
     |         /                             |             /
     |        /                              |            /
     |    ___/                               |    _______/
     |___/                                   |___/
-    └─────────────────────── batch          └──────────────────────── batch
+    └──────────────────────> batch size     └───────────────────────> batch size
        8   32  128  512                        8   32  128  512
 ```
+<div align="center" markdown>
+*OpenG2G supports plugging in logistic curve fits for these relationships based on real GPU benchmark data in [The ML.ENERGY Benchmark v3 dataset](https://ml.energy/data).*
+</div>
 
-## Simulation Components
+This makes workload parameters a natural **demand-side control** for voltage regulation: by adjusting them in response to grid measurements, a datacenter can actively manage its impact on the local grid while maintaining acceptable service quality.
 
-OpenG2G provides a modular simulation framework with three interacting component types:
+
+## Datacenter, Grid, and Controllers
+
+Controlling batch size shows promise for leveraging datacenter-side knobs for grid support.
+This opens the door to a rich design space of control strategies for voltage regulation, with knobs existing in both the datacenter and the grid.
+That's where OpenG2G comes in: it is a library for simulating and developing these strategies based on 
+
+OpenG2G provides a modular simulation framework with three interacting component types.
 
 ### Datacenter
 
 The datacenter backend generates three-phase power over time. In **offline mode**, it replays pre-recorded GPU power traces with configurable noise, server ramp-down schedules, and training overlays. In **online mode**, it reads live GPU power via Zeus.
 
-### Distribution Grid
+### Grid
 
 The grid backend runs AC power flow on standard IEEE test feeders using OpenDSS. It takes three-phase power injections from the datacenter and returns per-bus, per-phase voltages. Voltage regulator tap positions can be scheduled or controlled dynamically.
 
@@ -49,7 +57,7 @@ The grid backend runs AC power flow on standard IEEE test feeders using OpenDSS.
 
 Controllers close the feedback loop. They read the latest datacenter and grid state, and issue control actions (e.g., adjusting batch sizes, changing tap positions). Multiple controllers compose in order within the simulation coordinator, so you can combine strategies — for instance, a tap schedule controller alongside a batch size optimizer.
 
-OpenG2G ships with several built-in controllers including an [Online Feedback Optimization (OFO)](architecture.md#the-ofo-controller) controller for batch size regulation, a tap schedule controller, and a no-op controller for baselines. You can also implement your own by subclassing the [`Controller`][openg2g.controller.base.Controller] interface — see [Writing Custom Components](extending.md).
+OpenG2G ships with several built-in controllers including an [Online Feedback Optimization (OFO)](architecture.md#the-ofo-controller) controller for batch size regulation, a tap schedule controller, and a no-op controller for baselines. You can also implement your own by subclassing the [`Controller`][openg2g.controller.base.Controller] interface — see [Writing Custom Components](building-simulators.md#writing-custom-components).
 
 ## What Can You Explore?
 

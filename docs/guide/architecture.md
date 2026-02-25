@@ -93,7 +93,7 @@ Zooming into a sequence of coordinator ticks (DC at 0.1 s, grid and controller a
 
 ## Component Interfaces
 
-Each component type has an abstract base class (ABC) in `openg2g`. For full typed code examples, see [Writing Custom Components](extending.md).
+Each component type has an abstract base class (ABC) in `openg2g`. For full typed code examples, see [Writing Custom Components](building-simulators.md#writing-custom-components).
 
 ### DatacenterBackend
 
