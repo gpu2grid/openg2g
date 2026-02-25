@@ -56,12 +56,20 @@
   display: grid;
   grid-template-columns: repeat(2, 1fr);
   gap: 1rem;
-  max-width: 48rem;
+  max-width: 38rem;
   margin: 2.5rem auto;
 }
 
+@media (max-width: 600px) {
+  .feature-grid {
+    grid-template-columns: 1fr;
+  }
+
+
+}
+
 .feature-grid .feature {
-  padding: 1rem 1.25rem;
+  padding: 0.6rem 0.85rem;
   border: 1px solid var(--md-default-fg-color--lighter);
   border-radius: 0.25rem;
 }
@@ -76,6 +84,6 @@
 
 .feature-grid .feature p {
   margin: 0;
-  font-size: 0.85rem;
+  font-size: 0.75rem;
   color: var(--md-default-fg-color);
 }
