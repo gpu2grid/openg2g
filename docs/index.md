@@ -1,70 +1,58 @@
-# OpenG2G
+---
+hide:
+  - navigation
+  - toc
+---
 
-A modular Python framework for simulating datacenter-grid interaction, with a focus on LLM workloads.
-This library grew out of the [GPU-to-Grid paper](https://arxiv.org/abs/2602.05116).
+<div class="hero" markdown>
 
-OpenG2G provides building blocks for studying how GPU-level controls (batch size, power capping) affect distribution-level voltages.
+<!-- # OpenG2G -->
+<div align="center">
+<h1>OpenG2G</h1>
+</div>
 
-- **Online Feedback Optimization (OFO)** for joint voltage regulation and latency management
-- A **trace-replay datacenter backend** for reproducible offline simulation
-- A **live GPU backend** via [Zeus](https://ml.energy/zeus) for hardware-in-the-loop experiments
-- A **grid simulator based on OpenDSS** for power flow analysis on standard IEEE test feeders
+<span class="subtitle">GPU-to-Grid Simulation under LLM Workloads</span>
 
-!!! Note
-    The online (live) datacenter backend is currently in early development. The offline trace-replay backend is fully functional and recommended for most users.
+A modular Python framework for studying how GPU-level controls affect distribution-level voltages.
 
-## Overview
+[Get Started](getting-started/installation.md){ .md-button .md-button--primary }
+[Library Guide](guide/concepts.md){ .md-button }
+[Read the Paper](https://arxiv.org/abs/2602.05116){ .md-button .md-button--arxiv }
 
-The core abstractions are the multi-rate simulation loop ([`Coordinator`][openg2g.coordinator.Coordinator]) and interfaces for datacenter ([`DatacenterBackend`][openg2g.datacenter.base.DatacenterBackend]), grid ([`GridBackend`][openg2g.grid.base.GridBackend]), and controller ([`Controller`][openg2g.controller.base.Controller]) components.
+</div>
 
-For instance, OpenG2G can build and simulate the following setup (from the [GPU-to-Grid paper](https://arxiv.org/abs/2602.05116)):
+<div class="feature-grid" markdown>
 
-```
-                    ┌─────────────────────────────┐
-                    │        Coordinator          │
-                    │   (main simulation loop)    │
-                    │                             │
-                    │   tick = GCD of all rates   │
-                    │   e.g. tick = 0.1 s         │
-                    └──┬──────────┬──────────┬────┘
-                       │          │          │
-        every 0.1 s    │          │          │   every 1.0 s
-      ┌────────────────┘          │          └────────────────┐
-      v                           │                           v
-┌───────────────┐        every 1.0 s              ┌───────────────────┐
-│  Datacenter   │                 │               │    Controller     │
-│  (Offline)    │                 v               │    (OFO)          │
-│               │        ┌────────────────┐       │                   │
-│ Power traces  │─power─>│  OpenDSS Grid  │──V──> │ Primal-dual       │
-│ Latency       │  (kW)  │  (IEEE 13-bus) │       │ batch optimizer   │
-│ Replicas      │        │                │       │                   │
-│               │<─batch─│  Power flow    │       │ Reads: V, P, ITL  │
-└───────────────┘ update │  solver        │       │ Writes: batch cmd │
-                         └────────────────┘       └───────────────────┘
-```
+<div class="feature" markdown>
 
-Controllers produce [`ControlAction`][openg2g.types.ControlAction] objects (batch size changes, tap adjustments) that are applied to the datacenter and grid before the next tick.
+**:material-server-network: Datacenter Backends**
 
-## What Can You Explore?
+Trace-replay from real GPU benchmarks, or live GPU power via [Zeus](https://ml.energy/zeus)
 
-OpenG2G is designed for researchers studying questions like:
+</div>
 
-- **Voltage regulation strategies**: How do different control algorithms (OFO, rule-based, MPC) compare in maintaining voltage limits?
-- **Latency-voltage tradeoffs**: What is the Pareto frontier between inference latency and voltage violation severity?
-- **Datacenter sizing**: How large can a GPU datacenter be on a given feeder before voltage violations become unmanageable?
-- **Grid topology effects**: How does the choice of feeder (IEEE 13-bus, 123-bus, etc.) affect controllability?
+<div class="feature" markdown>
 
-See [Concepts and Background](guide/concepts.md#what-can-you-explore) for the full list of research directions.
+**:material-transmission-tower: Grid Backends**
 
-## Getting Started
+AC power flow on IEEE test feeders via OpenDSS, with tap control and sensitivity estimation
 
-- [Installation](getting-started/installation.md)
-- [Running Simulation](getting-started/running.md)
+</div>
 
-## Guide
+<div class="feature" markdown>
 
-- [Concepts and Background](guide/concepts.md): Why datacenter-grid coordination matters
-- [Data Pipeline](guide/data-pipeline.md): From GPU benchmarks to simulation inputs
-- [Architecture](guide/architecture.md): How components fit together
-- [Composing Components](guide/composing.md): Assembling a simulation from parts
-- [Custom Components](guide/custom-components.md): Implementing your own datacenter or controller
+**:material-tune: Controllers**
+
+Ships with OFO batch optimization and tap scheduling; subclass to write your own
+
+</div>
+
+<div class="feature" markdown>
+
+**:material-sync: Multi-Rate Coordinator**
+
+Compose components at different timesteps into a single simulation
+
+</div>
+
+</div>

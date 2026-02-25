@@ -1,6 +1,6 @@
-# Composing Components
+# Building Simulators
 
-This page shows how to assemble a simulation from OpenG2G's building blocks.
+This page shows how to build your own simulator for a particular scenario using OpenG2G's components.
 
 ## Minimal Example
 
@@ -112,6 +112,9 @@ dc = OfflineDatacenter.from_config(
 ```
 
 ### Online (Live GPU)
+
+!!! Note
+    The online (live) datacenter backend is currently in early development. The offline trace-replay backend is recommended for most users.
 
 The [`OnlineDatacenter`][openg2g.datacenter.online.OnlineDatacenter] connects to real vLLM servers for load generation and ITL measurement, and to zeusd instances for live GPU power monitoring. Power readings from a small number of real GPUs are augmented to datacenter scale using temporal staggering.
 

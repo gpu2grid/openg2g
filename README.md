@@ -91,8 +91,8 @@ log = coord.run()
 
 See [`examples/`](examples/) for complete simulation scripts:
 
-- `run_baseline.py --mode no-tap` -- fixed taps, no OFO ("No control, no tap")
-- `run_baseline.py --mode tap-change` -- scheduled tap changes, no OFO ("Tap change only")
+- `run_baseline.py --mode no-tap` -- fixed taps, no OFO
+- `run_baseline.py --mode tap-change` -- scheduled tap changes, no OFO
 - `run_ofo.py` -- OFO closed-loop batch size control
 
 ## Running Example Simulations
@@ -104,7 +104,7 @@ The build script uses the [`mlenergy-data`](https://ml.energy/data) toolkit to d
 Generated artifacts go into `data/generated/` (gitignored). Source files (`data/offline/*.py`, `data/offline/models.json`) are versioned.
 
 ```bash
-uv run python data/offline/build_mlenergy_data.py \
+python data/offline/build_mlenergy_data.py \
   --config data/offline/models.json \
   --out-dir data/generated
 ```
@@ -112,7 +112,7 @@ uv run python data/offline/build_mlenergy_data.py \
 ### 2. Generate a synthetic training power trace
 
 ```bash
-uv run python data/offline/generate_training_trace.py \
+python data/offline/generate_training_trace.py \
   --out-csv data/generated/synthetic_training_trace.csv --seed 2
 ```
 
@@ -120,17 +120,17 @@ uv run python data/offline/generate_training_trace.py \
 
 ```bash
 # Baseline: fixed taps
-uv run python examples/offline/run_baseline.py --mode no-tap \
+python examples/offline/run_baseline.py --mode no-tap \
   --data-dir data/generated \
   --training-trace data/generated/synthetic_training_trace.csv
 
 # Baseline: scheduled tap changes
-uv run python examples/offline/run_baseline.py --mode tap-change \
+python examples/offline/run_baseline.py --mode tap-change \
   --data-dir data/generated \
   --training-trace data/generated/synthetic_training_trace.csv
 
 # OFO closed-loop control
-uv run python examples/offline/run_ofo.py \
+python examples/offline/run_ofo.py \
   --data-dir data/generated \
   --training-trace data/generated/synthetic_training_trace.csv
 ```
