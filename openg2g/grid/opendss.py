@@ -155,14 +155,9 @@ class OpenDSSGrid(GridBackend[GridState]):
     ) -> GridState:
         """Advance one grid period and return the resulting voltage state.
 
-        If multiple DC samples are provided (i.e., `dt_grid > dt_dc`),
-        they are resampled to two DSS grid points via `np.interp` to
-        avoid unnecessary solves.  When a single sample is provided
-        (`dt_grid == dt_dc`), it is solved directly.
-
-        When resampling, the grid prepends the last power sample from the
-        previous step so the interpolation covers the full interval
-        [previous_end, current_end].
+        Uses the most recent power sample from the accumulated buffer to
+        run a single power flow solve. If no samples are provided (grid
+        runs faster than datacenter), the last known power is reused.
 
         Args:
             clock: Current simulation clock.
@@ -177,47 +172,29 @@ class OpenDSSGrid(GridBackend[GridState]):
         if not power_samples_w:
             if self._prev_power is None:
                 raise RuntimeError("OpenDSSGrid.step() called with no power samples and no previous power.")
-            power_samples_w = [self._prev_power]
-
-        resampled = len(power_samples_w) > 1
-        if resampled:
-            trace = list(power_samples_w)
-            if self._prev_power is not None:
-                trace.insert(0, self._prev_power)
-            samples = self._resample_power_to_grid_points(trace)
+            power = self._prev_power
         else:
-            samples = power_samples_w
+            power = power_samples_w[-1]
 
-        self._prev_power = power_samples_w[-1]
+        self._prev_power = power
 
-        first_solve_voltages: BusVoltages | None = None
-        for power in samples:
-            kW_A = power.a / 1e3
-            kW_B = power.b / 1e3
-            kW_C = power.c / 1e3
+        kW_A = power.a / 1e3
+        kW_B = power.b / 1e3
+        kW_C = power.c / 1e3
 
-            dss.Loads.Name("DataCenterA")
-            dss.Loads.kW(kW_A)
-            dss.Loads.kvar(kW_A * self._tanphi)
-            dss.Loads.Name("DataCenterB")
-            dss.Loads.kW(kW_B)
-            dss.Loads.kvar(kW_B * self._tanphi)
-            dss.Loads.Name("DataCenterC")
-            dss.Loads.kW(kW_C)
-            dss.Loads.kvar(kW_C * self._tanphi)
+        dss.Loads.Name("DataCenterA")
+        dss.Loads.kW(kW_A)
+        dss.Loads.kvar(kW_A * self._tanphi)
+        dss.Loads.Name("DataCenterB")
+        dss.Loads.kW(kW_B)
+        dss.Loads.kvar(kW_B * self._tanphi)
+        dss.Loads.Name("DataCenterC")
+        dss.Loads.kW(kW_C)
+        dss.Loads.kvar(kW_C * self._tanphi)
 
-            self._solve()
+        self._solve()
 
-            # When resampling, capture voltages after the first DSS solve
-            # for the GridState.  The controller reads the last solve's
-            # voltage directly from the grid's DSS state.
-            if resampled and first_solve_voltages is None:
-                first_solve_voltages = self._snapshot_bus_voltages()
-
-        if first_solve_voltages is not None:
-            voltages = first_solve_voltages
-        else:
-            voltages = self._snapshot_bus_voltages()
+        voltages = self._snapshot_bus_voltages()
         state = GridState(time_s=clock.time_s, voltages=voltages, tap_positions=self._read_current_taps())
         self._state = state
         self._history.append(state)
@@ -320,37 +297,6 @@ class OpenDSSGrid(GridBackend[GridState]):
         self._solve()
 
         return sensitivity, baseline_voltages
-
-    def _resample_power_to_grid_points(self, power_samples_w: list[ThreePhase]) -> list[ThreePhase]:
-        """Resample DC sub-step power onto DSS grid points via np.interp.
-
-        Matches the original `resample_to_uniform_grid` convention:
-        `n_dss + 1` evenly-spaced DSS points over the grid period, where
-        `n_dss = floor(dt_s / dt_s) = 1`.
-
-        Args:
-            power_samples_w: DC power samples (Watts) covering the grid period.
-
-        Returns:
-            Resampled ThreePhase samples at DSS grid points.
-        """
-        n_samples = len(power_samples_w)
-        if n_samples < 2:
-            return list(power_samples_w)
-
-        dt_f = float(self._dt_s)
-        t_dc = np.linspace(0.0, dt_f, n_samples)
-        t_dss = np.array([0.0, dt_f])
-
-        P_A = np.array([p.a for p in power_samples_w])
-        P_B = np.array([p.b for p in power_samples_w])
-        P_C = np.array([p.c for p in power_samples_w])
-
-        rA = np.interp(t_dss, t_dc, P_A)
-        rB = np.interp(t_dss, t_dc, P_B)
-        rC = np.interp(t_dss, t_dc, P_C)
-
-        return [ThreePhase(a=float(rA[i]), b=float(rB[i]), c=float(rC[i])) for i in range(len(t_dss))]
 
     def _init_dss(self) -> None:
         dss.Basic.ClearAll()
