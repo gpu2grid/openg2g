@@ -1,10 +1,40 @@
 # Architecture
 
-This page describes how the components of OpenG2G fit together. For the underlying optimization formulation, see the [GPU-to-Grid paper](https://arxiv.org/abs/2602.05116).
+This page describes how the components of OpenG2G fit together.
+
+## Overview
+
+The core abstractions provided by OpenG2G are the multi-rate simulation loop ([`Coordinator`][openg2g.coordinator.Coordinator]) and interfaces for datacenter ([`DatacenterBackend`][openg2g.datacenter.base.DatacenterBackend]), grid ([`GridBackend`][openg2g.grid.base.GridBackend]), and controller ([`Controller`][openg2g.controller.base.Controller]) components.
+
+```
+                    ┌─────────────────────────────┐
+                    │        Coordinator          │
+                    │   (main simulation loop)    │
+                    │                             │
+                    │   tick = GCD of all rates   │
+                    │   e.g. tick = 0.1 s         │
+                    └──┬──────────┬──────────┬────┘
+                       │          │          │
+        every 0.1 s    │          │          │   every 1.0 s
+      ┌────────────────┘          │          └────────────────┐
+      v                           │                           v
+┌───────────────┐        every 0.5 s              ┌───────────────────┐
+│  Datacenter   │                 │               │  Controller(s)    │
+│  Backend      │                 v               │                   │
+│               │        ┌────────────────┐       │  Read DC & grid   │
+│  Produces:    │─power─>│  Grid Backend  │       │  state, compute   │
+│  power (kW)   │  (kW)  │               │       │  ControlActions   │
+│  latency      │        │  Power flow    │       │                   │
+│  batch sizes  │<─cmds──│  solver        │<─cmds─│ e.g. SetBatchSize│
+└───────────────┘        └────────────────┘       │      SetTaps      │
+                                                  └───────────────────┘
+```
+
+Controllers produce [`ControlAction`][openg2g.types.ControlAction] objects — a list of [`GridCommand`][openg2g.types.GridCommand] (e.g., [`SetTaps`][openg2g.types.SetTaps]) and/or [`DatacenterCommand`][openg2g.types.DatacenterCommand] (e.g., [`SetBatchSize`][openg2g.types.SetBatchSize]) that the coordinator dispatches to the appropriate backend before the next tick. Multiple controllers run in sequence each control step, so their actions compose naturally.
 
 ## Simulation Loop
 
-The [`Coordinator`][openg2g.coordinator.Coordinator] drives the simulation. It computes a base tick as the GCD of all component periods and advances a [`SimulationClock`][openg2g.clock.SimulationClock] each tick. See the [overview diagram](../index.md#overview) for the high-level component layout.
+The [`Coordinator`][openg2g.coordinator.Coordinator] drives the simulation. It computes a base tick as the GCD of all component periods and advances a [`SimulationClock`][openg2g.clock.SimulationClock] each tick.
 
 The pseudocode for each tick:
 
@@ -63,7 +93,7 @@ Zooming into a sequence of coordinator ticks (DC at 0.1 s, grid and controller a
 
 ## Component Interfaces
 
-Each component type has an abstract base class (ABC) in `openg2g`. For full typed code examples, see [Custom Components](custom-components.md).
+Each component type has an abstract base class (ABC) in `openg2g`. For full typed code examples, see [Writing Custom Components](extending.md).
 
 ### DatacenterBackend
 
@@ -241,4 +271,4 @@ All state objects are frozen dataclasses defined in [`openg2g.types`][openg2g.ty
 
 ## SimulationLog
 
-[`Coordinator.run()`][openg2g.coordinator.Coordinator.run] returns a [`SimulationLog`][openg2g.coordinator.SimulationLog] that collects all state history. Use `log.dc_states`, `log.grid_states`, and time-series arrays like `log.time_s`, `log.kW_A`, `log.voltage_a_pu` for analysis. See [Composing Components: Analyzing Results](composing.md#analyzing-results) for usage examples.
+[`Coordinator.run()`][openg2g.coordinator.Coordinator.run] returns a [`SimulationLog`][openg2g.coordinator.SimulationLog] that collects all state history. Use `log.dc_states`, `log.grid_states`, and time-series arrays like `log.time_s`, `log.kW_A`, `log.voltage_a_pu` for analysis. See [Building Simulators: Analyzing Results](building-simulators.md#analyzing-results) for usage examples.

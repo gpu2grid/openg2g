@@ -115,7 +115,7 @@ python data/offline/generate_training_trace.py \
   --out-csv data/generated/synthetic_training_trace.csv --seed 2
 ```
 
-The [`mlenergy-data`](https://ml.energy/data) toolkit automatically downloads benchmark data from the [ML.ENERGY Benchmark v3 dataset](https://huggingface.co/datasets/ml-energy/benchmark-v3) on first run. This is a gated dataset -- you must [request access on Hugging Face](https://huggingface.co/datasets/ml-energy/benchmark-v3) before running the build. To use a local copy instead, pass `--mlenergy-data-dir /path/to/compiled/data`.
+The [`mlenergy-data`](https://ml.energy/data) toolkit automatically downloads benchmark data from the [ML.ENERGY Benchmark v3 dataset](https://huggingface.co/datasets/ml-energy/benchmark-v3) on first run. This is a gated dataset -- you must [request access on Hugging Face](https://huggingface.co/datasets/ml-energy/benchmark-v3) and set the `HF_TOKEN` environment variable to your [Hugging Face access token](https://huggingface.co/settings/tokens) before running the build.
 
 The config file (`data/offline/models.json`) maps benchmark model IDs to simulation labels.
 

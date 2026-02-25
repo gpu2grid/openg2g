@@ -21,40 +21,12 @@ To use the OpenDSS-based grid simulator:
 pip install "openg2g[opendss]"
 ```
 
-This adds `opendssdirect.py`, which provides the Python bindings for OpenDSS.
+This adds `OpenDSSDirect.py`, which provides the Python bindings for OpenDSS.
 
-## Development Setup
-
-Clone the repository and install all development dependencies:
-
-```bash
-git clone https://github.com/gpu2grid/openg2g.git
-cd openg2g
-uv sync
-```
-
-This installs the package in editable mode along with testing, linting, and documentation tools via [dependency groups](https://peps.python.org/pep-0735/).
-
-### Dependency Groups
-
-The project uses PEP 735 dependency groups managed by uv:
-
-| Group | Contents | Install |
-|---|---|---|
-| `dev` | Everything below | `uv sync` (default) |
-| `test` | pytest | `uv sync --group test` |
-| `lint` | ruff, pyright | `uv sync --group lint` |
-| `docs` | zensical, mkdocstrings | `uv sync --group docs` |
-| `examples` | openg2g[opendss], matplotlib | `uv sync --group examples` |
-
-### Verify the Installation
-
-```bash
-uv run pytest tests/ -v
-```
-
-All tests should pass. Tests that require OpenDSS will be skipped if `opendssdirect.py` is not installed.
+!!! Tip "Why is this not the default?"
+    `OpenDSSDirect.py` is not included by default due to license incompatibilities.
+    We're communicating with the team to resolve this.
 
 ## Next Steps
 
-To run simulations, you'll need to build the data artifacts first. See [Running Simulation](running.md) for data requirements and [Data Pipeline](../guide/data-pipeline.md) for the full build process.
+To run simulations, you'll need to build the data artifacts first. See [Quickstart](quickstart.md) for data requirements and [Data Pipeline](../guide/data-pipeline.md) for the full build process.

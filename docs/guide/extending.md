@@ -1,4 +1,4 @@
-# Custom Components
+# Writing Custom Components
 
 OpenG2G is designed for extensibility. You can implement your own datacenter backends and controllers by subclassing the provided abstract base classes.
 
