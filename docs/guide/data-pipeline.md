@@ -39,7 +39,7 @@ Each `LLMRun` is a typed record with 40 fields: power, latency, throughput, mode
 
 Four-parameter logistic: `y = b0 + L * sigmoid(k * (x - x0))` where `x = log2(batch)`.
 
-These curves model how power, latency, and throughput vary with batch size (Section II-C of the [G2G paper](https://arxiv.org/abs/2602.05116), Eqs. 1-3). See [Concepts: Batch Size as a Grid-Aware Control](concepts.md#key-idea-batch-size-as-a-grid-aware-control) for the characteristic S-curve shape.
+These curves model how power, latency, and throughput vary with batch size (Section II-C of the [G2G paper](https://arxiv.org/abs/2602.05116), Eqs. 1-3). See [Concepts: Datacenter as a Control Knob](concepts.md#datacenter-as-a-control-knob) for the characteristic S-curve shape.
 
 - `LogisticModel.fit(x, y)`: Grid search + least squares
 - `LogisticModel.eval(batch)`: Evaluate at any batch size

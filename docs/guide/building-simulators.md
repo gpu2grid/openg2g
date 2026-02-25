@@ -298,7 +298,89 @@ Each `run()` resets simulation state, then `start()` compiles a fresh DSS circui
 
 ## Writing Custom Components
 
-OpenG2G is designed for extensibility. You can implement your own datacenter backends and controllers by subclassing the provided abstract base classes.
+OpenG2G is designed for extensibility. You can implement your own datacenter backends and controllers by subclassing the provided abstract base classes. Before diving into the interface, let's look at how the built-in components are implemented as concrete examples.
+
+### Case Study: The Offline Datacenter
+
+The [`OfflineDatacenter`][openg2g.datacenter.offline.OfflineDatacenter] replays real GPU power traces at controlled batch sizes (see Section IV-A of the [G2G paper](https://arxiv.org/abs/2602.05116)):
+
+```
+  Per-model server fleet                Power assembly (3-phase)
+
+  ┌─────────────────────┐              Phase A     Phase B     Phase C
+  │ Llama-3.1-8B        │                │           │           │
+  │  48 servers × 8 GPU │──┐             │  ┌─────┐  │  ┌─────┐  │  ┌─────┐
+  │  batch = 256        │  │             ├──│srv 1│  ├──│srv 2│  ├──│srv 3│
+  ├─────────────────────┤  │             │  └─────┘  │  └─────┘  │  └─────┘
+  │ Llama-3.1-70B       │  │             │  ┌─────┐  │           │  ┌─────┐
+  │  30 servers × 8 GPU │──┤  sum kW     ├──│srv 4│  │           ├──│srv 6│
+  │  batch = 128        │  │──per phase─>│  └─────┘  │           │  └─────┘
+  ├─────────────────────┤  │             │    ...    │    ...    │    ...
+  │ Llama-3.1-405B      │  │             │           │           │
+  │  16 servers × 8 GPU │──┤             │           │           │
+  │  batch = 64         │  │             │  + training overlay   │
+  ├─────────────────────┤  │             │  + noise + jitter     │
+  │ (+ 2 MoE models)    │──┘             │                       │
+  └─────────────────────┘                v           v           v
+                                       P_A(t)     P_B(t)     P_C(t)
+```
+
+- Each server plays back a per-GPU power trace (from [ML.ENERGY Benchmark](https://ml.energy/data) data) scaled by GPU count
+- Random restart offsets make servers desynchronized (realistic)
+- An [`ActivationStrategy`][openg2g.datacenter.layout.ActivationStrategy] determines which servers are active at each timestep, supporting both ramp-up and ramp-down schedules. The default [`RampActivationStrategy`][openg2g.datacenter.layout.RampActivationStrategy] follows a [`ServerRampSchedule`][openg2g.datacenter.config.ServerRampSchedule] with random priority ordering. Custom strategies (e.g., phase-aware load balancing) can be implemented by subclassing [`ActivationStrategy`][openg2g.datacenter.layout.ActivationStrategy].
+- Training workload overlays add transient high-power phases
+
+### Case Study: The OpenDSS Grid
+
+[`OpenDSSGrid`][openg2g.grid.opendss.OpenDSSGrid] is the built-in [`GridBackend`][openg2g.grid.base.GridBackend] implementation. Beyond the base interface, it provides:
+
+- `voltages_vector()`: Flat numpy array of all bus-phase voltages (used by the OFO controller for gradient computation)
+- `estimate_sensitivity(perturbation_kw)`: Finite-difference estimate of the voltage sensitivity matrix dV/dP
+
+When the grid runs at a coarser rate than the datacenter, it internally resamples the accumulated power buffer via interpolation. For example, with DC at 0.1s and grid at 1.0s, 10 accumulated power samples are resampled to 2 DSS solve points via `np.interp`.
+
+### Case Study: The OFO Controller
+
+Online Feedback Optimization (primal-dual) regulates batch sizes to keep voltages safe. For the full mathematical formulation, see Section III of the [G2G paper](https://arxiv.org/abs/2602.05116).
+
+```
+  ┌──────────────────────────────────────────────────────────────┐
+  │                  OFO Controller (every 1 s)                  │
+  │                                                              │
+  │  INPUTS:                                                     │
+  │    V(t)  ← grid voltages (all bus-phase pairs)               │
+  │    P(t)  ← datacenter power                                  │
+  │    ITL(t) ← observed inter-token latency per model           │
+  │    H     ← voltage sensitivity dV/dP (re-estimated slowly)   │
+  │                                                              │
+  │  DUAL UPDATES (G2G paper Eqs. 5-7):                         │
+  │                                                              │
+  │    Voltage:  λ⁺ ← [λ⁺ + ρ_v (V - V_max)]⁺                  │
+  │              λ⁻ ← [λ⁻ + ρ_v (V_min - V)]⁺                  │
+  │              η  = λ⁺ - λ⁻                                    │
+  │                                                              │
+  │    Latency:  μ_i ← [μ_i + ρ_l (ITL_i - L_thresh)]⁺         │
+  │                                                              │
+  │  PRIMAL UPDATE (G2G paper Eq. 8):                            │
+  │                                                              │
+  │    x_i = log₂(batch_i)                                      │
+  │                                                              │
+  │    ∇_i = - w_T · dTh/dx         (throughput reward)           │
+  │         + ηᵀ H eᵢ · dP/dx     (voltage dual × sensitivity)  │
+  │         + μ_i · dL/dx          (latency dual)               │
+  │         + w_S · (x - x_prev)   (switching cost)             │
+  │                                                              │
+  │    x_new = project(x - ρ_x · ∇)                             │
+  │    batch_new = nearest_valid(2^x_new)                        │
+  │                                                              │
+  │  OUTPUT:                                                     │
+  │    {model: batch_new} → sent as SetBatchSize to datacenter   │
+  └──────────────────────────────────────────────────────────────┘
+
+  Key: dP/dx, dL/dx, dTh/dx come from LogisticModel fits
+       H comes from OpenDSS finite-difference perturbation
+       Full gradient derivation: G2G paper, Appendix B (Eq. 18)
+```
 
 ### Custom Controller
 
