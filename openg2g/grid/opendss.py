@@ -20,10 +20,12 @@ from openg2g.grid.base import BusVoltages, GridBackend, GridState, PhaseVoltages
 from openg2g.types import GridCommand, SetTaps, TapPosition, ThreePhase
 
 if TYPE_CHECKING:
-    import opendssdirect as dss
+    from opendssdirect import dss
 else:
     try:
-        import opendssdirect as dss
+        from opendssdirect.OpenDSSDirect import OpenDSSDirect
+
+        dss = OpenDSSDirect(prefer_lists=False)
     except ImportError:
         dss = None
 
@@ -266,7 +268,7 @@ class OpenDSSGrid(GridBackend[GridState]):
         [`v_index`][..v_index] ordering."""
         if not self._started:
             raise RuntimeError("OpenDSSGrid.voltages_vector() called before start().")
-        vmag = np.asarray(dss.Circuit.AllBusMagPu())
+        vmag = dss.Circuit.AllBusMagPu()
         return vmag[self._v_index_to_vmag]
 
     def estimate_sensitivity(
@@ -382,8 +384,8 @@ class OpenDSSGrid(GridBackend[GridState]):
             self._set_reg_taps(self._tap_position_to_reg_dict(self._initial_tap_position))
 
         self._solve()
-        self._cache_buses_with_phases()
         self._cache_node_map()
+        self._cache_buses_with_phases()
 
     def _solve(self) -> None:
         if self._dss_controls:
@@ -394,18 +396,14 @@ class OpenDSSGrid(GridBackend[GridState]):
     def _cache_buses_with_phases(self) -> None:
         self.all_buses = list(dss.Circuit.AllBusNames())
         self.buses_with_phase = {ph: [] for ph in _PHASES}
-        for b in self.all_buses:
-            dss.Circuit.SetActiveBus(b)
-            nodes = dss.Bus.Nodes()
-            for ph in _PHASES:
-                if ph in nodes:
-                    self.buses_with_phase[ph].append(str(b))
+        for bus, phase in self._node_map:
+            if phase in _PHASES:
+                self.buses_with_phase[phase].append(bus)
 
     def _cache_node_map(self) -> None:
         """Cache the mapping from AllBusMagPu indices to (bus, phase) pairs."""
-        node_names = list(dss.Circuit.AllNodeNames())
         self._node_map: list[tuple[str, int]] = []
-        for name in node_names:
+        for name in dss.Circuit.AllNodeNames():
             parts = name.split(".")
             bus = parts[0]
             phase = int(parts[1]) if len(parts) > 1 else 0
@@ -418,15 +416,6 @@ class OpenDSSGrid(GridBackend[GridState]):
             [node_idx[(bus, ph)] for bus, ph in self._v_index],
             dtype=int,
         )
-
-    def _get_phase_pu(self, bus: str, phase: int) -> float:
-        dss.Circuit.SetActiveBus(bus)
-        mags_angles = dss.Bus.puVmagAngle()
-        nodes = dss.Bus.Nodes()
-        if phase not in nodes:
-            return float("nan")
-        idx = nodes.index(phase)
-        return float(mags_angles[2 * idx])
 
     def _snapshot_bus_voltages(self) -> BusVoltages:
         """Snapshot all per-bus, per-phase voltage magnitudes into BusVoltages.
@@ -463,13 +452,10 @@ class OpenDSSGrid(GridBackend[GridState]):
             bus connections (e.g., `"650.1"` → phase 1).
         """
         reg_map: dict[str, tuple[str, int, int]] = {}
-        i = dss.RegControls.First()
-        if i == 0:
-            return reg_map
-        while i > 0:
-            rc = dss.RegControls.Name().lower()
-            xf = dss.RegControls.Transformer()
-            w = int(dss.RegControls.Winding())
+        for rc in dss.RegControls:
+            rc_name = rc.Name().lower()
+            xf = rc.Transformer()
+            w = int(rc.Winding())
 
             # Discover phase from transformer bus connections
             dss.Transformers.Name(xf)
@@ -482,13 +468,12 @@ class OpenDSSGrid(GridBackend[GridState]):
                     break
             if phase not in (1, 2, 3):
                 raise RuntimeError(
-                    f"Cannot determine phase for RegControl '{rc}' "
+                    f"Cannot determine phase for RegControl '{rc_name}' "
                     f"(transformer={xf}, buses={bus_names}). "
                     f"Expected bus format 'name.phase' with phase in {{1,2,3}}."
                 )
 
-            reg_map[rc] = (xf, w, phase)
-            i = dss.RegControls.Next()
+            reg_map[rc_name] = (xf, w, phase)
         return reg_map
 
     @staticmethod
