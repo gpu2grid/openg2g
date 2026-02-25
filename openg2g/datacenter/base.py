@@ -20,7 +20,7 @@ class DatacenterState:
     """State emitted by a datacenter backend each timestep.
 
     Contains only universally applicable fields. LLM-inference-specific
-    fields (batch sizes, replicas, latency) live on
+    fields (batch sizes, replicas, latency) live on child classes like
     [`LLMDatacenterState`][..LLMDatacenterState].
     """
 

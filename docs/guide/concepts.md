@@ -19,20 +19,7 @@ These parameters simultaneously affect multiple quantities of interest:
 - **Token throughput**: Larger batches process more tokens per second
 - **Grid voltages**: Changes in datacenter power propagate through the distribution feeder, affecting voltage magnitudes at nearby buses
 
-```
-  Power (W)                              Latency (s)
-    ^                                       ^
-    |          ___________                  |              ________
-    |         /                             |             /
-    |        /                              |            /
-    |    ___/                               |    _______/
-    |___/                                   |___/
-    └──────────────────────> batch size     └───────────────────────> batch size
-       8   32  128  512                        8   32  128  512
-```
-<div align="center" markdown>
-*OpenG2G supports plugging in logistic curve fits for these relationships based on real GPU benchmark data in [The ML.ENERGY Benchmark v3 dataset](https://ml.energy/data).*
-</div>
+These relationships can be captured with model fitting (e.g., logistic curves) from real benchmark data (see [Data Pipeline](data-pipeline.md#logistic-curve-fitting)).
 
 This makes workload parameters a natural **demand-side control** for voltage regulation: by adjusting them in response to grid measurements, a datacenter can actively manage its impact on the local grid while maintaining acceptable service quality.
 
