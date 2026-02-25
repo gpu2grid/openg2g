@@ -100,11 +100,10 @@ def update_zensical_nav(nav_entries: list[tuple[str, str]]) -> None:
 
     # Inject Google Analytics only when ZENSICAL_ENABLE_ANALYTICS=1.
     if os.environ.get("ZENSICAL_ENABLE_ANALYTICS") == "1":
-        extra = doc["project"].setdefault("extra", tomlkit.table())
-        analytics = tomlkit.table()
-        analytics.add("provider", "google")
-        analytics.add("property", "G-Y720KPY1TN")
-        extra["analytics"] = analytics
+        analytics = tomlkit.inline_table()
+        analytics.append("provider", "google")
+        analytics.append("property", "G-Y720KPY1TN")
+        doc["project"]["extra"]["analytics"] = analytics
 
     ZENSICAL_TOML_OUT.write_text(tomlkit.dumps(doc))
 
