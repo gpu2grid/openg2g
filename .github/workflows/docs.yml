@@ -9,6 +9,7 @@ on:
       - "openg2g/**"
       - "scripts/gen_api_docs.py"
       - "scripts/docs.sh"
+      - "uv.lock"
       - ".github/workflows/docs.yml"
 
 permissions:
