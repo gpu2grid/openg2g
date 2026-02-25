@@ -270,8 +270,8 @@ def main() -> int:
     parser.add_argument(
         "--plot",
         action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Generate data characterization plots (default: --plot).",
+        default=False,
+        help="Generate data characterization plots",
     )
     args = parser.parse_args()
 
@@ -304,6 +304,7 @@ def main() -> int:
     itl_frames: list[pd.DataFrame] = []
     run_frames: list[pd.DataFrame] = []
 
+    # Filter subsets and prefetch raw files in parallel.
     for entry in config:
         model_id = str(entry["model_id"])
         num_gpus = int(entry["num_gpus"])
@@ -319,7 +320,21 @@ def main() -> int:
                 f"batch_sizes={batch_sizes}"
             )
         subsets_by_label[label] = subset
+        logger.info(
+            "%s: %d runs (model_id=%s, gpu=%s, num_gpus=%d, batches=%s)",
+            label,
+            len(subset),
+            model_id,
+            gpu,
+            num_gpus,
+            sorted({r.max_num_seqs for r in subset}),
+        )
 
+    for subset in subsets_by_label.values():
+        subset.download_raw_files(file="results")
+
+    # Extract timelines, ITL samples, and run summaries.
+    for label, subset in subsets_by_label.items():
         for run in subset:
             tl = run.timelines(metric="power.device_instant")
             tl["model_label"] = label
@@ -337,13 +352,11 @@ def main() -> int:
         run_frames.append(rdf)
 
         logger.info(
-            "  %s: %d runs (model_id=%s, gpu=%s, num_gpus=%d, batches=%s)",
+            "%s: Extracted timelines (%d rows), ITL samples (%d rows), run summaries (%d rows)",
             label,
-            len(subset),
-            model_id,
-            gpu,
-            num_gpus,
-            sorted({r.max_num_seqs for r in subset}),
+            len(tl),
+            len(itl),
+            len(rdf),
         )
 
     all_tl = pd.concat(tl_frames, ignore_index=True)
@@ -389,10 +402,10 @@ def main() -> int:
     traces_summary.to_csv(out_dir / "traces_summary.csv", index=False)
 
     logger.info("Wrote OpenG2G dataset to: %s", out_dir)
-    logger.info("  traces: %s", out_dir / "traces")
-    logger.info("  latency_fits: %s", out_dir / "latency_fits.csv")
-    logger.info("  logistic_fits: %s", out_dir / "logistic_fits.csv")
-    logger.info("  summary: %s", out_dir / "summary.csv")
+    logger.info("traces: %s", out_dir / "traces")
+    logger.info("latency_fits: %s", out_dir / "latency_fits.csv")
+    logger.info("logistic_fits: %s", out_dir / "logistic_fits.csv")
+    logger.info("summary: %s", out_dir / "summary.csv")
 
     if args.plot:
         _generate_plots(
