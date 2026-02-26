@@ -9,19 +9,27 @@ import pytest
 from mlenergy_data.modeling import ITLMixtureModel
 
 from openg2g.clock import SimulationClock
+from openg2g.datacenter.config import DatacenterConfig, WorkloadConfig
 from openg2g.datacenter.offline import (
     OfflineDatacenter,
     OfflineDatacenterState,
+    PowerTemplateStore,
     PowerTrace,
     PowerTraceStore,
     _build_per_gpu_power_template,
 )
-from openg2g.models.spec import LLMInferenceModelSpec
+from openg2g.models.spec import LLMInferenceModelSpec, LLMInferenceWorkload
 from openg2g.types import DatacenterCommand, SetBatchSize
 
+MODEL = LLMInferenceModelSpec(
+    model_label="TestModel", num_replicas=10, gpus_per_replica=1, initial_batch_size=128, itl_deadline_s=0.1
+)
+DC_CFG = DatacenterConfig(gpus_per_server=8)
+WORKLOAD = WorkloadConfig(inference=LLMInferenceWorkload(models=(MODEL,)))
 
-def _make_simple_store(dt: float = 0.1, T: float = 100.0) -> PowerTraceStore:
-    """Create a minimal PowerTraceStore with synthetic data."""
+
+def _make_simple_store(dt: float = 0.1, T: float = 100.0) -> PowerTemplateStore:
+    """Create a minimal PowerTemplateStore with synthetic data."""
     t = np.linspace(0, 10, 100)
     p = np.linspace(100, 200, 100)
 
@@ -33,22 +41,12 @@ def _make_simple_store(dt: float = 0.1, T: float = 100.0) -> PowerTraceStore:
     }
 
     store = PowerTraceStore.from_traces(traces)
-    store.build_templates(duration_s=T, timestep_s=dt)
-    return store
+    return store.build_templates(duration_s=T, dt_s=dt)
 
 
 def test_step_returns_offline_state():
     store = _make_simple_store()
-    model = LLMInferenceModelSpec(
-        model_label="TestModel", num_replicas=10, gpus_per_replica=1, initial_batch_size=128, itl_deadline_s=0.1
-    )
-    dc = OfflineDatacenter(
-        trace_store=store,
-        models=[model],
-        timestep_s=Fraction(1, 10),
-        gpus_per_server=8,
-        seed=0,
-    )
+    dc = OfflineDatacenter(DC_CFG, WORKLOAD, template_store=store, dt_s=Fraction(1, 10))
 
     clock = SimulationClock(tick_s=Fraction(1, 10))
     state = dc.step(clock)
@@ -64,16 +62,7 @@ def test_step_returns_offline_state():
 def test_step_produces_correct_number_of_states():
     """Stepping produces one state per call with monotonically increasing times."""
     store = _make_simple_store()
-    model = LLMInferenceModelSpec(
-        model_label="TestModel", num_replicas=10, gpus_per_replica=1, initial_batch_size=128, itl_deadline_s=0.1
-    )
-    dc = OfflineDatacenter(
-        trace_store=store,
-        models=[model],
-        timestep_s=Fraction(1, 10),
-        gpus_per_server=8,
-        seed=0,
-    )
+    dc = OfflineDatacenter(DC_CFG, WORKLOAD, template_store=store, dt_s=Fraction(1, 10))
 
     clock = SimulationClock(tick_s=Fraction(1, 10))
     states = []
@@ -90,16 +79,7 @@ def test_step_produces_correct_number_of_states():
 def test_batch_change_takes_effect_immediately():
     """Batch size change via apply_control takes effect on the very next step."""
     store = _make_simple_store()
-    model = LLMInferenceModelSpec(
-        model_label="TestModel", num_replicas=10, gpus_per_replica=1, initial_batch_size=128, itl_deadline_s=0.1
-    )
-    dc = OfflineDatacenter(
-        trace_store=store,
-        models=[model],
-        timestep_s=Fraction(1, 10),
-        gpus_per_server=8,
-        seed=0,
-    )
+    dc = OfflineDatacenter(DC_CFG, WORKLOAD, template_store=store, dt_s=Fraction(1, 10))
 
     clock = SimulationClock(tick_s=Fraction(1, 10))
 
@@ -121,7 +101,7 @@ def test_build_periodic_template_shape():
     p = np.sin(t) * 100 + 200
     trace = PowerTrace(t_s=t, power_w=p, measured_gpus=2)
 
-    tpl = _build_per_gpu_power_template(trace, timestep_s=0.1, duration_s=50.0)
+    tpl = _build_per_gpu_power_template(trace, dt_s=0.1, duration_s=50.0)
 
     expected_steps = int(np.ceil(50.0 / 0.1)) + 1
     assert tpl.shape[0] == expected_steps
@@ -130,9 +110,6 @@ def test_build_periodic_template_shape():
 
 def test_offline_datacenter_emits_observed_itl_when_latency_fits_is_set():
     store = _make_simple_store()
-    model = LLMInferenceModelSpec(
-        model_label="TestModel", num_replicas=10, gpus_per_replica=1, initial_batch_size=128, itl_deadline_s=0.1
-    )
     fake_params = ITLMixtureModel(
         loc=0.01,
         pi_steady=0.8,
@@ -143,14 +120,7 @@ def test_offline_datacenter_emits_observed_itl_when_latency_fits_is_set():
         scale_stall=0.1,
     )
     latency_fits = {"TestModel": {128: fake_params}}
-    dc = OfflineDatacenter(
-        trace_store=store,
-        models=[model],
-        timestep_s=Fraction(1, 10),
-        gpus_per_server=8,
-        seed=0,
-        itl_distributions=latency_fits,
-    )
+    dc = OfflineDatacenter(DC_CFG, WORKLOAD, template_store=store, dt_s=Fraction(1, 10), itl_distributions=latency_fits)
 
     state = dc.step(SimulationClock(tick_s=Fraction(1, 10)))
     assert "TestModel" in state.observed_itl_s_by_model
@@ -164,16 +134,7 @@ def test_apply_control_rejects_unknown_command():
         pass
 
     store = _make_simple_store()
-    model = LLMInferenceModelSpec(
-        model_label="TestModel", num_replicas=10, gpus_per_replica=1, initial_batch_size=128, itl_deadline_s=0.1
-    )
-    dc = OfflineDatacenter(
-        trace_store=store,
-        models=[model],
-        timestep_s=Fraction(1, 10),
-        gpus_per_server=8,
-        seed=0,
-    )
+    dc = OfflineDatacenter(DC_CFG, WORKLOAD, template_store=store, dt_s=Fraction(1, 10))
 
     with pytest.raises(TypeError, match="OfflineDatacenter does not support"):
         dc.apply_control(_CustomCommand())

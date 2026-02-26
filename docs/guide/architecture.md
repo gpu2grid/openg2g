@@ -130,7 +130,7 @@ Built-in implementation: [`OpenDSSGrid`][openg2g.grid.opendss.OpenDSSGrid].
 - [`dt_s`][openg2g.controller.base.Controller.dt_s]: The control interval
 - [`step(clock, datacenter, grid, events)`][openg2g.controller.base.Controller.step]: Read [`datacenter.state`][openg2g.datacenter.base.DatacenterBackend.state] and [`grid.state`][openg2g.grid.base.GridBackend.state], and return a [`ControlAction`][openg2g.types.ControlAction] for to be applied to the datacenter and/or grid this tick
 
-Built-in implementations: [`OFOBatchController`][openg2g.controller.ofo.OFOBatchController], [`TapScheduleController`][openg2g.controller.tap_schedule.TapScheduleController], [`BatchSizeScheduleController`][openg2g.controller.batch_size_schedule.BatchSizeScheduleController], [`NoopController`][openg2g.controller.noop.NoopController].
+Built-in implementations: [`OFOBatchSizeController`][openg2g.controller.ofo.OFOBatchSizeController], [`TapScheduleController`][openg2g.controller.tap_schedule.TapScheduleController], [`BatchSizeScheduleController`][openg2g.controller.batch_size_schedule.BatchSizeScheduleController], [`NoopController`][openg2g.controller.noop.NoopController].
 
 ## Component Lifecycle
 
@@ -153,7 +153,7 @@ This is mainly to allow reuse component objects across multiple [`Coordinator.ru
 
 ```python
 grid = OpenDSSGrid(...)               # stores config only
-ctrl = OFOBatchController(...)        # stores fits + tuning
+ctrl = OFOBatchSizeController(...)        # stores fits + tuning
 for config in datacenter_configs:
     dc = OfflineDatacenter(**config)  # builds power templates
     coord = Coordinator(dc, grid, [ctrl], total_duration_s=3600, dc_bus="671")
@@ -190,7 +190,7 @@ class LLMBatchSizeControlledDatacenter(DatacenterBackend[DCStateT]): ...
 class OfflineDatacenter(LLMBatchSizeControlledDatacenter[OfflineDatacenterState]): ...
 ```
 
-**Controller generics.** Controllers declare which backends they require. The coordinator validates these constraints when you assemble a simulation:
+**Controller generics.** Controllers declare which backends they require. The coordinator validates these constraints when you construct it:
 
 ```python
 class Controller(Generic[DCBackendT, GridBackendT], ABC): ...
@@ -199,7 +199,7 @@ class Controller(Generic[DCBackendT, GridBackendT], ABC): ...
 class TapScheduleController(Controller[DatacenterBackend, GridBackend]): ...
 
 # Requires an LLM datacenter and OpenDSS specifically
-class OFOBatchController(Controller[LLMBatchSizeControlledDatacenter, OpenDSSGrid]): ...
+class OFOBatchSizeController(Controller[LLMBatchSizeControlledDatacenter, OpenDSSGrid]): ...
 ```
 
 ## `SimulationLog`

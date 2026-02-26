@@ -8,7 +8,7 @@
 <a href="https://arxiv.org/abs/2602.05116"><img src="https://img.shields.io/badge/arXiv-2602.05116-b31b1b.svg" alt="arXiv"></a>
 </div>
 
-</br>
+<br>
 
 A modular Python library for simulating datacenter-grid interaction, with a focus on LLM workloads.
 
@@ -46,24 +46,29 @@ uv sync
 
 ## Quick Start
 
+For a full walkthrough including data setup, see the [Getting Started guide](https://gpu2grid.io/openg2g/getting-started/quickstart/). The snippet below illustrates the core API:
+
 ```python
 from fractions import Fraction
 
 from openg2g.coordinator import Coordinator
+from openg2g.datacenter.config import DatacenterConfig, WorkloadConfig
 from openg2g.datacenter.offline import OfflineDatacenter, PowerTraceStore
 from openg2g.grid.opendss import OpenDSSGrid
 from openg2g.controller.noop import NoopController
-from openg2g.models.spec import LLMInferenceModelSpec
+from openg2g.models.spec import LLMInferenceModelSpec, LLMInferenceWorkload
 from openg2g.types import TapPosition
 
 # 1. Set up a trace-based datacenter
-models = [
-    LLMInferenceModelSpec("Llama-3.1-8B", num_replicas=720, gpus_per_replica=1, initial_batch_size=128),
-    LLMInferenceModelSpec("Llama-3.1-70B", num_replicas=180, gpus_per_replica=4, initial_batch_size=128),
-]
+workload = WorkloadConfig(
+    inference=LLMInferenceWorkload(models=(
+        LLMInferenceModelSpec("Llama-3.1-8B", num_replicas=720, gpus_per_replica=1, initial_batch_size=128),
+        LLMInferenceModelSpec("Llama-3.1-70B", num_replicas=180, gpus_per_replica=4, initial_batch_size=128),
+    )),
+)
 store = PowerTraceStore.load("data/generated/traces_summary.csv")
-store.build_templates(duration_s=3600, timestep_s=Fraction(1, 10))
-dc = OfflineDatacenter(trace_store=store, models=models, timestep_s=Fraction(1, 10))
+templates = store.build_templates(duration_s=3600, dt_s=Fraction(1, 10))
+dc = OfflineDatacenter(DatacenterConfig(), workload, template_store=templates, dt_s=Fraction(1, 10))
 
 # 2. Set up the grid
 TAP_STEP = 0.00625
@@ -91,9 +96,9 @@ log = coord.run()
 
 See [`examples/`](examples/) for complete simulation scripts:
 
-- `run_baseline.py --mode no-tap` -- fixed taps, no OFO
-- `run_baseline.py --mode tap-change` -- scheduled tap changes, no OFO
-- `run_ofo.py` -- OFO closed-loop batch size control
+- `run_baseline.py --mode no-tap`: fixed taps, no OFO
+- `run_baseline.py --mode tap-change`: scheduled tap changes, no OFO
+- `run_ofo.py`: OFO closed-loop batch size control
 
 ## Running Example Simulations
 
@@ -145,6 +150,10 @@ Full documentation is available at [https://gpu2grid.io/openg2g](https://gpu2gri
 - Running simulations
 - Implementing custom components
 - Architecture reference
+
+## Contact
+
+Jae-Won Chung <jwnchung@umich.edu>
 
 ## Citation
 

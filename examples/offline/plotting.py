@@ -120,7 +120,7 @@ def _bus_sort_key(b: str) -> tuple[int, str]:
 
 
 # ══════════════════════════════════════════════════════════════════════
-# Paper Fig. 5 — 2-panel: 3-phase power (MW) + per-model average ITL
+# Paper Fig. 5: 2-panel, 3-phase power (MW) + per-model average ITL
 # (ported from baseline_wo_control.py  plot_power_latency_subfigs_compact)
 # ══════════════════════════════════════════════════════════════════════
 
@@ -236,7 +236,7 @@ def plot_power_and_itl_2panel(
 
 
 # ══════════════════════════════════════════════════════════════════════
-# Paper Fig. 6 / Fig. 7 — Per-phase all-bus voltages with bus colormap
+# Paper Fig. 6 / Fig. 7: Per-phase all-bus voltages with bus colormap
 # (ported from both baseline_wo_control.py and final_ofo_test.py)
 # ══════════════════════════════════════════════════════════════════════
 
@@ -414,7 +414,7 @@ def plot_allbus_voltages_per_phase(
 
 
 # ══════════════════════════════════════════════════════════════════════
-# Paper Fig. 8 — 4-panel: batch, power/replica, ITL, throughput (OFO)
+# Paper Fig. 8: 4-panel, batch, power/replica, ITL, throughput (OFO)
 # (ported from final_ofo_test.py  plot_model_timeseries_4panel_compact)
 # ══════════════════════════════════════════════════════════════════════
 

@@ -90,7 +90,7 @@ def main(args: argparse.Namespace) -> None:
 
     logger.info("Loading power traces...")
     store = PowerTraceStore.load(data_dir / "traces_summary.csv")
-    store.build_templates(duration_s=600.0, timestep_s=dt_dc)
+    templates = store.build_templates(duration_s=600.0, dt_s=dt_dc)
 
     logger.info("Loading latency fits...")
     itl_fits = load_itl_fits_from_csv(data_dir / "latency_fits.csv")
@@ -109,16 +109,16 @@ def main(args: argparse.Namespace) -> None:
     )
 
     logger.info("Initializing OfflineDatacenter...")
-    dc = OfflineDatacenter.from_config(
+    dc = OfflineDatacenter(
         dc_config,
         workload,
-        trace_store=store,
-        timestep_s=dt_dc,
+        template_store=templates,
+        dt_s=dt_dc,
         seed=0,
         amplitude_scale_range=(0.98, 1.02),
         noise_fraction=0.005,
         itl_distributions=itl_fits,
-        latency_exact_threshold=30,
+        itl_approx_sampling_thresh=30,
         latency_seed=0,
     )
 

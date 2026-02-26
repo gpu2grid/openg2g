@@ -1,4 +1,4 @@
-"""Tests for openg2g.models.spec — LLMInferenceModelSpec, LLMInferenceWorkload."""
+"""Tests for openg2g.models.spec: LLMInferenceModelSpec, LLMInferenceWorkload."""
 
 from __future__ import annotations
 

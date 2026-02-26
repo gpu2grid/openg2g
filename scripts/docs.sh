@@ -8,10 +8,10 @@ python "$SCRIPT_DIR/gen_api_docs.py"
 
 case "${1:-}" in
   build)
-    zensical build --clean
+    zensical build --clean --strict
     ;;
   serve)
-    zensical serve
+    zensical serve --strict
     ;;
   *)
     echo "Usage: uv run bash scripts/docs.sh {build|serve}" >&2

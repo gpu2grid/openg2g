@@ -29,6 +29,11 @@ class PhaseVoltages:
     """Per-phase voltage magnitudes in per-unit.
 
     Phases missing from the bus have NaN for that field.
+
+    Attributes:
+        a: Phase A voltage magnitude (pu).
+        b: Phase B voltage magnitude (pu).
+        c: Phase C voltage magnitude (pu).
     """
 
     a: float
@@ -62,7 +67,14 @@ class BusVoltages:
 
 @dataclass(frozen=True)
 class GridState:
-    """State emitted by the grid simulator each timestep."""
+    """State emitted by the grid simulator each timestep.
+
+    Attributes:
+        time_s: Simulation time in seconds.
+        voltages: Per-bus, per-phase voltage magnitudes.
+        tap_positions: Current regulator tap positions, or `None` if
+            no regulator is present.
+    """
 
     time_s: float
     voltages: BusVoltages

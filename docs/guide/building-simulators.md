@@ -1,89 +1,44 @@
 # Building Simulators
 
-This page shows how to build your own simulator for a particular scenario using OpenG2G's components.
+This page walks through building your own simulator for your scenario using OpenG2G components.
+For how the components fit together conceptually, see [Architecture](architecture.md).
 
-## Minimal Example
+## Essential Components
 
-A simulation requires three things: a datacenter, a grid, and at least one controller.
+A simulator needs three things: a datacenter backend, a grid backend, and at least one controller.
+You wire them together with the [`Coordinator`][openg2g.coordinator.Coordinator]:
 
 ```python
 from openg2g.coordinator import Coordinator
-from openg2g.controller.noop import NoopController
 
 coord = Coordinator(
     datacenter=dc,
     grid=grid,
-    controllers=[NoopController(dt_s=1.0)],
+    controllers=[controller1, controller2, ...],
     total_duration_s=3600,
     dc_bus="671",
 )
 log = coord.run()
 ```
 
-The coordinator computes the base tick as the GCD of all component periods. In this example, if the datacenter runs at 0.1s and the grid at 1.0s, the tick is 0.1s.
+The sections below show how to set up each component.
 
-## Component Lifecycle
+### Datacenter
 
-Every `run()` call follows the sequence: `reset()` all -> `start()` all -> simulation loop -> `stop()` all. Calling `run()` twice produces identical results.
-
-- **`reset()`** (abstract) clears simulation state (history, RNGs, counters). Configuration is not affected.
-- **`start()`** (no-op by default) acquires per-run resources. [`OpenDSSGrid`][openg2g.grid.opendss.OpenDSSGrid] compiles its DSS circuit here; most offline components don't override this.
-- **`stop()`** (no-op by default) releases per-run resources. Simulation state is preserved for inspection.
-
-## Setting Up the Datacenter
-
-### Offline (Trace Replay)
-
-The [`OfflineDatacenter`][openg2g.datacenter.offline.OfflineDatacenter] replays CSV power traces. You first load traces from a manifest into a [`PowerTraceStore`][openg2g.datacenter.offline.PowerTraceStore], build periodic templates, then create the datacenter.
-
-#### Direct construction
+The [`OfflineDatacenter`][openg2g.datacenter.offline.OfflineDatacenter] replays GPU power traces built from the [data pipeline](data-pipeline.md).
+Load traces from the generated manifest, build templates for the simulation config, then create the datacenter with a [`DatacenterConfig`][openg2g.datacenter.config.DatacenterConfig] and [`WorkloadConfig`][openg2g.datacenter.config.WorkloadConfig]:
 
 ```python
-from openg2g.datacenter.offline import OfflineDatacenter, PowerTraceStore
-from openg2g.datacenter.layout import RampActivationStrategy
-from openg2g.models.spec import LLMInferenceModelSpec
-from openg2g.datacenter.config import ServerRamp, ServerRampSchedule
+from fractions import Fraction
 
-models = [
-    LLMInferenceModelSpec(
-        model_label="Llama-3.1-8B", num_replicas=720, gpus_per_replica=1, initial_batch_size=128,
-    ),
-    LLMInferenceModelSpec(
-        model_label="Llama-3.1-70B", num_replicas=180, gpus_per_replica=4, initial_batch_size=128,
-    ),
-]
-
-store = PowerTraceStore.load("data/generated/traces_summary.csv")
-store.build_templates(duration_s=3600.0, timestep_s=0.1)
-
-dc = OfflineDatacenter(
-    trace_store=store,
-    models=models,
-    timestep_s=0.1,
-    gpus_per_server=8,
-    seed=0,
-    amplitude_scale_range=(0.98, 1.02),
-    noise_fraction=0.005,
-    activation_strategy=RampActivationStrategy(
-        ServerRampSchedule(entries=(ServerRamp(t_start=2500.0, t_end=3000.0, target=0.2),))
-    ),
-    base_kw_per_phase=500.0,
-)
-```
-
-#### Using config objects
-
-For more complex setups (training overlays, server ramp schedules), use the `from_config()` factory with [`DatacenterConfig`][openg2g.datacenter.config.DatacenterConfig] and [`WorkloadConfig`][openg2g.datacenter.config.WorkloadConfig]:
-
-```python
 from openg2g.datacenter.config import DatacenterConfig, WorkloadConfig
 from openg2g.datacenter.offline import OfflineDatacenter, PowerTraceStore
-from openg2g.models.spec import LLMInferenceModelSpec, LLMInferenceWorkload
 from openg2g.datacenter.training_overlay import TrainingTrace
+from openg2g.models.spec import LLMInferenceModelSpec, LLMInferenceWorkload
 from openg2g.types import ServerRamp, TrainingRun
 
 store = PowerTraceStore.load("data/generated/traces_summary.csv")
-store.build_templates(duration_s=3600.0, timestep_s=0.1)
+templates = store.build_templates(duration_s=3600.0, dt_s=Fraction(1, 10))
 
 training_trace = TrainingTrace.load("data/generated/synthetic_training_trace.csv")
 
@@ -96,77 +51,28 @@ workload = WorkloadConfig(
             model_label="Llama-3.1-70B", num_replicas=180, gpus_per_replica=4, initial_batch_size=128,
         ),
     )),
-    training=TrainingRun(t_start=1000.0, t_end=2000.0, n_gpus=2400, trace=training_trace),
     server_ramps=ServerRamp(t_start=2500.0, t_end=3000.0, target=0.2),
+    training=TrainingRun(t_start=1000.0, t_end=2000.0, n_gpus=2400, trace=training_trace),
 )
 
-dc = OfflineDatacenter.from_config(
+dc = OfflineDatacenter(
     datacenter=DatacenterConfig(gpus_per_server=8, base_kw_per_phase=500.0),
     workload=workload,
-    trace_store=store,
-    timestep_s=0.1,
+    template_store=templates,
+    dt_s=Fraction(1, 10),
     seed=0,
     amplitude_scale_range=(0.98, 1.02),
     noise_fraction=0.005,
 )
 ```
 
-### Online (Live GPU)
+### Grid
 
-!!! Note
-    The online (live) datacenter backend is currently in early development. The offline trace-replay backend is recommended for most users.
-
-The [`OnlineDatacenter`][openg2g.datacenter.online.OnlineDatacenter] connects to real vLLM servers for load generation and ITL measurement, and to zeusd instances for live GPU power monitoring. Power readings from a small number of real GPUs are augmented to datacenter scale using temporal staggering.
+Construct an [`OpenDSSGrid`][openg2g.grid.opendss.OpenDSSGrid] with a DSS case directory and tap schedule. Tap schedules are built using [`TapPosition`][openg2g.types.TapPosition] and the `|` operator:
 
 ```python
-from zeus.monitor.power_streaming import PowerStreamingClient
-from zeus.utils.zeusd import ZeusdConfig
-from openg2g.datacenter.online import (
-    OnlineDatacenter,
-    OnlineModelDeployment,
-    GPUEndpointMapping,
-    PowerAugmentationConfig,
-    LoadGenerationConfig,
-)
-from openg2g.models.spec import LLMInferenceModelSpec
+from fractions import Fraction
 
-deployments = [
-    OnlineModelDeployment(
-        spec=LLMInferenceModelSpec(
-            model_label="Llama-3.1-8B", num_replicas=720,
-            gpus_per_replica=1, initial_batch_size=128,
-        ),
-        vllm_base_url="http://node1:8000",
-        model_name="meta-llama/Llama-3.1-8B-Instruct",
-        gpu_endpoints=(
-            GPUEndpointMapping(host="node1", gpu_indices=(0, 1, 2, 3)),
-        ),
-    ),
-]
-
-power_client = PowerStreamingClient(
-    servers=[
-        ZeusdConfig.tcp(ep.host, ep.port, gpu_indices=list(ep.gpu_indices), cpu_indices=[])
-        for d in deployments for ep in d.gpu_endpoints
-    ],
-)
-
-dc = OnlineDatacenter(
-    deployments=deployments,
-    power_client=power_client,
-    requests_by_model={"Llama-3.1-8B": [...]},
-    augmentation=PowerAugmentationConfig(base_kw_per_phase=500.0),
-    load_gen=LoadGenerationConfig(max_output_tokens=512),
-)
-```
-
-The coordinator calls `start()` to run health checks, wait for power readings, set initial batch sizes, and start load generation. `stop()` shuts everything down.
-
-## Setting Up the Grid
-
-Tap schedules are built using [`TapPosition`][openg2g.types.TapPosition] (per-unit tap ratios per phase) and the `|` operator:
-
-```python
 from openg2g.grid.opendss import OpenDSSGrid
 from openg2g.types import TapPosition
 
@@ -188,75 +94,36 @@ grid = OpenDSSGrid(
     dc_bus="671",
     dc_bus_kv=4.16,
     power_factor=0.95,
-    dt_s=0.1,
+    dt_s=Fraction(1, 10),
     connection_type="wye",
-    # dss_controls=False (default): OpenDSS is a passive power flow solver.
-    # All voltage regulation is managed by our controllers.
 )
 ```
 
-When the grid runs at a coarser rate than the datacenter, multiple power samples accumulate between grid steps. The grid uses the most recent power sample and runs a single power flow solve.
+### Controllers
 
-## Stacking Controllers
-
-Controllers compose in order. Each controller gets full component handles plus an event emitter:
+Controllers compose in order. Pass them as a list to the coordinator:
 
 ```python
 from openg2g.controller.tap_schedule import TapScheduleController
-from openg2g.controller.ofo import OFOBatchController
-
-controllers = [
-    TapScheduleController(schedule=[], dt_s=1.0),  # taps handled by grid schedule
-    OFOBatchController(models=models, fits=fits, ...),
-]
+from openg2g.controller.ofo import OFOBatchSizeController
 
 coord = Coordinator(
     datacenter=dc,
     grid=grid,
-    controllers=controllers,
+    controllers=[
+        TapScheduleController(schedule=tap_schedule, dt_s=Fraction(1)),
+        OFOBatchSizeController(...),
+    ],
     total_duration_s=3600,
     dc_bus="671",
 )
 ```
 
-Initial tap positions are set via the `initial_tap_position` parameter on [`OpenDSSGrid`][openg2g.grid.opendss.OpenDSSGrid] (using the [`TapPosition`][openg2g.types.TapPosition] API). Scheduled changes are handled by [`TapScheduleController`][openg2g.controller.tap_schedule.TapScheduleController]. Actions from all controllers are applied before the next tick.
-
-### Command Types
-
-Commands are typed dataclasses routed to backends via `singledispatchmethod`:
-
-- [`SetBatchSize`][openg2g.types.SetBatchSize]`(batch_size_by_model=...)`: Datacenter command
-- [`SetTaps`][openg2g.types.SetTaps]`(tap_position=...)`: Grid command
-
-Backends raise `TypeError` for unsupported command types.
-
-Controller interface summary:
-
-- `step(clock, datacenter, grid, events)` -> [`ControlAction`][openg2g.types.ControlAction]
-- read current state through `datacenter.state` and `grid.state`
-- read history through `datacenter.history(...)` and `grid.history(...)`
-- emit events through `events.emit(topic, data)`
-
-## Live Mode
-
-For hardware-in-the-loop experiments, pass `live=True` to the coordinator:
-
-```python
-coord = Coordinator(
-    datacenter=dc,
-    grid=grid,
-    controllers=controllers,
-    total_duration_s=300,
-    dc_bus="671",
-    live=True,
-)
-```
-
-In live mode, the clock synchronizes with wall time. If computation falls behind real time, a warning is issued.
+Actions from all controllers are applied before the next tick. Put tap controllers before batch controllers if tap changes should be visible to the batch optimizer within the same tick.
 
 ## Analyzing Results
 
-The [`SimulationLog`][openg2g.coordinator.SimulationLog] returned by `coord.run()` contains all state and action history:
+[`Coordinator.run()`][openg2g.coordinator.Coordinator.run] returns a [`SimulationLog`][openg2g.coordinator.SimulationLog] containing all state and action history:
 
 ```python
 log = coord.run()
@@ -266,9 +133,7 @@ from openg2g.metrics.voltage import compute_allbus_voltage_stats
 stats = compute_allbus_voltage_stats(log.grid_states, v_min=0.95, v_max=1.05)
 print(f"Violation time: {stats.violation_time_s:.1f} s")
 
-# Plotting: the example scripts in examples/offline/ import shared plot
-# functions from plotting.py (a sibling module in that directory).
-# See examples/offline/plotting.py for reusable plot functions.
+# Time-series data for plotting
 import numpy as np
 time_s = np.array(log.time_s)
 kW_A = np.array(log.kW_A)
@@ -276,191 +141,25 @@ kW_B = np.array(log.kW_B)
 kW_C = np.array(log.kW_C)
 ```
 
-## Configuration Sweeps
-
-Since `run()` calls `reset()` on all components before each run, you can reuse expensive objects across a parameter sweep:
-
-```python
-from openg2g.coordinator import Coordinator
-from openg2g.grid.opendss import OpenDSSGrid
-
-grid = OpenDSSGrid(...)  # stores config only (cheap)
-
-for batch_init in [64, 128, 256, 512]:
-    dc = OfflineDatacenter(trace_store=store, models=models, ...)
-    ctrl = OFOBatchController(models=models, ...)
-    coord = Coordinator(dc, grid, [ctrl], total_duration_s=3600, dc_bus="671")
-    log = coord.run()  # reset -> start (compile DSS) -> loop -> stop
-    print(f"batch_init={batch_init}: violation={stats.integral_violation:.2f}")
-```
-
-Each `run()` resets simulation state, then `start()` compiles a fresh DSS circuit, so every iteration starts clean despite reusing the same [`OpenDSSGrid`][openg2g.grid.opendss.OpenDSSGrid] instance.
+See [`examples/offline/plotting.py`](https://github.com/gpu2grid/openg2g/blob/master/data/offline/plotting.py) for reusable plot functions used by the example scripts.
 
 ## Writing Custom Components
 
-OpenG2G is designed for extensibility. You can implement your own datacenter backends and controllers by subclassing the provided abstract base classes. Before diving into the interface, let's look at how the built-in components are implemented as concrete examples.
+OpenG2G is designed for extensibility.
+Subclass the abstract base classes to implement your own datacenter backends and controllers, or subclass an existing implementation to create a custom variant.
+For background on the type system and generics, see [Architecture: State Types and Generics](architecture.md#state-types-and-generics).
 
-### Case Study: The Offline Datacenter
+### Custom Datacenter
 
-The [`OfflineDatacenter`][openg2g.datacenter.offline.OfflineDatacenter] replays real GPU power traces at controlled batch sizes (see Section IV-A of the [G2G paper](https://arxiv.org/abs/2602.05116)):
+**Datacenter backend.**
+Subclass [`DatacenterBackend`][openg2g.datacenter.base.DatacenterBackend] and parameterize it with the state type your backend returns from [`step()`][openg2g.datacenter.base.DatacenterBackend.step]. The coordinator calls `step()` at the rate specified by [`dt_s`][openg2g.datacenter.base.DatacenterBackend.dt_s]; each call should return a [`DatacenterState`][openg2g.datacenter.base.DatacenterState] (or subclass) with three-phase power in watts. Between steps, the coordinator may call [`apply_control(command)`][openg2g.datacenter.base.DatacenterBackend.apply_control] with individual [`DatacenterCommand`][openg2g.types.DatacenterCommand] instances; changes take effect on the next `step()`. Current state is available through [`state`][openg2g.datacenter.base.DatacenterBackend.state] and past states through [`history(n)`][openg2g.datacenter.base.DatacenterBackend.history].
 
-```
-  Per-model server fleet                Power assembly (3-phase)
-
-  ┌─────────────────────┐              Phase A     Phase B     Phase C
-  │ Llama-3.1-8B        │                │           │           │
-  │  48 servers × 8 GPU │──┐             │  ┌─────┐  │  ┌─────┐  │  ┌─────┐
-  │  batch = 256        │  │             ├──│srv 1│  ├──│srv 2│  ├──│srv 3│
-  ├─────────────────────┤  │             │  └─────┘  │  └─────┘  │  └─────┘
-  │ Llama-3.1-70B       │  │             │  ┌─────┐  │           │  ┌─────┐
-  │  30 servers × 8 GPU │──┤  sum kW     ├──│srv 4│  │           ├──│srv 6│
-  │  batch = 128        │  │──per phase─>│  └─────┘  │           │  └─────┘
-  ├─────────────────────┤  │             │    ...    │    ...    │    ...
-  │ Llama-3.1-405B      │  │             │           │           │
-  │  16 servers × 8 GPU │──┤             │           │           │
-  │  batch = 64         │  │             │  + training overlay   │
-  ├─────────────────────┤  │             │  + noise + jitter     │
-  │ (+ 2 MoE models)    │──┘             │                       │
-  └─────────────────────┘                v           v           v
-                                       P_A(t)     P_B(t)     P_C(t)
-```
-
-- Each server plays back a per-GPU power trace (from [ML.ENERGY Benchmark](https://ml.energy/data) data) scaled by GPU count
-- Random restart offsets make servers desynchronized (realistic)
-- An [`ActivationStrategy`][openg2g.datacenter.layout.ActivationStrategy] determines which servers are active at each timestep, supporting both ramp-up and ramp-down schedules. The default [`RampActivationStrategy`][openg2g.datacenter.layout.RampActivationStrategy] follows a [`ServerRampSchedule`][openg2g.datacenter.config.ServerRampSchedule] with random priority ordering. Custom strategies (e.g., phase-aware load balancing) can be implemented by subclassing [`ActivationStrategy`][openg2g.datacenter.layout.ActivationStrategy].
-- Training workload overlays add transient high-power phases
-
-### Case Study: The OpenDSS Grid
-
-[`OpenDSSGrid`][openg2g.grid.opendss.OpenDSSGrid] is the built-in [`GridBackend`][openg2g.grid.base.GridBackend] implementation. Beyond the base interface, it provides:
-
-- `voltages_vector()`: Flat numpy array of all bus-phase voltages (used by the OFO controller for gradient computation)
-- `estimate_sensitivity(perturbation_kw)`: Finite-difference estimate of the voltage sensitivity matrix dV/dP
-
-When the grid runs at a coarser rate than the datacenter, multiple power samples accumulate between grid steps. The grid uses the most recent sample and runs a single power flow solve.
-
-### Case Study: The OFO Controller
-
-Online Feedback Optimization (primal-dual) regulates batch sizes to keep voltages safe. For the full mathematical formulation, see Section III of the [G2G paper](https://arxiv.org/abs/2602.05116).
-
-```
-  ┌──────────────────────────────────────────────────────────────┐
-  │                  OFO Controller (every 1 s)                  │
-  │                                                              │
-  │  INPUTS:                                                     │
-  │    V(t)  ← grid voltages (all bus-phase pairs)               │
-  │    P(t)  ← datacenter power                                  │
-  │    ITL(t) ← observed inter-token latency per model           │
-  │    H     ← voltage sensitivity dV/dP (re-estimated slowly)   │
-  │                                                              │
-  │  DUAL UPDATES (G2G paper Eqs. 5-7):                         │
-  │                                                              │
-  │    Voltage:  λ⁺ ← [λ⁺ + ρ_v (V - V_max)]⁺                  │
-  │              λ⁻ ← [λ⁻ + ρ_v (V_min - V)]⁺                  │
-  │              η  = λ⁺ - λ⁻                                    │
-  │                                                              │
-  │    Latency:  μ_i ← [μ_i + ρ_l (ITL_i - L_thresh)]⁺         │
-  │                                                              │
-  │  PRIMAL UPDATE (G2G paper Eq. 8):                            │
-  │                                                              │
-  │    x_i = log₂(batch_i)                                      │
-  │                                                              │
-  │    ∇_i = - w_T · dTh/dx         (throughput reward)           │
-  │         + ηᵀ H eᵢ · dP/dx     (voltage dual × sensitivity)  │
-  │         + μ_i · dL/dx          (latency dual)               │
-  │         + w_S · (x - x_prev)   (switching cost)             │
-  │                                                              │
-  │    x_new = project(x - ρ_x · ∇)                             │
-  │    batch_new = nearest_valid(2^x_new)                        │
-  │                                                              │
-  │  OUTPUT:                                                     │
-  │    {model: batch_new} → sent as SetBatchSize to datacenter   │
-  └──────────────────────────────────────────────────────────────┘
-
-  Key: dP/dx, dL/dx, dTh/dx come from LogisticModel fits
-       H comes from OpenDSS finite-difference perturbation
-       Full gradient derivation: G2G paper, Appendix B (Eq. 18)
-```
-
-### Custom Controller
-
-Controllers implement the [`Controller`][openg2g.controller.base.Controller] ABC from `openg2g.controller.base`. The [`Controller`][openg2g.controller.base.Controller] class is generic over its compatible datacenter and grid backend types:
+[`reset()`][openg2g.datacenter.base.DatacenterBackend.reset] must clear all simulation state (history, counters, RNG state) while preserving configuration (`dt_s`, models, templates). Override [`start()`][openg2g.datacenter.base.DatacenterBackend.start] and [`stop()`][openg2g.datacenter.base.DatacenterBackend.stop] for backends that acquire resources (connections, solver circuits); the coordinator calls `start()` before the simulation loop and `stop()` in LIFO order afterward. See [Architecture: Component Lifecycle](architecture.md#component-lifecycle) for the full sequence.
 
 ```python
 from __future__ import annotations
 
-from openg2g.clock import SimulationClock
-from openg2g.controller.base import Controller
-from openg2g.datacenter.base import DatacenterBackend
-from openg2g.events import EventEmitter
-from openg2g.grid.base import GridBackend
-from openg2g.types import ControlAction, DatacenterState, GridState, SetBatchSize
-
-
-class MyController(Controller[DatacenterBackend[DatacenterState], GridBackend[GridState]]):
-    """A controller that reduces batch size when any voltage is below a threshold."""
-
-    def __init__(self, v_threshold: float = 0.96, dt_s: float = 1.0):
-        self._v_threshold = v_threshold
-        self._dt_s = dt_s
-
-    @property
-    def dt_s(self) -> float:
-        return self._dt_s
-
-    def step(
-        self,
-        clock: SimulationClock,
-        datacenter: DatacenterBackend[DatacenterState],
-        grid: GridBackend[GridState],
-        events: EventEmitter,
-    ) -> ControlAction:
-        if grid.state is None:
-            return ControlAction(commands=[])
-
-        # Check if any bus voltage is below threshold
-        for bus in grid.state.voltages.buses():
-            tp = grid.state.voltages[bus]
-            for v in (tp.a, tp.b, tp.c):
-                if v < self._v_threshold:
-                    events.emit("controller.low_voltage", {"bus": bus, "time_s": clock.time_s})
-                    return ControlAction(
-                        commands=[SetBatchSize(batch_size_by_model={"MyModel": 64})]
-                    )
-
-        return ControlAction(
-            commands=[SetBatchSize(batch_size_by_model={"MyModel": 128})]
-        )
-```
-
-#### Controller Guidelines
-
-- `step()` must return a [`ControlAction`][openg2g.types.ControlAction] on every call.
-- Use [`ControlAction`][openg2g.types.ControlAction]`(commands=[])` for a no-op.
-- Use [`SetBatchSize`][openg2g.types.SetBatchSize]`(batch_size_by_model=...)` for batch updates.
-- Use [`SetTaps`][openg2g.types.SetTaps]`(tap_position=...)` for tap updates.
-- Read current component state via `datacenter.state` and `grid.state`.
-- Use `datacenter.history(...)` and `grid.history(...)` for non-Markovian logic.
-- Keep `step()` fast. It runs synchronously in the simulation loop.
-- Use `clock.time_s` for time-dependent logic.
-- Use `events.emit(topic, data)` to log controller-side events.
-
-#### Controller Generic Parameters
-
-The two type parameters in `Controller[DC, Grid]` declare which backend types the controller is compatible with. The coordinator checks these at construction time. Common patterns:
-
-- `Controller[DatacenterBackend[DatacenterState], GridBackend[GridState]]`: Works with any backend.
-- `Controller[LLMBatchSizeControlledDatacenter[OfflineDatacenterState], OpenDSSGrid]`: Only works with the offline datacenter and OpenDSS grid.
-- `Controller[LLMBatchSizeControlledDatacenter[DatacenterState], GridBackend[GridState]]`: Works with any LLM datacenter and any grid.
-
-If your controller inherits from a typed parent, the generic parameters are inherited automatically and do not need to be re-specified.
-
-### Custom Datacenter Backend
-
-Datacenter backends implement the [`DatacenterBackend`][openg2g.datacenter.base.DatacenterBackend] ABC from `openg2g.datacenter.base`. The ABC is generic over the state type it emits. Parameterize it with the state dataclass your backend returns from `step()`:
-
-```python
-from __future__ import annotations
+import functools
 
 import numpy as np
 
@@ -506,12 +205,17 @@ class SyntheticDatacenter(DatacenterBackend[DatacenterState]):
         self._history.append(st)
         return st
 
+    @functools.singledispatchmethod
     def apply_control(self, command: DatacenterCommand) -> None:
-        if isinstance(command, SetBatchSize):
-            self._batch.update({str(k): int(v) for k, v in command.batch_size_by_model.items()})
+        raise TypeError(f"SyntheticDatacenter does not support {type(command).__name__}")
+
+    @apply_control.register
+    def _apply_set_batch_size(self, command: SetBatchSize) -> None:
+        self._batch.update({str(k): int(v) for k, v in command.batch_size_by_model.items()})
 ```
 
-If your backend needs richer state (e.g. per-model power breakdowns), define a [`DatacenterState`][openg2g.datacenter.base.DatacenterState] subclass and use it as the type parameter:
+**Datacenter state.**
+For richer state, define a [`DatacenterState`][openg2g.datacenter.base.DatacenterState] subclass:
 
 ```python
 @dataclass(frozen=True)
@@ -523,18 +227,148 @@ class MyDatacenter(DatacenterBackend[MyState]):
         ...
 ```
 
-The state type propagates through the [`Coordinator`][openg2g.coordinator.Coordinator] to the [`SimulationLog`][openg2g.coordinator.SimulationLog], so `log.dc_states` will be correctly typed as `list[MyState]`.
+The state type propagates through to [`SimulationLog`][openg2g.coordinator.SimulationLog], so `log.dc_states` will be correctly typed as `list[MyState]`.
 
-#### Datacenter Guidelines
+**Datacenter commands.**
+For custom commands, subclass [`DatacenterCommand`][openg2g.types.DatacenterCommand] and register a handler with `@apply_control.register`:
 
-- `step()` is called at the rate specified by `dt_s`.
-- Return a [`DatacenterState`][openg2g.datacenter.base.DatacenterState] (or subclass) with three-phase power in watts.
-- `apply_control()` receives one command at a time.
-- Implement `state` and `history(...)` to expose current/past states to controllers.
-- For offline backends, consider using [`OfflineDatacenterState`][openg2g.datacenter.offline.OfflineDatacenterState] which includes per-model power and replica counts.
+```python
+from dataclasses import dataclass
+from openg2g.types import DatacenterCommand
 
-### Tips
+@dataclass(frozen=True)
+class SetPowerCap(DatacenterCommand):
+    cap_kw: float
 
-- **Multiple controllers**: Controllers run in order. Put tap controllers before batch controllers if tap changes should be visible to the batch optimizer within the same tick.
-- **State inspection**: The base [`DatacenterState`][openg2g.datacenter.base.DatacenterState] includes `batch_size_by_model` and `active_replicas_by_model`, so controllers can access per-model batch sizes and replica counts without knowing which backend is in use.
-- **Testing**: Write unit tests for your controller by constructing mock [`DatacenterState`][openg2g.datacenter.base.DatacenterState] and [`GridState`][openg2g.grid.base.GridState] objects directly. They are simple frozen dataclasses.
+class MyDatacenter(DatacenterBackend[DatacenterState]):
+    @functools.singledispatchmethod
+    def apply_control(self, command: DatacenterCommand) -> None:
+        raise TypeError(f"MyDatacenter does not support {type(command).__name__}")
+
+    @apply_control.register
+    def _apply_set_batch_size(self, command: SetBatchSize) -> None:
+        self._batch.update(command.batch_size_by_model)
+
+    @apply_control.register
+    def _apply_set_power_cap(self, command: SetPowerCap) -> None:
+        self._power_cap = command.cap_kw
+```
+
+The coordinator routes commands to backends based on their type hierarchy: [`DatacenterCommand`][openg2g.types.DatacenterCommand] subclasses go to the datacenter, [`GridCommand`][openg2g.types.GridCommand] subclasses go to the grid.
+
+**Testing.** [`DatacenterState`][openg2g.datacenter.base.DatacenterState] and [`GridState`][openg2g.grid.base.GridState] are simple frozen dataclasses, so you can construct them directly in unit tests without running a full simulation.
+
+### Custom Controller
+
+**Controller.**
+Subclass [`Controller`][openg2g.controller.base.Controller] and parameterize it with the datacenter and grid backend types it works with. The coordinator calls [`step(clock, datacenter, grid, events)`][openg2g.controller.base.Controller.step] at the rate specified by [`dt_s`][openg2g.controller.base.Controller.dt_s]; each call must return a [`ControlAction`][openg2g.types.ControlAction] containing commands for the datacenter and/or grid (use `ControlAction(commands=[])` for a no-op). Read current state via [`datacenter.state`][openg2g.datacenter.base.DatacenterBackend.state] and [`grid.state`][openg2g.grid.base.GridBackend.state], and history via [`datacenter.history(...)`][openg2g.datacenter.base.DatacenterBackend.history] and [`grid.history(...)`][openg2g.grid.base.GridBackend.history]. Use [`events.emit(topic, data)`][openg2g.events.EventEmitter.emit] to log controller-side events. Keep `step()` fast since it runs synchronously in the simulation loop.
+
+[`reset()`][openg2g.controller.base.Controller.reset] must clear all simulation state (e.g., dual variables, counters, cached matrices) while preserving configuration. Override [`start()`][openg2g.controller.base.Controller.start] and [`stop()`][openg2g.controller.base.Controller.stop] if the controller acquires external resources. See [Architecture: Component Lifecycle](architecture.md#component-lifecycle) for the full sequence.
+
+```python
+from __future__ import annotations
+
+from openg2g.clock import SimulationClock
+from openg2g.controller.base import Controller
+from openg2g.events import EventEmitter
+from openg2g.grid.opendss import OpenDSSGrid
+from openg2g.types import ControlAction, SetBatchSize
+
+
+class MyController(Controller[MyDatacenter, OpenDSSGrid]):
+    """A controller that reduces batch size when any voltage is below a threshold."""
+
+    def __init__(self, v_threshold: float = 0.96, dt_s: float = 1.0):
+        self._v_threshold = v_threshold
+        self._dt_s = dt_s
+
+    @property
+    def dt_s(self) -> float:
+        return self._dt_s
+
+    def step(
+        self,
+        clock: SimulationClock,
+        datacenter: MyDatacenter,
+        grid: OpenDSSGrid,
+        events: EventEmitter,
+    ) -> ControlAction:
+        if grid.state is None:
+            return ControlAction(commands=[])
+
+        for bus in grid.state.voltages.buses():
+            tp = grid.state.voltages[bus]
+            for v in (tp.a, tp.b, tp.c):
+                if v < self._v_threshold:
+                    events.emit("controller.low_voltage", {"bus": bus, "time_s": clock.time_s})
+                    return ControlAction(
+                        commands=[SetBatchSize(batch_size_by_model={"MyModel": 64})]
+                    )
+
+        return ControlAction(
+            commands=[SetBatchSize(batch_size_by_model={"MyModel": 128})]
+        )
+```
+
+**Backend-specific controllers.**
+Controllers that need specific backend features (e.g., `voltages_vector()` from [`OpenDSSGrid`][openg2g.grid.opendss.OpenDSSGrid]) should bind their generic type parameters to concrete types instead of using the base classes. See the [OFO controller](#ofobatchsizecontroller) below for an example.
+
+## Built-in Components
+
+The following sections describe how the built-in components implement the interfaces above.
+
+### `OfflineDatacenter`
+
+[`OfflineDatacenter`][openg2g.datacenter.offline.OfflineDatacenter] implements [`DatacenterBackend`][openg2g.datacenter.base.DatacenterBackend] by replaying real GPU power traces at controlled batch sizes.
+
+```
+  Per-model server fleet                Power assembly (3-phase)
+
+  ┌─────────────────────┐              Phase A     Phase B     Phase C
+  │ Llama-3.1-8B        │                │           │           │
+  │  48 servers × 8 GPU │──┐             │  ┌─────┐  │  ┌─────┐  │  ┌─────┐
+  │  batch = 256        │  │             ├──│srv 1│  ├──│srv 2│  ├──│srv 3│
+  ├─────────────────────┤  │             │  └─────┘  │  └─────┘  │  └─────┘
+  │ Llama-3.1-70B       │  │             │  ┌─────┐  │           │  ┌─────┐
+  │  30 servers × 8 GPU │──┤  sum kW     ├──│srv 4│  │           ├──│srv 6│
+  │  batch = 128        │  │──per phase─>│  └─────┘  │           │  └─────┘
+  ├─────────────────────┤  │             │    ...    │    ...    │    ...
+  │ Llama-3.1-405B      │  │             │           │           │
+  │  16 servers × 8 GPU │──┤             │           │           │
+  │  batch = 64         │  │           + power from training overlays
+  ├─────────────────────┤  │           + per-replica noise and jitter
+  │ (+ 2 MoE models)    │──┘             │           │           │
+  └─────────────────────┘                v           v           v
+                                       P_A(t)     P_B(t)     P_C(t)
+```
+
+How it implements the interface:
+
+- **`step(clock)`** indexes into pre-built per-GPU power templates using `(global_step + offset) % template_length` per server. Random restart offsets desynchronize servers for a realistic aggregate power profile. Returns an [`OfflineDatacenterState`][openg2g.datacenter.offline.OfflineDatacenterState] (extends [`LLMDatacenterState`][openg2g.datacenter.base.LLMDatacenterState]) with per-model batch sizes, replica counts, and observed ITL.
+- **`apply_control(command)`** dispatches [`SetBatchSize`][openg2g.types.SetBatchSize] commands. Batch size changes take effect immediately on the next `step()` call.
+- **`reset()`** clears history, step counter, and RNG state. Rebuilds server layouts from the stored config so the next run starts fresh.
+- An [`ActivationStrategy`][openg2g.datacenter.layout.ActivationStrategy] determines which servers are active at each timestep. The default [`RampActivationStrategy`][openg2g.datacenter.layout.RampActivationStrategy] follows a [`ServerRampSchedule`][openg2g.datacenter.config.ServerRampSchedule] with random priority ordering.
+- Training workload overlays add transient high-power phases.
+
+### `OpenDSSGrid`
+
+[`OpenDSSGrid`][openg2g.grid.opendss.OpenDSSGrid] implements [`GridBackend`][openg2g.grid.base.GridBackend] using the OpenDSS power flow solver on standard IEEE test feeders.
+
+How it implements the interface:
+
+- **`step(clock, power_samples_w)`** takes the most recent power sample from the accumulated buffer and runs a single OpenDSS power flow solve. If no samples are provided (grid runs faster than datacenter), the last known power is reused. Returns a [`GridState`][openg2g.grid.base.GridState] with per-bus, per-phase voltages and tap positions.
+- **`apply_control(command)`** dispatches [`SetTaps`][openg2g.types.SetTaps] commands to update regulator tap positions.
+- **`reset()`** clears history, cached state, and the `_started` flag. The DSS circuit is recompiled on the next `start()`.
+- **`start()`** compiles the DSS circuit from the case files, builds the bus-phase voltage index (`v_index`), and prepares snapshot indexing structures.
+- **`voltages_vector()`** returns a flat numpy array of all bus-phase voltages in `v_index` order (used by the OFO controller for gradient computation).
+- **`estimate_sensitivity(perturbation_kw)`** computes a finite-difference estimate of the voltage sensitivity matrix dV/dP.
+
+### `OFOBatchSizeController`
+
+[`OFOBatchSizeController`][openg2g.controller.ofo.OFOBatchSizeController] implements [`Controller`][openg2g.controller.base.Controller] using Online Feedback Optimization (primal-dual) to regulate batch sizes for voltage safety. For the full mathematical formulation, see the [G2G paper](https://arxiv.org/abs/2602.05116).
+
+How it implements the interface:
+
+- **`step(clock, datacenter, grid, events)`** reads `active_replicas_by_model` and `observed_itl_s_by_model` from `datacenter.state`, and `phase_share_by_model` from the datacenter itself. On the grid side, it calls `grid.v_index`, `grid.voltages_vector()`, and `grid.estimate_sensitivity()`. Returns a [`ControlAction`][openg2g.types.ControlAction] containing [`SetBatchSize`][openg2g.types.SetBatchSize] commands.
+- **`reset()`** clears dual variables (voltage and latency multipliers), primal state, step counters, and the cached sensitivity matrix.
+- Binds its generic type parameters to [`LLMBatchSizeControlledDatacenter`][openg2g.datacenter.base.LLMBatchSizeControlledDatacenter] and [`OpenDSSGrid`][openg2g.grid.opendss.OpenDSSGrid], since it requires LLM-specific state fields and OpenDSS-specific methods (`voltages_vector`, `estimate_sensitivity`).

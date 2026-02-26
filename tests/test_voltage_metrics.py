@@ -1,4 +1,4 @@
-"""Tests for openg2g.metrics.voltage — compute_allbus_voltage_stats."""
+"""Tests for openg2g.metrics.voltage: compute_allbus_voltage_stats."""
 
 from __future__ import annotations
 

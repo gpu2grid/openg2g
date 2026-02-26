@@ -8,7 +8,13 @@ from dataclasses import dataclass, field
 
 @dataclass(frozen=True)
 class ThreePhase:
-    """Three-phase quantity. Access via .a, .b, .c."""
+    """Three-phase quantity. Access via `.a`, `.b`, `.c`.
+
+    Attributes:
+        a: Phase A value.
+        b: Phase B value.
+        c: Phase C value.
+    """
 
     a: float
     b: float
@@ -157,6 +163,9 @@ class ControlAction:
     """Collection of control commands emitted by a controller.
 
     Use an empty `commands` list for a no-op action.
+
+    Attributes:
+        commands: List of datacenter and/or grid commands.
     """
 
     commands: list[DatacenterCommand | GridCommand] = field(default_factory=list)
