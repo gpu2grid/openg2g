@@ -6,7 +6,6 @@ hide:
 
 <div class="hero" markdown>
 
-<!-- # OpenG2G -->
 <div align="center">
 <h1>OpenG2G</h1>
 </div>
