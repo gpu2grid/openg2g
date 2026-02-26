@@ -123,7 +123,7 @@ python data/offline/generate_training_trace.py \
 At simulation time, the generated artifacts are consumed by two components:
 
 - **[`OfflineDatacenter`][openg2g.datacenter.offline.OfflineDatacenter]**: Loads power traces via [`PowerTraceStore.load(manifest)`][openg2g.datacenter.offline.PowerTraceStore.load] and builds periodic per-GPU templates. Latency fits ([`ITLMixtureModel`][mlenergy_data.modeling.ITLMixtureModel]) are sampled at each control interval.
-- **[`OFOBatchController`][openg2g.controller.ofo.OFOBatchController]**: Loads logistic fits as [`LogisticModel`][mlenergy_data.modeling.LogisticModel] instances (one per metric per model). Calls `eval()` and `deriv_wrt_x()` at each control step to compute gradients.
+- **[`OFOBatchSizeController`][openg2g.controller.ofo.OFOBatchSizeController]**: Loads logistic fits as [`LogisticModel`][mlenergy_data.modeling.LogisticModel] instances (one per metric per model). Calls `eval()` and `deriv_wrt_x()` at each control step to compute gradients.
 
 ### Passing Data to Simulations
 

@@ -18,7 +18,7 @@ from openg2g.types import ControlAction, SetBatchSize
 class BatchSizeChange:
     """A batch size change event, optionally with gradual ramp-up.
 
-    Args:
+    Attributes:
         batch_size: Target batch size (max_num_seqs).
         ramp_up_rate: Requests/second ramp-up rate. 0 means immediate.
     """

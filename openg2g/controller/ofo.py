@@ -288,7 +288,7 @@ class PrimalBatchOptimizer:
         return batch_next
 
 
-class OFOBatchController(Controller[LLMBatchSizeControlledDatacenter[LLMDatacenterState], OpenDSSGrid]):
+class OFOBatchSizeController(Controller[LLMBatchSizeControlledDatacenter[LLMDatacenterState], OpenDSSGrid]):
     """Online Feedback Optimization controller for batch-size regulation.
 
     Reads grid voltage and datacenter state, updates voltage and latency
@@ -297,18 +297,17 @@ class OFOBatchController(Controller[LLMBatchSizeControlledDatacenter[LLMDatacent
     ][openg2g.datacenter.base.LLMDatacenterState.observed_itl_s_by_model].
 
     Args:
-        models: Model specifications.
+        workload: LLM workload specification. Derives model list,
+            feasible batch sizes, and ITL deadlines.
         power_fits: Per-model logistic fit for power as a function of
             log2(batch_size).
         latency_fits: Per-model logistic fit for latency as a function of
             log2(batch_size).
         throughput_fits: Per-model logistic fit for throughput as a function
             of log2(batch_size).
-        itl_deadline_by_model: Per-model latency threshold (seconds).
         primal_config: Primal optimizer configuration.
         voltage_dual_config: Voltage dual configuration (v_min, v_max,
             ascent_step_size).
-        feasible_batch_sizes: Allowed batch sizes.
         latency_dual_step_size: Latency dual step size (ρ_l).
         dt_s: Control interval (seconds).
         sensitivity_update_interval: Re-estimate sensitivity every N control
@@ -319,23 +318,23 @@ class OFOBatchController(Controller[LLMBatchSizeControlledDatacenter[LLMDatacent
 
     def __init__(
         self,
+        workload: LLMInferenceWorkload,
         *,
-        models: list[LLMInferenceModelSpec],
         power_fits: dict[str, LogisticModel],
         latency_fits: dict[str, LogisticModel],
         throughput_fits: dict[str, LogisticModel],
-        itl_deadline_by_model: dict[str, float],
         primal_config: PrimalConfig,
         voltage_dual_config: VoltageDualConfig,
-        feasible_batch_sizes: list[int],
         latency_dual_step_size: float = 1.0,
         dt_s: Fraction = Fraction(1),
         sensitivity_update_interval: int = 0,
         sensitivity_perturbation_kw: float = 100.0,
     ) -> None:
+        models = list(workload.models)
+
         self._dt_s = dt_s
-        self._models = list(models)
-        self._itl_deadline_by_model = dict(itl_deadline_by_model)
+        self._models = models
+        self._itl_deadline_by_model = dict(workload.itl_deadline_by_model)
         self._latency_dual_step_size = float(latency_dual_step_size)  # ρ_l
         self._sensitivity_update_interval = int(sensitivity_update_interval)
         self._sensitivity_perturbation_kw = float(sensitivity_perturbation_kw)
@@ -350,7 +349,7 @@ class OFOBatchController(Controller[LLMBatchSizeControlledDatacenter[LLMDatacent
         # Primal optimizer
         self._optimizer = PrimalBatchOptimizer(
             models=models,
-            feasible_batch_sizes=feasible_batch_sizes,
+            feasible_batch_sizes=workload.feasible_batch_sizes_union,
             power_fits=power_fits,
             latency_fits=latency_fits,
             throughput_fits=throughput_fits,
@@ -363,10 +362,10 @@ class OFOBatchController(Controller[LLMBatchSizeControlledDatacenter[LLMDatacent
         self._control_step_count: int = 0
 
         logger.info(
-            "OFOBatchController: %d models, dt=%s s, feasible_batches=%s",
+            "OFOBatchSizeController: %d models, dt=%s s, feasible_batches=%s",
             len(models),
             dt_s,
-            feasible_batch_sizes,
+            workload.feasible_batch_sizes_union,
         )
 
     def reset(self) -> None:
@@ -375,56 +374,6 @@ class OFOBatchController(Controller[LLMBatchSizeControlledDatacenter[LLMDatacent
         self._optimizer.init_from_batches({ms.model_label: ms.initial_batch_size for ms in self._models})
         self._sensitivity_matrix = None
         self._control_step_count = 0
-
-    @classmethod
-    def from_workload(
-        cls,
-        *,
-        workload: LLMInferenceWorkload,
-        power_fits: dict[str, LogisticModel],
-        latency_fits: dict[str, LogisticModel],
-        throughput_fits: dict[str, LogisticModel],
-        primal_config: PrimalConfig,
-        voltage_dual_config: VoltageDualConfig,
-        latency_dual_step_size: float = 1.0,
-        dt_s: Fraction = Fraction(1),
-        sensitivity_update_interval: int = 0,
-        sensitivity_perturbation_kw: float = 100.0,
-    ) -> OFOBatchController:
-        """Create an OFO controller from an
-        [`LLMInferenceWorkload`][openg2g.models.spec.LLMInferenceWorkload].
-
-        Derives `feasible_batch_sizes` and `itl_deadline_by_model`
-        from the workload's model specs.
-
-        Args:
-            workload: LLM workload specification.
-            power_fits: Per-model logistic fit for power.
-            latency_fits: Per-model logistic fit for latency.
-            throughput_fits: Per-model logistic fit for throughput.
-            primal_config: Primal optimizer configuration.
-            voltage_dual_config: Voltage dual configuration.
-            latency_dual_step_size: Latency dual step size (ρ_l).
-            dt_s: Control interval (seconds).
-            sensitivity_update_interval: Re-estimate sensitivity every N
-                control steps.
-            sensitivity_perturbation_kw: Perturbation size for sensitivity
-                estimation.
-        """
-        return cls(
-            models=list(workload.models),
-            power_fits=power_fits,
-            latency_fits=latency_fits,
-            throughput_fits=throughput_fits,
-            itl_deadline_by_model=workload.itl_deadline_by_model,
-            primal_config=primal_config,
-            voltage_dual_config=voltage_dual_config,
-            feasible_batch_sizes=workload.feasible_batch_sizes_union,
-            latency_dual_step_size=latency_dual_step_size,
-            dt_s=dt_s,
-            sensitivity_update_interval=sensitivity_update_interval,
-            sensitivity_perturbation_kw=sensitivity_perturbation_kw,
-        )
 
     @property
     def dt_s(self) -> Fraction:
@@ -470,11 +419,15 @@ class OFOBatchController(Controller[LLMBatchSizeControlledDatacenter[LLMDatacent
         ]
         if missing_replicas:
             miss = ", ".join(sorted(missing_replicas))
-            raise RuntimeError(f"OFOBatchController requires active_replicas_by_model for all models. Missing: {miss}.")
+            raise RuntimeError(
+                f"OFOBatchSizeController requires active_replicas_by_model for all models. Missing: {miss}."
+            )
         missing_itl = [ms.model_label for ms in self._models if ms.model_label not in dc_state.observed_itl_s_by_model]
         if missing_itl:
             miss = ", ".join(sorted(missing_itl))
-            raise RuntimeError(f"OFOBatchController requires observed_itl_s_by_model for all models. Missing: {miss}.")
+            raise RuntimeError(
+                f"OFOBatchSizeController requires observed_itl_s_by_model for all models. Missing: {miss}."
+            )
         for ms in self._models:
             label = ms.model_label
             num_replicas = max(int(dc_state.active_replicas_by_model[label]), 0)

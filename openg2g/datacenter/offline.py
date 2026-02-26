@@ -80,7 +80,7 @@ class PowerTrace:
 def _build_per_gpu_power_template(
     trace: PowerTrace,
     *,
-    timestep_s: Fraction | float,
+    dt_s: Fraction | float,
     duration_s: Fraction | float,
     steady_skip_s: float = 0.0,
 ) -> np.ndarray:
@@ -88,7 +88,7 @@ def _build_per_gpu_power_template(
 
     Args:
         trace: Source power trace (total power across measured GPUs).
-        timestep_s: Simulation timestep in seconds.
+        dt_s: Simulation timestep in seconds.
         duration_s: Total simulation duration in seconds.
         steady_skip_s: Skip this many seconds from the start of the trace
             to avoid warm-up transients.
@@ -114,25 +114,55 @@ def _build_per_gpu_power_template(
     if period <= 0:
         raise ValueError("Non-positive trace duration.")
 
-    n_steps = int(np.ceil(float(duration_s) / float(timestep_s))) + 1
-    t_grid = np.arange(n_steps, dtype=float) * float(timestep_s)
+    n_steps = int(np.ceil(float(duration_s) / float(dt_s))) + 1
+    t_grid = np.arange(n_steps, dtype=float) * float(dt_s)
     t_mod = np.mod(t_grid, period)
 
     template = np.interp(t_mod, trace_t, p_per_gpu, left=p_per_gpu[0], right=p_per_gpu[-1])
     return np.clip(template, 0.0, None)
 
 
+class PowerTemplateStore:
+    """Pre-built per-GPU power templates for a specific simulation config.
+
+    Created by [`PowerTraceStore.build_templates`][openg2g.datacenter.offline.PowerTraceStore.build_templates].
+    Use [`template`][.template] to look up a template by model label and batch size.
+    """
+
+    def __init__(
+        self,
+        templates: dict[tuple[str, int], np.ndarray],
+        batch_sizes_by_model: dict[str, list[int]],
+    ) -> None:
+        self._templates = templates
+        self._batch_sizes_by_model = batch_sizes_by_model
+
+    def template(self, model_label: str, batch_size: int) -> np.ndarray:
+        """Return a pre-built per-GPU power template."""
+        key = (str(model_label), int(batch_size))
+        if key not in self._templates:
+            raise KeyError(f"No template for model={model_label!r}, batch={batch_size}.")
+        return self._templates[key]
+
+    def batch_sizes(self, model_label: str) -> list[int]:
+        """List of batch sizes available for a model."""
+        sizes = self._batch_sizes_by_model.get(model_label)
+        if sizes is None:
+            raise KeyError(f"Unknown model: {model_label!r}")
+        return list(sizes)
+
+
 class PowerTraceStore:
-    """Manages power traces and pre-built per-GPU templates.
+    """Manages raw power traces loaded from CSV files.
 
     Indexed by `(model_label, batch_size)`. Provides:
 
     - [`load`][.load]: load traces discovered via a manifest CSV
     - [`from_traces`][.from_traces]: construct from pre-built
       `PowerTrace` objects
-    - [`build_templates`][.build_templates]: pre-build per-GPU power
-      templates
-    - [`template`][.template]: look up a pre-built template
+    - [`build_templates`][.build_templates]: build per-GPU power
+      templates for a specific simulation config, returning a
+      [`PowerTemplateStore`][openg2g.datacenter.offline.PowerTemplateStore]
     - [`trace`][.trace]: access the raw trace
 
     Attributes:
@@ -153,8 +183,6 @@ class PowerTraceStore:
 
     def __init__(self, traces: dict[str, dict[int, PowerTrace]]) -> None:
         self._traces = {str(label): {int(b): tr for b, tr in per_batch.items()} for label, per_batch in traces.items()}
-        self._templates: dict[tuple[str, int], np.ndarray] = {}
-        self._built = False
 
     @classmethod
     def load(cls, manifest: Path) -> PowerTraceStore:
@@ -241,53 +269,39 @@ class PowerTraceStore:
         self,
         *,
         duration_s: Fraction | float,
-        timestep_s: Fraction | float,
+        dt_s: Fraction | float,
         steady_skip_s: float = 0.0,
-    ) -> None:
-        """Pre-build per-GPU power templates for all traces.
+    ) -> PowerTemplateStore:
+        """Build per-GPU power templates for all traces.
 
         Args:
             duration_s: Total simulation duration (seconds).
-            timestep_s: Simulation timestep (seconds).
+            dt_s: Simulation timestep (seconds).
             steady_skip_s: Skip this many seconds from the start of each
                 trace to avoid warm-up transients.
+
+        Returns:
+            A [`PowerTemplateStore`][openg2g.datacenter.offline.PowerTemplateStore]
+                holding the built templates.
         """
-        self._templates.clear()
+        templates: dict[tuple[str, int], np.ndarray] = {}
+        batch_sizes_by_model: dict[str, list[int]] = {}
         for label, per_batch in self._traces.items():
+            batch_sizes_by_model[label] = sorted(per_batch.keys())
             for batch, tr in per_batch.items():
                 tpl = _build_per_gpu_power_template(
                     tr,
-                    timestep_s=timestep_s,
+                    dt_s=dt_s,
                     duration_s=duration_s,
                     steady_skip_s=steady_skip_s,
                 )
-                self._templates[(label, batch)] = tpl
-        self._built = True
-
-    def template(self, model_label: str, batch_size: int) -> np.ndarray:
-        """Return a pre-built per-GPU power template.
-
-        Requires a prior call to
-        [`build_templates`][..build_templates].
-        """
-        if not self._built:
-            raise RuntimeError("Call build_templates() first.")
-        key = (str(model_label), int(batch_size))
-        if key not in self._templates:
-            raise KeyError(f"No template for model={model_label!r}, batch={batch_size}.")
-        return self._templates[key]
+                templates[(label, batch)] = tpl
+        return PowerTemplateStore(templates, batch_sizes_by_model)
 
     @property
     def model_labels(self) -> list[str]:
         """List of model labels in the store."""
         return list(self._traces.keys())
-
-    def batch_sizes(self, model_label: str) -> list[int]:
-        """List of batch sizes available for a model."""
-        per_batch = self._traces.get(model_label)
-        if per_batch is None:
-            raise KeyError(f"Unknown model: {model_label!r}")
-        return sorted(per_batch.keys())
 
 
 class OfflineDatacenter(LLMBatchSizeControlledDatacenter[OfflineDatacenterState]):
@@ -300,52 +314,66 @@ class OfflineDatacenter(LLMBatchSizeControlledDatacenter[OfflineDatacenterState]
     Batch size changes via `apply_control` take effect on the next
     `step` call.
 
+    If `workload.server_ramps` is set, it is automatically wrapped in a
+    [`RampActivationStrategy`][openg2g.datacenter.layout.RampActivationStrategy].
+
     Args:
-        trace_store: [`PowerTraceStore`][..PowerTraceStore] with
-            templates for all (model, batch) pairs.
-        models: List of model specs describing the served models.
-        timestep_s: Simulation timestep (seconds).
-        gpus_per_server: Number of GPUs per physical server rack.
+        datacenter: Facility configuration (GPUs per server, base load).
+        workload: Workload configuration (inference models, training, ramps).
+        template_store: [`PowerTemplateStore`][..PowerTemplateStore] with
+            pre-built templates for all (model, batch) pairs.
+        dt_s: Simulation timestep (seconds).
         seed: Random seed for layout generation and noise.
         amplitude_scale_range: `(low, high)` range for per-server amplitude
             scaling. Each server draws a uniform multiplier from this range.
         noise_fraction: Gaussian noise standard deviation as a fraction of
             per-server power.
-        activation_strategy: Controls which servers are active at each
-            timestep. Subclass
-            [`ActivationStrategy`][openg2g.datacenter.layout.ActivationStrategy]
-            for custom strategies (e.g., phase-aware load balancing).
-            If `None`, all servers are always active.
-        base_kw_per_phase: Constant base load per phase (kW).
-        training_overlays: List of `(TrainingOverlayCache, TrainingRun)` pairs
-            for training workloads.
         itl_distributions: Optional per-model ITL mixture distributions:
             `model_label -> batch_size -> ITLMixtureModel`.
-        latency_exact_threshold: Exact-sampling threshold for latency averaging.
+        itl_approx_sampling_thresh: Replica count above which ITL sampling
+            uses a CLT normal approximation instead of drawing individual
+            samples. Below this threshold, exact per-replica sampling is used.
         latency_seed: Optional seed for latency RNG. Defaults to `seed + 54321`.
     """
 
     def __init__(
         self,
+        datacenter: DatacenterConfig,
+        workload: WorkloadConfig,
         *,
-        trace_store: PowerTraceStore,
-        models: list[LLMInferenceModelSpec],
-        timestep_s: Fraction,
-        gpus_per_server: int = 8,
+        template_store: PowerTemplateStore,
+        dt_s: Fraction,
         seed: int = 0,
         amplitude_scale_range: tuple[float, float] = (1.0, 1.0),
         noise_fraction: float = 0.0,
-        activation_strategy: ActivationStrategy | None = None,
-        base_kw_per_phase: float = 0.0,
-        training_overlays: list[tuple[TrainingOverlayCache, TrainingRun]] | None = None,
         itl_distributions: dict[str, dict[int, ITLMixtureModel]] | None = None,
-        latency_exact_threshold: int = 30,
+        itl_approx_sampling_thresh: int = 30,
         latency_seed: int | None = None,
     ) -> None:
-        self._timestep_s = timestep_s
-        self._trace_store = trace_store
-        self._models = list(models)
-        self._gpus_per_server = int(gpus_per_server)
+        if isinstance(template_store, PowerTraceStore):
+            raise TypeError(
+                "Expected a PowerTemplateStore, got PowerTraceStore. "
+                "Call PowerTraceStore.build_templates() first to create a PowerTemplateStore."
+            )
+
+        models = list(workload.inference.models)
+
+        activation_strategy: ActivationStrategy | None = None
+        if workload.server_ramps:
+            activation_strategy = RampActivationStrategy(workload.server_ramps)
+
+        training_overlays: list[tuple[TrainingOverlayCache, TrainingRun]] = []
+        for tr in workload.training:
+            overlay = TrainingOverlayCache(
+                tr.trace,
+                target_peak_W_per_gpu=tr.target_peak_W_per_gpu,
+            )
+            training_overlays.append((overlay, tr))
+
+        self._dt_s = dt_s
+        self._template_store = template_store
+        self._models = models
+        self._gpus_per_server = int(datacenter.gpus_per_server)
         self._seed = int(seed)
         self._amplitude_scale_range = (
             float(amplitude_scale_range[0]),
@@ -356,11 +384,11 @@ class OfflineDatacenter(LLMBatchSizeControlledDatacenter[OfflineDatacenterState]
         self._layout_rng = np.random.default_rng(self._seed)
 
         self._activation_strategy = activation_strategy
-        self._base_W_per_phase = float(base_kw_per_phase) * 1e3
+        self._base_W_per_phase = float(datacenter.base_kw_per_phase) * 1e3
 
-        self._training_overlays: list[tuple[TrainingOverlayCache, TrainingRun]] = list(training_overlays or [])
+        self._training_overlays = training_overlays
         self._itl_distributions = itl_distributions
-        self._latency_exact_threshold = int(latency_exact_threshold)
+        self._itl_approx_sampling_thresh = int(itl_approx_sampling_thresh)
 
         self._batch_by_model: dict[str, int] = {ms.model_label: ms.initial_batch_size for ms in models}
 
@@ -382,7 +410,7 @@ class OfflineDatacenter(LLMBatchSizeControlledDatacenter[OfflineDatacenterState]
         logger.info(
             "OfflineDatacenter: %d models, dt=%s s, seed=%d",
             len(models),
-            timestep_s,
+            dt_s,
             seed,
         )
         for ms in models:
@@ -396,7 +424,7 @@ class OfflineDatacenter(LLMBatchSizeControlledDatacenter[OfflineDatacenterState]
 
     @property
     def dt_s(self) -> Fraction:
-        return self._timestep_s
+        return self._dt_s
 
     @property
     def models(self) -> list[LLMInferenceModelSpec]:
@@ -432,7 +460,7 @@ class OfflineDatacenter(LLMBatchSizeControlledDatacenter[OfflineDatacenterState]
             batch = int(self._batch_by_model[label])
 
             layout = self._layouts[label]
-            template = self._trace_store.template(label, batch)
+            template = self._template_store.template(label, batch)
             L = len(template)
             indices = (self._global_step + layout.stagger_offsets) % L
             per_gpu_by_model[label] = template[indices]
@@ -480,7 +508,7 @@ class OfflineDatacenter(LLMBatchSizeControlledDatacenter[OfflineDatacenterState]
             observed_itl_s_by_model[label] = params.sample_avg(
                 n_replicas=n_rep,
                 rng=self._latency_rng,
-                exact_threshold=self._latency_exact_threshold,
+                exact_threshold=self._itl_approx_sampling_thresh,
             )
 
         state = OfflineDatacenterState(
@@ -545,74 +573,6 @@ class OfflineDatacenter(LLMBatchSizeControlledDatacenter[OfflineDatacenterState]
     def bind_event_emitter(self, emitter: EventEmitter) -> None:
         self._events = emitter
 
-    @classmethod
-    def from_config(
-        cls,
-        datacenter: DatacenterConfig,
-        workload: WorkloadConfig,
-        *,
-        trace_store: PowerTraceStore,
-        timestep_s: Fraction,
-        seed: int = 0,
-        amplitude_scale_range: tuple[float, float] = (1.0, 1.0),
-        noise_fraction: float = 0.0,
-        itl_distributions: dict[str, dict[int, ITLMixtureModel]] | None = None,
-        latency_seed: int | None = None,
-        latency_exact_threshold: int = 30,
-    ) -> OfflineDatacenter:
-        """Create an [`OfflineDatacenter`][...OfflineDatacenter] from
-        config objects.
-
-        If `workload.server_ramps` is set, it is wrapped in a
-        [`RampActivationStrategy`][openg2g.datacenter.layout.RampActivationStrategy].
-        For custom activation strategies, use the direct constructor
-        with `activation_strategy=`.
-
-        Args:
-            datacenter: Facility configuration (GPUs per server, base load).
-            workload: Workload configuration (inference models, training, ramps).
-            trace_store: Power trace store with templates for all (model, batch).
-            timestep_s: Simulation timestep (seconds).
-            seed: Random seed for layout generation and noise.
-            amplitude_scale_range: `(low, high)` for per-server amplitude scaling.
-            noise_fraction: Noise std as fraction of per-server power.
-            itl_distributions: Optional per-model ITL mixture distributions.
-            latency_seed: Optional seed for latency RNG.
-            latency_exact_threshold: Exact-sampling threshold for latency averaging.
-        """
-        inference = workload.inference
-        models = list(inference.models)
-
-        training_runs = list(workload.training)
-
-        activation_strategy: ActivationStrategy | None = None
-        if workload.server_ramps:
-            activation_strategy = RampActivationStrategy(workload.server_ramps)
-
-        training_overlays: list[tuple[TrainingOverlayCache, TrainingRun]] = []
-        for tr in training_runs:
-            overlay = TrainingOverlayCache(
-                tr.trace,
-                target_peak_W_per_gpu=tr.target_peak_W_per_gpu,
-            )
-            training_overlays.append((overlay, tr))
-
-        return cls(
-            trace_store=trace_store,
-            models=models,
-            timestep_s=timestep_s,
-            gpus_per_server=datacenter.gpus_per_server,
-            seed=seed,
-            amplitude_scale_range=amplitude_scale_range,
-            noise_fraction=noise_fraction,
-            activation_strategy=activation_strategy,
-            base_kw_per_phase=datacenter.base_kw_per_phase,
-            training_overlays=training_overlays,
-            itl_distributions=itl_distributions,
-            latency_exact_threshold=latency_exact_threshold,
-            latency_seed=latency_seed,
-        )
-
     def _build_all_layouts(self) -> None:
         """Eagerly build layouts for all models with replicas > 0."""
         default_strategy = RampActivationStrategy(ServerRampSchedule(entries=()))
@@ -620,7 +580,7 @@ class OfflineDatacenter(LLMBatchSizeControlledDatacenter[OfflineDatacenterState]
         for ms in self._models:
             if ms.num_replicas > 0:
                 any_batch = self.batch_sizes(ms.model_label)[0]
-                tpl_len = len(self._trace_store.template(ms.model_label, any_batch))
+                tpl_len = len(self._template_store.template(ms.model_label, any_batch))
                 self._layouts[ms.model_label] = ServerLayout.build(
                     ms,
                     gpus_per_server=self._gpus_per_server,
@@ -632,8 +592,8 @@ class OfflineDatacenter(LLMBatchSizeControlledDatacenter[OfflineDatacenterState]
                 )
 
     def batch_sizes(self, model_label: str) -> list[int]:
-        """Delegate to the trace store for available batch sizes."""
-        return self._trace_store.batch_sizes(model_label)
+        """Delegate to the template store for available batch sizes."""
+        return self._template_store.batch_sizes(model_label)
 
     @property
     def phase_share_by_model(self) -> dict[str, np.ndarray]:
@@ -641,7 +601,7 @@ class OfflineDatacenter(LLMBatchSizeControlledDatacenter[OfflineDatacenterState]
 
         Returns:
             Mapping of model label to a 3-element array `[frac_A, frac_B, frac_C]`
-            representing the fraction of servers on each phase.
+                representing the fraction of servers on each phase.
         """
         shares: dict[str, np.ndarray] = {}
         for label, layout in self._layouts.items():

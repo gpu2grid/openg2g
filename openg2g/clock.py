@@ -20,6 +20,10 @@ class SimulationClock:
 
     In live mode (`live=True`), the clock synchronizes with wall-clock time.
     If computation falls behind, a warning is issued.
+
+    Attributes:
+        tick_s: Duration of one tick as a `Fraction` (seconds).
+        live: If `True`, synchronize with wall-clock time.
     """
 
     tick_s: Fraction

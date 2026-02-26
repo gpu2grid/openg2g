@@ -12,7 +12,15 @@ EventSource = Literal["coordinator", "controller", "datacenter", "grid", "custom
 
 @dataclass(frozen=True)
 class SimEvent:
-    """Structured simulation event with canonical clock metadata."""
+    """Structured simulation event with canonical clock metadata.
+
+    Attributes:
+        tick: Integer tick at which the event was emitted.
+        t_s: Simulation time in seconds.
+        source: Component family that emitted the event.
+        topic: Dot-separated event topic string.
+        data: Arbitrary key-value payload.
+    """
 
     tick: int
     t_s: float
@@ -31,7 +39,13 @@ class EventSink(Protocol):
 @dataclass
 class EventEmitter:
     """Source-bound event helper that stamps [`SimEvent`][..SimEvent]
-    instances with clock metadata."""
+    instances with clock metadata.
+
+    Attributes:
+        clock: Simulation clock for timestamping events.
+        sink: Destination that receives emitted events.
+        source: Component family label attached to all events.
+    """
 
     clock: SimulationClock
     sink: EventSink

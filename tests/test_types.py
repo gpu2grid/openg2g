@@ -1,4 +1,4 @@
-"""Tests for openg2g.types — state dataclasses, TapPosition, TapSchedule, ServerRamp,
+"""Tests for openg2g.types: state dataclasses, TapPosition, TapSchedule, ServerRamp,
 ServerRampSchedule, ActivationStrategy, TrainingRun, TrainingSchedule."""
 
 from __future__ import annotations

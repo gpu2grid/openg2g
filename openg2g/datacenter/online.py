@@ -85,7 +85,7 @@ class OnlineDatacenterState(LLMDatacenterState):
 class GPUEndpointMapping:
     """Maps a zeusd endpoint to specific GPUs on a specific electrical phase.
 
-    Args:
+    Attributes:
         host: Hostname or IP of the zeusd instance.
         port: TCP port of the zeusd instance.
         gpu_indices: GPU device indices to monitor on this endpoint.
@@ -120,7 +120,7 @@ class VLLMDeployment:
     Tracks the current batch size (`max_num_seqs`) and provides
     `set_batch_size()` to update it on the vLLM server.
 
-    Args:
+    Attributes:
         spec: Model specification (shared with offline datacenter).
         vllm_base_url: Base URL of the vLLM server (e.g. `http://node1:8000`).
         model_name: OpenAI API model name served by vLLM.
@@ -195,7 +195,7 @@ class VLLMDeployment:
 class LoadGenerationConfig:
     """Configuration for the request load generator.
 
-    Args:
+    Attributes:
         max_output_tokens: Maximum output tokens per request (used by
             the fallback request when no JSONL requests are provided).
         itl_window_s: Seconds of ITL history to average over.
@@ -209,7 +209,7 @@ class LoadGenerationConfig:
 class PowerAugmentationConfig:
     """Configuration for scaling real GPU power to datacenter level.
 
-    Args:
+    Attributes:
         base_kw_per_phase: Constant base load per electrical phase (kW).
         noise_fraction: Gaussian noise standard deviation as a fraction
             of per-server power. Applied per-server by the shared

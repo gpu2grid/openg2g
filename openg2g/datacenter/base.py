@@ -22,6 +22,10 @@ class DatacenterState:
     Contains only universally applicable fields. LLM-inference-specific
     fields (batch sizes, replicas, latency) live on child classes like
     [`LLMDatacenterState`][..LLMDatacenterState].
+
+    Attributes:
+        time_s: Simulation time in seconds.
+        power_w: Three-phase power in watts.
     """
 
     time_s: float
@@ -35,6 +39,12 @@ class LLMDatacenterState(DatacenterState):
     Extends [`DatacenterState`][..DatacenterState] with per-model batch
     size, replica count, and observed inter-token latency fields used
     by LLM controllers.
+
+    Attributes:
+        batch_size_by_model: Current batch size per model label.
+        active_replicas_by_model: Number of active replicas per model.
+        observed_itl_s_by_model: Observed average inter-token latency
+            (seconds) per model. `NaN` if unavailable.
     """
 
     batch_size_by_model: dict[str, int] = field(default_factory=dict)

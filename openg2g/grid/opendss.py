@@ -56,7 +56,7 @@ class OpenDSSGrid(GridBackend[GridState]):
       [`apply_control`][.apply_control] commands (e.g., from
       [`TapScheduleController`][openg2g.controller.tap_schedule.TapScheduleController]
       or
-      [`OFOBatchController`][openg2g.controller.ofo.OFOBatchController]).
+      [`OFOBatchSizeController`][openg2g.controller.ofo.OFOBatchSizeController]).
 
     - `dss_controls=True`: Uses `Solve()`. OpenDSS iterates its built-in
       control loops (RegControls, CapControls, etc.) as defined in the case
@@ -242,7 +242,7 @@ class OpenDSSGrid(GridBackend[GridState]):
 
     def voltages_vector(self) -> np.ndarray:
         """Return voltage magnitudes (pu) in the fixed
-        [`v_index`][..v_index] ordering."""
+        [`v_index`][openg2g.grid.base.GridBackend.v_index] ordering."""
         if not self._started:
             raise RuntimeError("OpenDSSGrid.voltages_vector() called before start().")
         vmag = dss.Circuit.AllBusMagPu()
@@ -257,10 +257,11 @@ class OpenDSSGrid(GridBackend[GridState]):
         Uses finite differences on the 3 single-phase DC loads.
 
         Returns:
-            Tuple of `(sensitivity, baseline_voltages)` where
-            `sensitivity` has shape `(M, 3)` (M = len(
-            [`v_index`][..v_index])) and `baseline_voltages` has
-            shape `(M,)`.
+            Tuple of `(sensitivity, baseline_voltages)`.
+                `sensitivity` has shape `(M, 3)` where M is the number
+                of bus-phase pairs in
+                [`v_index`][openg2g.grid.base.GridBackend.v_index].
+                `baseline_voltages` has shape `(M,)`.
         """
         perturbation_kw = float(perturbation_kw)
         if perturbation_kw <= 0:
@@ -408,8 +409,8 @@ class OpenDSSGrid(GridBackend[GridState]):
 
         Returns:
             Mapping of `rc_name -> (transformer_name, winding, phase)` where
-            phase is 1/2/3 for A/B/C. Phase is determined from the transformer's
-            bus connections (e.g., `"650.1"` → phase 1).
+                phase is 1/2/3 for A/B/C. Phase is determined from the
+                transformer's bus connections (e.g., `"650.1"` -> phase 1).
         """
         reg_map: dict[str, tuple[str, int, int]] = {}
         for rc in dss.RegControls:

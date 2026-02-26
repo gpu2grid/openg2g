@@ -25,7 +25,7 @@ from zeus.monitor.power_streaming import PowerStreamingClient
 from zeus.utils.zeusd import ZeusdConfig
 
 from openg2g.controller.ofo import (
-    OFOBatchController,
+    OFOBatchSizeController,
     PrimalConfig,
     VoltageDualConfig,
 )
@@ -210,8 +210,8 @@ def main(args: argparse.Namespace) -> None:
 
     tap_ctrl = TapScheduleController(schedule=TapSchedule(()), dt_s=dt_ctrl)
 
-    ofo_ctrl = OFOBatchController.from_workload(
-        workload=WORKLOAD,
+    ofo_ctrl = OFOBatchSizeController(
+        WORKLOAD,
         power_fits=power_fits,
         latency_fits=latency_fits,
         throughput_fits=throughput_fits,

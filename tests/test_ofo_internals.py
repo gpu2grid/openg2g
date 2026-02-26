@@ -1,6 +1,6 @@
-"""Tests for OFO controller internals — PrimalBatchOptimizer, VoltageDualVariables.
+"""Tests for OFO controller internals: PrimalBatchOptimizer, VoltageDualVariables.
 
-Focuses on edge cases, projections, NaN handling, and shape validation —
+Focuses on edge cases, projections, NaN handling, and shape validation,
 not trivial arithmetic."""
 
 from __future__ import annotations

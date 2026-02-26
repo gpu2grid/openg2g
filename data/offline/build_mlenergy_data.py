@@ -213,7 +213,7 @@ def _generate_plots(
         )
         logger.info("Saved power_trajectories_%s.png", label)
 
-    # Fig. 3: Logistic fits — Llama models overlaid
+    # Fig. 3: Logistic fits, Llama models overlaid
     if llama_labels:
         plot_logistic_fits(
             summary_df=summary_df,
@@ -224,7 +224,7 @@ def _generate_plots(
         )
         logger.info("Saved logistic_fits_llama.png")
 
-    # Fig. 9: Logistic fits — Qwen models overlaid
+    # Fig. 9: Logistic fits, Qwen models overlaid
     if qwen_labels:
         plot_logistic_fits(
             summary_df=summary_df,
@@ -235,7 +235,7 @@ def _generate_plots(
         )
         logger.info("Saved logistic_fits_qwen.png")
 
-    # Fig. 4 / Fig. 10: ITL distributions — one per model
+    # Fig. 4 / Fig. 10: ITL distributions, one per model
     for label in all_labels:
         if label not in itl_samples_df["model_label"].values:
             continue
