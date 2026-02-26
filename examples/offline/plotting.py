@@ -1,8 +1,7 @@
 """Plotting functions and data-loading helpers for openg2g simulation results.
 
-Faithfully ports the matplotlib code from ``baseline_wo_control.py`` and
-``final_ofo_test.py`` (the G2G paper reference scripts), adapted to read data
-from the library's ``SimulationLog`` and ``LLMDatacenterState`` objects.
+Reproduces the figures from the G2G paper, reading data from the library's
+``SimulationLog`` and ``LLMDatacenterState`` objects.
 
 This module lives outside the ``openg2g`` library on purpose: the library
 exports simulation state and metrics, while all matplotlib-dependent
@@ -32,8 +31,7 @@ from openg2g.grid.base import GridState
 Figure = matplotlib.figure.Figure
 
 # ── Bus color map (IEEE 13-bus, tab20-based) ─────────────────────────
-# Deterministic colors from baseline_wo_control.py so all voltage plots
-# use consistent bus coloring.
+# Deterministic colors so all voltage plots use consistent bus coloring.
 
 BUS_COLOR_MAP: dict[str, Any] = {
     "611": (0.1216, 0.4667, 0.7059, 1.0),
@@ -121,7 +119,6 @@ def _bus_sort_key(b: str) -> tuple[int, str]:
 
 # ══════════════════════════════════════════════════════════════════════
 # Paper Fig. 5: 2-panel, 3-phase power (MW) + per-model average ITL
-# (ported from baseline_wo_control.py  plot_power_latency_subfigs_compact)
 # ══════════════════════════════════════════════════════════════════════
 
 
@@ -237,7 +234,6 @@ def plot_power_and_itl_2panel(
 
 # ══════════════════════════════════════════════════════════════════════
 # Paper Fig. 6 / Fig. 7: Per-phase all-bus voltages with bus colormap
-# (ported from both baseline_wo_control.py and final_ofo_test.py)
 # ══════════════════════════════════════════════════════════════════════
 
 
@@ -415,7 +411,6 @@ def plot_allbus_voltages_per_phase(
 
 # ══════════════════════════════════════════════════════════════════════
 # Paper Fig. 8: 4-panel, batch, power/replica, ITL, throughput (OFO)
-# (ported from final_ofo_test.py  plot_model_timeseries_4panel_compact)
 # ══════════════════════════════════════════════════════════════════════
 
 
@@ -610,7 +605,7 @@ def plot_model_timeseries_4panel(
 
 
 # ══════════════════════════════════════════════════════════════════════
-# Standalone plots (nice-to-have, ported from final_ofo_test.py)
+# Standalone plots
 # ══════════════════════════════════════════════════════════════════════
 
 
@@ -943,28 +938,3 @@ def plot_online_timeseries(
         fig.savefig(save_path, bbox_inches="tight")
         plt.close(fig)
     return fig
-
-
-# ══════════════════════════════════════════════════════════════════════
-# Shared data-loading helpers
-# ══════════════════════════════════════════════════════════════════════
-
-
-def load_itl_fits_from_csv(csv_path: Path | str) -> dict[str, dict[int, Any]]:
-    """Load ITL mixture fits from a CSV.
-
-    Returns:
-        {model_label: {batch_size: ITLMixtureModel}}.
-    """
-    import pandas as pd
-    from mlenergy_data.modeling import ITLMixtureModel
-
-    df = pd.read_csv(csv_path)
-    result: dict[str, dict[int, Any]] = {}
-    for row in df.to_dict(orient="records"):
-        model = str(row["model_label"]).strip()
-        batch = int(row["max_num_seqs"])
-        result.setdefault(model, {})[batch] = ITLMixtureModel.from_dict(row)
-    if not result:
-        raise ValueError(f"No ITL mixture rows loaded from {csv_path}")
-    return result

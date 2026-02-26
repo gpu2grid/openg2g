@@ -48,15 +48,18 @@ These three runs correspond to the evaluation cases in the [GPU-to-Grid paper](h
 ```bash
 python examples/offline/run_baseline.py --mode no-tap \
   --data-dir data/generated \
-  --training-trace data/generated/synthetic_training_trace.csv
+  --training-trace data/generated/synthetic_training_trace.csv \
+  --ieee-case-dir examples/ieee13
 
 python examples/offline/run_baseline.py --mode tap-change \
   --data-dir data/generated \
-  --training-trace data/generated/synthetic_training_trace.csv
+  --training-trace data/generated/synthetic_training_trace.csv \
+  --ieee-case-dir examples/ieee13
 
 python examples/offline/run_ofo.py \
   --data-dir data/generated \
-  --training-trace data/generated/synthetic_training_trace.csv
+  --training-trace data/generated/synthetic_training_trace.csv \
+  --ieee-case-dir examples/ieee13
 ```
 
 Outputs (plots and logs) are saved to `outputs/baseline_no-tap/`, `outputs/baseline_tap-change/`, and `outputs/ofo/`.

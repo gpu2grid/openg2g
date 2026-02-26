@@ -1,7 +1,6 @@
 """Baseline simulation using the openg2g library.
 
-Reproduces the results of baseline_wo_control.py using the modular library
-components: OfflineDatacenter + OpenDSSGrid + TapScheduleController + Coordinator.
+Components: OfflineDatacenter + OpenDSSGrid + TapScheduleController + Coordinator.
 
 Two modes correspond to two baselines in the G2G paper:
   no-tap       "No control, no tap": tap positions are fixed throughout.
@@ -16,19 +15,15 @@ from fractions import Fraction
 from pathlib import Path
 
 import numpy as np
-from plotting import (
-    extract_per_model_timeseries,
-    load_itl_fits_from_csv,
-    plot_allbus_voltages_per_phase,
-    plot_power_3ph,
-    plot_power_and_itl_2panel,
-)
 
 from openg2g.controller.tap_schedule import TapScheduleController
 from openg2g.coordinator import Coordinator
-from openg2g.datacenter.config import DatacenterConfig, ServerRamp, TrainingRun, WorkloadConfig
+from openg2g.datacenter.config import DatacenterConfig, PowerAugmentationConfig, ServerRamp, TrainingRun
 from openg2g.datacenter.offline import (
+    ITLFitStore,
     OfflineDatacenter,
+    OfflineInferenceData,
+    OfflineWorkload,
     PowerTraceStore,
 )
 from openg2g.datacenter.training_overlay import TrainingTrace
@@ -37,13 +32,23 @@ from openg2g.metrics.voltage import compute_allbus_voltage_stats
 from openg2g.models.spec import LLMInferenceModelSpec, LLMInferenceWorkload
 from openg2g.types import TapPosition, TapSchedule
 
+from .plotting import (
+    extract_per_model_timeseries,
+    plot_allbus_voltages_per_phase,
+    plot_power_3ph,
+    plot_power_and_itl_2panel,
+)
+
 logger = logging.getLogger("run_baseline")
 
+# fmt: off
 TAP_STEP = 0.00625
 INITIAL_TAPS = TapPosition(a=1.0 + 14 * TAP_STEP, b=1.0 + 6 * TAP_STEP, c=1.0 + 15 * TAP_STEP)
-TAP_CHANGE_SCHEDULE = TapPosition(a=1.0 + 16 * TAP_STEP, b=1.0 + 6 * TAP_STEP, c=1.0 + 17 * TAP_STEP).at(
-    t=25 * 60
-) | TapPosition(a=1.0 + 10 * TAP_STEP, b=1.0 + 6 * TAP_STEP, c=1.0 + 10 * TAP_STEP).at(t=55 * 60)
+TAP_CHANGE_SCHEDULE = (
+    TapPosition(a=1.0 + 16 * TAP_STEP, b=1.0 + 6 * TAP_STEP, c=1.0 + 17 * TAP_STEP).at(t=25 * 60)
+    | TapPosition(a=1.0 + 10 * TAP_STEP, b=1.0 + 6 * TAP_STEP, c=1.0 + 10 * TAP_STEP).at(t=55 * 60)
+)
+# fmt: on
 
 MODELS = (
     LLMInferenceModelSpec(
@@ -63,23 +68,16 @@ MODELS = (
     ),
 )
 
-INFERENCE = LLMInferenceWorkload(models=MODELS)
 
-
-def main(args: argparse.Namespace) -> None:
-    mode = args.mode
-
-    project_dir = Path(__file__).resolve().parent.parent.parent
-    case_dir = Path(__file__).resolve().parent.parent / "ieee13"
-    save_dir = project_dir / "outputs" / f"baseline_{mode}"
+def main(*, mode: str, data_dir: Path, training_trace_path: Path, ieee_case_dir: Path) -> None:
+    save_dir = Path("outputs") / f"baseline_{mode}"
     save_dir.mkdir(parents=True, exist_ok=True)
 
     file_handler = logging.FileHandler(save_dir / "console_output.txt", mode="w")
     file_handler.setFormatter(logging.Formatter("%(asctime)s %(name)s %(levelname)s %(message)s", datefmt="%H:%M:%S"))
     logging.getLogger().addHandler(file_handler)
 
-    data_dir = Path(args.data_dir)
-    training_trace = TrainingTrace.load(Path(args.training_trace))
+    training_trace = TrainingTrace.load(training_trace_path)
 
     v_min = 0.95
     v_max = 1.05
@@ -93,11 +91,15 @@ def main(args: argparse.Namespace) -> None:
     templates = store.build_templates(duration_s=600.0, dt_s=dt_dc)
 
     logger.info("Loading latency fits...")
-    itl_fits = load_itl_fits_from_csv(data_dir / "latency_fits.csv")
+    itl_fits = ITLFitStore.load(data_dir / "latency_fits.csv")
 
     dc_config = DatacenterConfig(gpus_per_server=gpus_per_server, base_kw_per_phase=500.0)
-    workload = WorkloadConfig(
-        inference=INFERENCE,
+    workload = OfflineWorkload(
+        inference_data=OfflineInferenceData(
+            LLMInferenceWorkload(models=MODELS),
+            power_templates=templates,
+            itl_fits=itl_fits,
+        ),
         training=TrainingRun(
             t_start=1000.0,
             t_end=2000.0,
@@ -112,19 +114,17 @@ def main(args: argparse.Namespace) -> None:
     dc = OfflineDatacenter(
         dc_config,
         workload,
-        template_store=templates,
         dt_s=dt_dc,
         seed=0,
-        amplitude_scale_range=(0.98, 1.02),
-        noise_fraction=0.005,
-        itl_distributions=itl_fits,
-        itl_approx_sampling_thresh=30,
-        latency_seed=0,
+        power_augmentation=PowerAugmentationConfig(
+            amplitude_scale_range=(0.98, 1.02),
+            noise_fraction=0.005,
+        ),
     )
 
     logger.info("Initializing OpenDSSGrid...")
     grid = OpenDSSGrid(
-        dss_case_dir=str(case_dir),
+        dss_case_dir=str(ieee_case_dir),
         dss_master_file="IEEE13Nodeckt.dss",
         dc_bus=dc_bus,
         dc_bus_kv=4.16,
@@ -213,6 +213,11 @@ if __name__ == "__main__":
         help="Path to synthetic training trace CSV.",
     )
     parser.add_argument(
+        "--ieee-case-dir",
+        required=True,
+        help="OpenDSS case directory (e.g. examples/ieee13).",
+    )
+    parser.add_argument(
         "--log-level",
         default="INFO",
         choices=["DEBUG", "INFO", "WARNING"],
@@ -226,4 +231,9 @@ if __name__ == "__main__":
         datefmt="%H:%M:%S",
     )
 
-    main(args)
+    main(
+        mode=args.mode,
+        data_dir=Path(args.data_dir),
+        training_trace_path=Path(args.training_trace),
+        ieee_case_dir=Path(args.ieee_case_dir),
+    )

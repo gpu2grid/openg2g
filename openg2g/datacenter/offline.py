@@ -12,15 +12,18 @@ from fractions import Fraction
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 from mlenergy_data.modeling import ITLMixtureModel
 
 from openg2g.clock import SimulationClock
 from openg2g.datacenter.base import LLMBatchSizeControlledDatacenter, LLMDatacenterState
 from openg2g.datacenter.config import (
     DatacenterConfig,
+    PowerAugmentationConfig,
+    ServerRamp,
     ServerRampSchedule,
     TrainingRun,
-    WorkloadConfig,
+    TrainingSchedule,
 )
 from openg2g.datacenter.layout import (
     ActivationStrategy,
@@ -30,7 +33,7 @@ from openg2g.datacenter.layout import (
 )
 from openg2g.datacenter.training_overlay import TrainingOverlayCache
 from openg2g.events import EventEmitter
-from openg2g.models.spec import LLMInferenceModelSpec
+from openg2g.models.spec import LLMInferenceModelSpec, LLMInferenceWorkload
 from openg2g.types import (
     DatacenterCommand,
     SetBatchSize,
@@ -122,6 +125,110 @@ def _build_per_gpu_power_template(
     return np.clip(template, 0.0, None)
 
 
+class ITLFitStore:
+    """Per-model, per-batch-size ITL mixture distributions.
+
+    Indexed by `(model_label, batch_size)`. Provides:
+
+    - [`load`][.load]: load fits from a CSV produced by the data pipeline
+    - [`distributions`][.distributions]: access as a nested dict
+    - [`sample_avg`][.sample_avg]: sample a fleet-average ITL value
+
+    Attributes:
+        COL_MODEL_LABEL: Column name for model label in the CSV.
+        COL_BATCH_SIZE: Column name for batch size in the CSV.
+    """
+
+    COL_MODEL_LABEL = "model_label"
+    COL_BATCH_SIZE = "max_num_seqs"
+
+    def __init__(
+        self,
+        distributions: dict[str, dict[int, ITLMixtureModel]],
+        approx_sampling_thresh: int = 30,
+    ) -> None:
+        self._distributions = {
+            str(label): {int(b): m for b, m in per_batch.items()} for label, per_batch in distributions.items()
+        }
+        self._approx_sampling_thresh = int(approx_sampling_thresh)
+
+    @property
+    def distributions(self) -> dict[str, dict[int, ITLMixtureModel]]:
+        """Nested dict: `model_label -> batch_size -> ITLMixtureModel`."""
+        return self._distributions
+
+    def sample_avg(
+        self,
+        model_label: str,
+        batch_size: int,
+        n_replicas: int,
+        rng: np.random.Generator,
+    ) -> float:
+        """Sample a fleet-average ITL for the given model and batch size.
+
+        Uses `ITLMixtureModel.sample_avg` under the hood, with the
+        `approx_sampling_thresh` set at construction time.
+
+        Args:
+            model_label: Model label string.
+            batch_size: Current batch size.
+            n_replicas: Number of active replicas.
+            rng: NumPy random generator for sampling.
+
+        Returns:
+            Fleet-average ITL in seconds.
+
+        Raises:
+            KeyError: If model or batch size is not in the store.
+        """
+        model_dists = self._distributions.get(model_label)
+        if model_dists is None:
+            raise KeyError(f"No ITL distributions for model={model_label!r}")
+        params = model_dists.get(int(batch_size))
+        if params is None:
+            raise KeyError(
+                f"No ITL distributions for model={model_label!r}, batch={batch_size}. "
+                f"Available={sorted(model_dists.keys())}"
+            )
+        return params.sample_avg(
+            n_replicas=n_replicas,
+            rng=rng,
+            exact_threshold=self._approx_sampling_thresh,
+        )
+
+    @classmethod
+    def load(cls, csv_path: Path | str, approx_sampling_thresh: int = 30) -> ITLFitStore:
+        """Load ITL mixture fits from a CSV.
+
+        Expected columns: `model_label`, `max_num_seqs`, plus the
+        `itl_mix_*` parameter columns produced by
+        `ITLMixtureModel.to_dict()`.
+
+        Args:
+            csv_path: Path to the latency fits CSV.
+            approx_sampling_thresh: Replica count above which sampling
+                uses a CLT normal approximation instead of drawing
+                individual samples.
+        """
+        csv_path = Path(csv_path)
+        df = pd.read_csv(csv_path)
+
+        required_cols = [cls.COL_MODEL_LABEL, cls.COL_BATCH_SIZE]
+        missing = [c for c in required_cols if c not in df.columns]
+        if missing:
+            raise ValueError(f"{csv_path} missing columns: {missing}. Got: {list(df.columns)}")
+
+        distributions: dict[str, dict[int, ITLMixtureModel]] = {}
+        for row in df.to_dict(orient="records"):
+            label = str(row[cls.COL_MODEL_LABEL]).strip()
+            batch = int(row[cls.COL_BATCH_SIZE])
+            distributions.setdefault(label, {})[batch] = ITLMixtureModel.from_dict(row)
+
+        if not distributions:
+            raise ValueError(f"No ITL mixture rows loaded from {csv_path}")
+        return cls(distributions, approx_sampling_thresh=approx_sampling_thresh)
+
+
 class PowerTemplateStore:
     """Pre-built per-GPU power templates for a specific simulation config.
 
@@ -196,8 +303,6 @@ class PowerTraceStore:
                 Expected columns: `model_label`, `num_gpus`, `max_num_seqs`,
                 `trace_file`.
         """
-        import pandas as pd
-
         manifest = Path(manifest)
         base_dir = manifest.parent
         df = pd.read_csv(manifest)
@@ -304,6 +409,125 @@ class PowerTraceStore:
         return list(self._traces.keys())
 
 
+class OfflineInferenceData:
+    """LLM inference workload with offline simulation data.
+
+    Bundles model specifications with power templates and latency
+    distributions. Validates that all models have matching data entries.
+
+    Args:
+        models: Model specifications. Accepts a tuple of
+            [`LLMInferenceModelSpec`][openg2g.models.spec.LLMInferenceModelSpec]
+            or a pre-built
+            [`LLMInferenceWorkload`][openg2g.models.spec.LLMInferenceWorkload].
+        power_templates: Pre-built per-GPU power templates for all models
+            and batch sizes, created via
+            [`PowerTraceStore.build_templates`][..PowerTraceStore.build_templates].
+        itl_fits: Per-model ITL mixture distributions. Required when using
+            controllers that read observed latency (e.g.,
+            `OFOBatchSizeController`). When omitted, NaN is reported for
+            observed latency.
+    """
+
+    def __init__(
+        self,
+        models: tuple[LLMInferenceModelSpec, ...] | LLMInferenceWorkload,
+        *,
+        power_templates: PowerTemplateStore,
+        itl_fits: ITLFitStore | None = None,
+    ) -> None:
+        if isinstance(power_templates, PowerTraceStore):
+            raise TypeError(
+                "Expected a PowerTemplateStore, got PowerTraceStore. "
+                "Call PowerTraceStore.build_templates() first to create a PowerTemplateStore."
+            )
+        if isinstance(models, LLMInferenceWorkload):
+            self._workload = models
+        else:
+            self._workload = LLMInferenceWorkload(models=models)
+
+        self._power_templates = power_templates
+        self._itl_fits = itl_fits
+
+        for ms in self._workload.models:
+            try:
+                power_templates.batch_sizes(ms.model_label)
+            except KeyError:
+                raise ValueError(
+                    f"Power templates missing for model {ms.model_label!r}. "
+                    f"Ensure PowerTraceStore contains traces for all models."
+                ) from None
+
+            if itl_fits is not None and ms.model_label not in itl_fits.distributions:
+                raise ValueError(
+                    f"ITL fits missing for model {ms.model_label!r}. "
+                    f"Available models in ITLFitStore: {sorted(itl_fits.distributions.keys())}"
+                )
+
+    @property
+    def workload(self) -> LLMInferenceWorkload:
+        """The underlying inference workload specification."""
+        return self._workload
+
+    @property
+    def power_templates(self) -> PowerTemplateStore:
+        return self._power_templates
+
+    @property
+    def itl_fits(self) -> ITLFitStore | None:
+        return self._itl_fits
+
+
+class OfflineWorkload:
+    """Complete offline simulation workload.
+
+    Bundles inference data with optional training overlays and server ramp
+    events. Normalizes flexible input types internally.
+
+    Args:
+        inference_data: LLM inference workload with offline simulation
+            data (model specs, power templates, ITL fits).
+        training: Training workload window(s). `None` disables training
+            overlay.
+        server_ramps: Server ramp event(s). `None` keeps all servers
+            active.
+    """
+
+    def __init__(
+        self,
+        inference_data: OfflineInferenceData,
+        training: TrainingRun | TrainingSchedule | None = None,
+        server_ramps: ServerRamp | ServerRampSchedule | None = None,
+    ) -> None:
+        self._inference_data = inference_data
+
+        if training is None:
+            self._training = TrainingSchedule(entries=())
+        elif isinstance(training, TrainingRun):
+            self._training = TrainingSchedule(entries=(training,))
+        else:
+            self._training = training
+
+        if server_ramps is None:
+            self._server_ramps = ServerRampSchedule(entries=())
+        elif isinstance(server_ramps, ServerRamp):
+            self._server_ramps = ServerRampSchedule(entries=(server_ramps,))
+        else:
+            self._server_ramps = server_ramps
+
+    @property
+    def inference_data(self) -> OfflineInferenceData:
+        return self._inference_data
+
+    @property
+    def training(self) -> TrainingSchedule:
+        return self._training
+
+    @property
+    def server_ramps(self) -> ServerRampSchedule:
+        return self._server_ramps
+
+
 class OfflineDatacenter(LLMBatchSizeControlledDatacenter[OfflineDatacenterState]):
     """Trace-based datacenter simulation with step-by-step interface.
 
@@ -319,44 +543,28 @@ class OfflineDatacenter(LLMBatchSizeControlledDatacenter[OfflineDatacenterState]
 
     Args:
         datacenter: Facility configuration (GPUs per server, base load).
-        workload: Workload configuration (inference models, training, ramps).
-        template_store: [`PowerTemplateStore`][..PowerTemplateStore] with
-            pre-built templates for all (model, batch) pairs.
+        workload: Offline workload configuration bundling inference data,
+            training overlays, and server ramp events.
         dt_s: Simulation timestep (seconds).
-        seed: Random seed for layout generation and noise.
-        amplitude_scale_range: `(low, high)` range for per-server amplitude
-            scaling. Each server draws a uniform multiplier from this range.
-        noise_fraction: Gaussian noise standard deviation as a fraction of
-            per-server power.
-        itl_distributions: Optional per-model ITL mixture distributions:
-            `model_label -> batch_size -> ITLMixtureModel`.
-        itl_approx_sampling_thresh: Replica count above which ITL sampling
-            uses a CLT normal approximation instead of drawing individual
-            samples. Below this threshold, exact per-replica sampling is used.
-        latency_seed: Optional seed for latency RNG. Defaults to `seed + 54321`.
+        seed: Random seed for layout generation, noise, and latency
+            sampling. Sub-seeds are derived deterministically.
+        power_augmentation: Per-server amplitude scaling and noise
+            settings.
     """
 
     def __init__(
         self,
         datacenter: DatacenterConfig,
-        workload: WorkloadConfig,
+        workload: OfflineWorkload,
         *,
-        template_store: PowerTemplateStore,
         dt_s: Fraction,
         seed: int = 0,
-        amplitude_scale_range: tuple[float, float] = (1.0, 1.0),
-        noise_fraction: float = 0.0,
-        itl_distributions: dict[str, dict[int, ITLMixtureModel]] | None = None,
-        itl_approx_sampling_thresh: int = 30,
-        latency_seed: int | None = None,
+        power_augmentation: PowerAugmentationConfig | None = None,
     ) -> None:
-        if isinstance(template_store, PowerTraceStore):
-            raise TypeError(
-                "Expected a PowerTemplateStore, got PowerTraceStore. "
-                "Call PowerTraceStore.build_templates() first to create a PowerTemplateStore."
-            )
-
-        models = list(workload.inference.models)
+        if power_augmentation is None:
+            power_augmentation = PowerAugmentationConfig()
+        inference = workload.inference_data
+        models = list(inference.workload.models)
 
         activation_strategy: ActivationStrategy | None = None
         if workload.server_ramps:
@@ -371,15 +579,15 @@ class OfflineDatacenter(LLMBatchSizeControlledDatacenter[OfflineDatacenterState]
             training_overlays.append((overlay, tr))
 
         self._dt_s = dt_s
-        self._template_store = template_store
+        self._template_store = inference.power_templates
         self._models = models
         self._gpus_per_server = int(datacenter.gpus_per_server)
         self._seed = int(seed)
         self._amplitude_scale_range = (
-            float(amplitude_scale_range[0]),
-            float(amplitude_scale_range[1]),
+            float(power_augmentation.amplitude_scale_range[0]),
+            float(power_augmentation.amplitude_scale_range[1]),
         )
-        self._noise_fraction = float(noise_fraction)
+        self._noise_fraction = float(power_augmentation.noise_fraction)
 
         self._layout_rng = np.random.default_rng(self._seed)
 
@@ -387,8 +595,7 @@ class OfflineDatacenter(LLMBatchSizeControlledDatacenter[OfflineDatacenterState]
         self._base_W_per_phase = float(datacenter.base_kw_per_phase) * 1e3
 
         self._training_overlays = training_overlays
-        self._itl_distributions = itl_distributions
-        self._itl_approx_sampling_thresh = int(itl_approx_sampling_thresh)
+        self._itl_fits = inference.itl_fits
 
         self._batch_by_model: dict[str, int] = {ms.model_label: ms.initial_batch_size for ms in models}
 
@@ -401,8 +608,7 @@ class OfflineDatacenter(LLMBatchSizeControlledDatacenter[OfflineDatacenterState]
         )
 
         self._global_step: int = 0
-        self._latency_seed = int(seed) + 54321 if latency_seed is None else int(latency_seed)
-        self._latency_rng = np.random.default_rng(self._latency_seed)
+        self._latency_rng = np.random.default_rng(self._seed + 54321)
         self._events: EventEmitter | None = None
         self._state: OfflineDatacenterState | None = None
         self._history: list[OfflineDatacenterState] = []
@@ -493,22 +699,15 @@ class OfflineDatacenter(LLMBatchSizeControlledDatacenter[OfflineDatacenterState]
         for ms in self._models:
             label = ms.model_label
             n_rep = active_replicas_by_model.get(label, 0)
-            if self._itl_distributions is None or n_rep <= 0:
+            if self._itl_fits is None or n_rep <= 0:
                 observed_itl_s_by_model[label] = float("nan")
                 continue
             batch = int(self._batch_by_model[label])
-            model_dists = self._itl_distributions.get(label)
-            if model_dists is None:
-                raise KeyError(f"No ITL distributions for model={label!r}")
-            params = model_dists.get(batch)
-            if params is None:
-                raise KeyError(
-                    f"No ITL distributions for model={label!r}, batch={batch}. Available={sorted(model_dists.keys())}"
-                )
-            observed_itl_s_by_model[label] = params.sample_avg(
+            observed_itl_s_by_model[label] = self._itl_fits.sample_avg(
+                model_label=label,
+                batch_size=batch,
                 n_replicas=n_rep,
                 rng=self._latency_rng,
-                exact_threshold=self._itl_approx_sampling_thresh,
             )
 
         state = OfflineDatacenterState(
@@ -568,7 +767,7 @@ class OfflineDatacenter(LLMBatchSizeControlledDatacenter[OfflineDatacenterState]
             base_w_per_phase=self._base_W_per_phase,
             seed=self._seed + 12345,
         )
-        self._latency_rng = np.random.default_rng(self._latency_seed)
+        self._latency_rng = np.random.default_rng(self._seed + 54321)
 
     def bind_event_emitter(self, emitter: EventEmitter) -> None:
         self._events = emitter

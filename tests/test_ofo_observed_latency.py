@@ -6,7 +6,7 @@ import numpy as np
 from mlenergy_data.modeling import LogisticModel
 
 from openg2g.clock import SimulationClock
-from openg2g.controller.ofo import OFOBatchSizeController, PrimalConfig, VoltageDualConfig
+from openg2g.controller.ofo import LogisticModelStore, OFOBatchSizeController, OFOConfig
 from openg2g.datacenter.base import LLMBatchSizeControlledDatacenter, LLMDatacenterState
 from openg2g.events import EventEmitter, SimEvent
 from openg2g.grid.base import BusVoltages, GridState, PhaseVoltages
@@ -121,12 +121,12 @@ class _EventSink:
         self.events.append(event)
 
 
-def _make_fits() -> tuple[dict[str, LogisticModel], dict[str, LogisticModel], dict[str, LogisticModel]]:
-    """Create synthetic logistic fits for a single model M1."""
+def _make_model_store() -> LogisticModelStore:
+    """Create a LogisticModelStore with synthetic fits for a single model M1."""
     power = {"M1": LogisticModel(L=100.0, x0=6.0, k=1.0, b0=50.0)}
     latency = {"M1": LogisticModel(L=0.05, x0=6.0, k=1.0, b0=0.02)}
     throughput = {"M1": LogisticModel(L=10.0, x0=6.0, k=1.0, b0=1.0)}
-    return power, latency, throughput
+    return LogisticModelStore(power, latency, throughput)
 
 
 def _build_controller() -> OFOBatchSizeController:
@@ -139,15 +139,18 @@ def _build_controller() -> OFOBatchSizeController:
         feasible_batch_sizes=(8, 16, 32, 64, 128),
     )
     workload = LLMInferenceWorkload(models=(model,))
-    power_fits, latency_fits, throughput_fits = _make_fits()
     return OFOBatchSizeController(
         workload,
-        power_fits=power_fits,
-        latency_fits=latency_fits,
-        throughput_fits=throughput_fits,
-        primal_config=PrimalConfig(descent_step_size=0.05, w_throughput=0.0, w_switch=0.0),
-        voltage_dual_config=VoltageDualConfig(v_min=0.95, v_max=1.05, ascent_step_size=0.5),
-        latency_dual_step_size=1.0,
+        models=_make_model_store(),
+        config=OFOConfig(
+            descent_step_size=0.05,
+            w_throughput=0.0,
+            w_switch=0.0,
+            v_min=0.95,
+            v_max=1.05,
+            voltage_dual_step_size=0.5,
+            latency_dual_step_size=1.0,
+        ),
         dt_s=Fraction(1),
     )
 

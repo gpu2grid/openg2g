@@ -31,7 +31,12 @@ from zeus.monitor.power_streaming import PowerStreamingClient
 
 from openg2g.clock import SimulationClock
 from openg2g.datacenter.base import LLMBatchSizeControlledDatacenter, LLMDatacenterState
-from openg2g.datacenter.config import ServerRampSchedule
+from openg2g.datacenter.config import (
+    DatacenterConfig,
+    PowerAugmentationConfig,
+    ServerRamp,
+    ServerRampSchedule,
+)
 from openg2g.datacenter.layout import (
     ActivationStrategy,
     PowerAugmenter,
@@ -192,46 +197,46 @@ class VLLMDeployment:
 
 
 @dataclass(frozen=True)
-class LoadGenerationConfig:
-    """Configuration for the request load generator.
+class LiveServerConfig:
+    """Configuration for interacting with live vLLM servers.
+
+    Groups settings related to load generation, ITL measurement, and
+    Prometheus monitoring. The online counterpart of offline's
+    trace/template data.
 
     Attributes:
-        max_output_tokens: Maximum output tokens per request (used by
-            the fallback request when no JSONL requests are provided).
-        itl_window_s: Seconds of ITL history to average over.
+        prometheus_poll_interval_s: How often to poll vLLM /metrics for
+            request counts and saturation monitoring. Set to 0 to disable.
+        max_output_tokens: Token limit for generated load requests (used
+            by the fallback request when no JSONL requests are provided).
+        itl_window_s: Sliding window for ITL averaging (seconds).
     """
 
+    prometheus_poll_interval_s: float = 0.5
     max_output_tokens: int = 512
     itl_window_s: float = 1.0
 
 
-@dataclass(frozen=True)
-class PowerAugmentationConfig:
-    """Configuration for scaling real GPU power to datacenter level.
+STAGGER_BUFFER_S: float = 10.0
+"""Seconds of power history for temporal staggering.
 
-    Attributes:
-        base_kw_per_phase: Constant base load per electrical phase (kW).
-        noise_fraction: Gaussian noise standard deviation as a fraction
-            of per-server power. Applied per-server by the shared
-            [`PowerAugmenter`][openg2g.datacenter.layout.PowerAugmenter].
-        stagger_buffer_s: Seconds of power history for temporal
-            staggering. Also used as the stagger range when building
-            [`ServerLayout`][openg2g.datacenter.layout.ServerLayout]
-            (float offsets drawn from `[0, stagger_buffer_s)`).
-        gpus_per_server: Number of GPUs per virtual server for layout
-            computation.
-        amplitude_scale_range: `(low, high)` range for per-server amplitude
-            scaling. Each virtual server draws a uniform multiplier from
-            this range.
-        seed: Random seed for layout generation and noise.
-    """
+Also used as the stagger range when building
+[`ServerLayout`][openg2g.datacenter.layout.ServerLayout]
+(float offsets drawn from `[0, STAGGER_BUFFER_S)`).
 
-    base_kw_per_phase: float = 0.0
-    noise_fraction: float = 0.02
-    stagger_buffer_s: float = 10.0
-    gpus_per_server: int = 8
-    amplitude_scale_range: tuple[float, float] = (0.9, 1.1)
-    seed: int = 0
+Not user-configurable. Patchable for testing via
+`openg2g.datacenter.online.STAGGER_BUFFER_S = ...`.
+"""
+
+
+class _LoadGenerationConfig:
+    """Internal bridge to pass live server settings to _LoadGenerator."""
+
+    __slots__ = ("itl_window_s", "max_output_tokens")
+
+    def __init__(self, live: LiveServerConfig) -> None:
+        self.max_output_tokens = live.max_output_tokens
+        self.itl_window_s = live.itl_window_s
 
 
 def _check_vllm_health(base_url: str, timeout_s: float = 10.0) -> None:
@@ -397,7 +402,7 @@ class _LoadGenerator:
         self,
         deployments: Sequence[VLLMDeployment],
         requests_by_model: dict[str, list[dict]],
-        config: LoadGenerationConfig,
+        config: _LoadGenerationConfig,
         prometheus_poller: _PrometheusPoller | None = None,
     ) -> None:
         self._deployments = {d.model_label: d for d in deployments}
@@ -669,77 +674,109 @@ class OnlineDatacenter(LLMBatchSizeControlledDatacenter[OnlineDatacenterState]):
     Call [`start`][.start] before the first [`step`][.step] and
     [`stop`][.stop] after the simulation loop finishes.
 
+    `PowerStreamingClient` is constructed internally from the GPU
+    endpoints declared in each deployment. Health checks are always
+    performed during [`start`][.start].
+
     Args:
-        deployments: List of model deployments with physical hardware mapping.
-        power_client: Zeus `PowerStreamingClient` connected to zeusd instances.
-        augmentation: Power augmentation configuration.
-        load_gen: Load generation configuration.
+        datacenter: Facility configuration (GPUs per server, base load).
+        deployments: Model deployments with physical hardware mapping.
         requests_by_model: Mapping of model_label -> list of pre-built
-            OpenAI Chat Completion request dicts (from `data/online/build_requests.py`).
-            Each dict should contain at least `model`, `messages`, and
-            `max_completion_tokens`. Streaming fields are added automatically.
+            OpenAI Chat Completion request dicts. Each dict should
+            contain at least `model`, `messages`, and
+            `max_completion_tokens`. Streaming fields are added
+            automatically.
         dt_s: Simulation timestep (seconds).
-        activation_strategy: Controls which virtual servers are active at
-            each timestep. If `None`, all servers are always active.
-        prometheus_poll_interval_s: How often to poll vLLM /metrics (seconds).
-            Set to 0 to disable Prometheus polling.
-        health_check: If True, run health checks on start().
+        seed: Random seed for layout generation and noise.
+        power_augmentation: Per-server amplitude scaling and noise
+            settings.
+        server_ramps: Server ramp event(s). `None` keeps all servers
+            active.
+        live_server: Configuration for interacting with live vLLM
+            servers.
     """
 
     def __init__(
         self,
-        *,
+        datacenter: DatacenterConfig,
         deployments: Sequence[VLLMDeployment],
-        power_client: PowerStreamingClient,
-        augmentation: PowerAugmentationConfig | None = None,
-        load_gen: LoadGenerationConfig | None = None,
         requests_by_model: dict[str, list[dict]],
+        *,
         dt_s: Fraction = Fraction(1, 10),
-        activation_strategy: ActivationStrategy | None = None,
-        prometheus_poll_interval_s: float = 0.5,
-        health_check: bool = True,
+        seed: int = 0,
+        power_augmentation: PowerAugmentationConfig | None = None,
+        server_ramps: ServerRamp | ServerRampSchedule | None = None,
+        live_server: LiveServerConfig | None = None,
     ) -> None:
-        if augmentation is None:
-            augmentation = PowerAugmentationConfig()
-        if load_gen is None:
-            load_gen = LoadGenerationConfig()
+        if power_augmentation is None:
+            power_augmentation = PowerAugmentationConfig()
+        if live_server is None:
+            live_server = LiveServerConfig()
         self._dt = dt_s
+        self._seed = int(seed)
         self._deployments = list(deployments)
         self._deployment_map = {d.model_label: d for d in deployments}
-        self._power_client = power_client
-        self._augmentation_config = augmentation
-        self._load_gen_config = load_gen
+        self._datacenter_config = datacenter
+        self._power_augmentation = power_augmentation
+        self._live_server_config = live_server
         self._requests_by_model = dict(requests_by_model)
-        self._health_check = health_check
-        self._activation_strategy = activation_strategy
+
+        if server_ramps is None:
+            self._server_ramp_schedule = ServerRampSchedule(entries=())
+        elif isinstance(server_ramps, ServerRamp):
+            self._server_ramp_schedule = ServerRampSchedule(entries=(server_ramps,))
+        else:
+            self._server_ramp_schedule = server_ramps
+
+        from zeus.utils.zeusd import ZeusdConfig
+
+        servers_by_key: dict[str, ZeusdConfig] = {}
+        gpu_indices_by_key: dict[str, list[int]] = {}
+        for d in self._deployments:
+            for ep in d.gpu_endpoints:
+                key = ep.endpoint_key
+                if key not in gpu_indices_by_key:
+                    gpu_indices_by_key[key] = []
+                for idx in ep.gpu_indices:
+                    if idx not in gpu_indices_by_key[key]:
+                        gpu_indices_by_key[key].append(idx)
+                servers_by_key[key] = ZeusdConfig.tcp(
+                    ep.host,
+                    ep.port,
+                    gpu_indices=gpu_indices_by_key[key],
+                    cpu_indices=[],
+                )
+        self._power_client = PowerStreamingClient(servers=list(servers_by_key.values()))
 
         self._prometheus = (
             _PrometheusPoller(
                 deployments,
-                poll_interval_s=prometheus_poll_interval_s,
+                poll_interval_s=live_server.prometheus_poll_interval_s,
             )
-            if prometheus_poll_interval_s > 0
+            if live_server.prometheus_poll_interval_s > 0
             else None
         )
 
+        load_gen_config = _LoadGenerationConfig(live_server)
+        self._load_gen_config = load_gen_config
         self._load_gen = _LoadGenerator(
             deployments,
             requests_by_model,
-            load_gen,
+            load_gen_config,
             prometheus_poller=self._prometheus,
         )
 
-        self._layout_rng = np.random.default_rng(augmentation.seed)
+        self._layout_rng = np.random.default_rng(self._seed)
         self._layouts: dict[str, ServerLayout] = {}
         self._build_all_layouts()
         self._augmenter = PowerAugmenter(
             layouts=self._layouts,
-            base_w_per_phase=augmentation.base_kw_per_phase * 1e3,
-            seed=augmentation.seed + 12345,
+            base_w_per_phase=float(datacenter.base_kw_per_phase) * 1e3,
+            seed=self._seed + 12345,
         )
         self._rolling_buffer = _RollingPowerBuffer(
             [d.model_label for d in deployments],
-            max_samples=max(int(augmentation.stagger_buffer_s * 100), 1000),
+            max_samples=max(int(STAGGER_BUFFER_S * 100), 1000),
         )
 
         self._state: OnlineDatacenterState | None = None
@@ -767,17 +804,16 @@ class OnlineDatacenter(LLMBatchSizeControlledDatacenter[OnlineDatacenterState]):
 
     def _build_all_layouts(self) -> None:
         """Build ServerLayout for each deployed model."""
-        default_strategy = RampActivationStrategy(ServerRampSchedule(entries=()))
-        strategy = self._activation_strategy or default_strategy
+        strategy: ActivationStrategy = RampActivationStrategy(self._server_ramp_schedule)
         for d in self._deployments:
             if d.spec.num_replicas > 0:
                 self._layouts[d.model_label] = ServerLayout.build(
                     d.spec,
-                    gpus_per_server=self._augmentation_config.gpus_per_server,
-                    stagger_range=float(self._augmentation_config.stagger_buffer_s),
+                    gpus_per_server=self._datacenter_config.gpus_per_server,
+                    stagger_range=float(STAGGER_BUFFER_S),
                     activation_strategy=strategy,
-                    amplitude_scale_range=self._augmentation_config.amplitude_scale_range,
-                    noise_fraction=self._augmentation_config.noise_fraction,
+                    amplitude_scale_range=self._power_augmentation.amplitude_scale_range,
+                    noise_fraction=self._power_augmentation.noise_fraction,
                     rng=self._layout_rng,
                 )
 
@@ -820,13 +856,13 @@ class OnlineDatacenter(LLMBatchSizeControlledDatacenter[OnlineDatacenterState]):
             self._load_gen_config,
             prometheus_poller=self._prometheus,
         )
-        self._layout_rng = np.random.default_rng(self._augmentation_config.seed)
+        self._layout_rng = np.random.default_rng(self._seed)
         self._layouts = {}
         self._build_all_layouts()
         self._augmenter = PowerAugmenter(
             layouts=self._layouts,
-            base_w_per_phase=self._augmentation_config.base_kw_per_phase * 1e3,
-            seed=self._augmentation_config.seed + 12345,
+            base_w_per_phase=float(self._datacenter_config.base_kw_per_phase) * 1e3,
+            seed=self._seed + 12345,
         )
         self._rolling_buffer.clear()
         for d in self._deployments:
@@ -854,14 +890,13 @@ class OnlineDatacenter(LLMBatchSizeControlledDatacenter[OnlineDatacenterState]):
         logger.info("Starting OnlineDatacenter with %d deployments", len(self._deployments))
 
         # 1. Health checks
-        if self._health_check:
-            logger.info("Running health checks...")
-            for d in self._deployments:
-                _check_vllm_health(d.vllm_base_url)
-                _check_vllm_model(d.vllm_base_url, d.model_name)
-                for ep in d.gpu_endpoints:
-                    _check_zeusd_health(ep.host, ep.port)
-            logger.info("All health checks passed")
+        logger.info("Running health checks...")
+        for d in self._deployments:
+            _check_vllm_health(d.vllm_base_url)
+            _check_vllm_model(d.vllm_base_url, d.model_name)
+            for ep in d.gpu_endpoints:
+                _check_zeusd_health(ep.host, ep.port)
+        logger.info("All health checks passed")
 
         # 2. Wait for power readings from all endpoints
         all_endpoints: set[str] = set()
@@ -949,7 +984,7 @@ class OnlineDatacenter(LLMBatchSizeControlledDatacenter[OnlineDatacenterState]):
                 Includes the `num_requests_running` trajectory for failed
                 models.
         """
-        stagger_s = self._augmentation_config.stagger_buffer_s
+        stagger_s = STAGGER_BUFFER_S
         logger.info(
             "Warming up: waiting for server saturation (%.0f%% of initial_batch_size) "
             "+ %.1f s buffer fill per model...",
@@ -1089,7 +1124,7 @@ class OnlineDatacenter(LLMBatchSizeControlledDatacenter[OnlineDatacenterState]):
 
         measured_total = sum(measured_power_by_model.values())
         measured_per_phase = measured_total / 3.0
-        base_w = self._augmentation_config.base_kw_per_phase * 1e3
+        base_w = float(self._datacenter_config.base_kw_per_phase) * 1e3
 
         observed_itl: dict[str, float] = {
             d.model_label: self._load_gen.get_observed_itl(d.model_label) for d in self._deployments

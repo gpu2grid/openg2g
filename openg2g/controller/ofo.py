@@ -11,8 +11,10 @@ import logging
 import math
 from dataclasses import dataclass
 from fractions import Fraction
+from pathlib import Path
 
 import numpy as np
+import pandas as pd
 from mlenergy_data.modeling import LogisticModel
 
 from openg2g.clock import SimulationClock
@@ -26,36 +28,135 @@ from openg2g.types import ControlAction, SetBatchSize
 logger = logging.getLogger(__name__)
 
 
-@dataclass
-class VoltageDualConfig:
-    """Configuration for the voltage dual variable update.
+@dataclass(frozen=True)
+class OFOConfig:
+    """Online Feedback Optimization tuning parameters.
 
     Attributes:
-        v_min: Lower voltage limit (pu).
-        v_max: Upper voltage limit (pu).
-        ascent_step_size: Step size for the voltage dual ascent (ρ_v in G2G paper Eqs. 5-6).
+        descent_step_size: Primal step size ρ_x (Eq. 8).
+        w_throughput: Throughput weight in primal gradient.
+        w_switch: Switching cost regularizer weight γ (Eq. 4a).
+        voltage_gradient_scale: Scaling factor k_v for voltage dual term.
+        v_min: Lower voltage bound (pu).
+        v_max: Upper voltage bound (pu).
+        voltage_dual_step_size: Voltage dual ascent step size ρ_v (Eqs. 5-6).
+        latency_dual_step_size: Latency dual ascent step size ρ_l (Eq. 7).
+        sensitivity_update_interval: Steps between H-matrix re-estimation
+            (0 = only once at init).
+        sensitivity_perturbation_kw: Perturbation magnitude (kW) for
+            finite-difference sensitivity estimation.
     """
+
+    descent_step_size: float = 0.05
+    w_throughput: float = 0.1
+    w_switch: float = 0.0
+    voltage_gradient_scale: float = 1e6
+    v_min: float = 0.95
+    v_max: float = 1.05
+    voltage_dual_step_size: float = 0.5
+    latency_dual_step_size: float = 1.0
+    sensitivity_update_interval: int = 0
+    sensitivity_perturbation_kw: float = 100.0
+
+
+class LogisticModelStore:
+    """Per-model logistic models for power, latency, and throughput.
+
+    Used by
+    [`OFOBatchSizeController`][openg2g.controller.ofo.OFOBatchSizeController]
+    to compute gradients of the Lagrangian with respect to batch size.
+
+    Attributes:
+        COL_MODEL_LABEL: Column name for model label in the CSV.
+        COL_METRIC: Column name for metric type in the CSV.
+    """
+
+    COL_MODEL_LABEL = "model_label"
+    COL_METRIC = "metric"
+
+    def __init__(
+        self,
+        power: dict[str, LogisticModel],
+        latency: dict[str, LogisticModel],
+        throughput: dict[str, LogisticModel],
+    ) -> None:
+        self._power = dict(power)
+        self._latency = dict(latency)
+        self._throughput = dict(throughput)
+
+    def power(self, model: str) -> LogisticModel:
+        """Return the power logistic model for a model label."""
+        return self._power[model]
+
+    def latency(self, model: str) -> LogisticModel:
+        """Return the latency logistic model for a model label."""
+        return self._latency[model]
+
+    def throughput(self, model: str) -> LogisticModel:
+        """Return the throughput logistic model for a model label."""
+        return self._throughput[model]
+
+    @property
+    def power_fits(self) -> dict[str, LogisticModel]:
+        return dict(self._power)
+
+    @property
+    def latency_fits(self) -> dict[str, LogisticModel]:
+        return dict(self._latency)
+
+    @property
+    def throughput_fits(self) -> dict[str, LogisticModel]:
+        return dict(self._throughput)
+
+    @classmethod
+    def load(cls, csv_path: Path | str) -> LogisticModelStore:
+        """Load power, latency, and throughput fits from a merged CSV.
+
+        Expected columns: `model_label`, `metric`, plus the logistic
+        model parameter columns (`L`, `x0`, `k`, `b0`).
+
+        The `metric` column must contain `power`, `latency`, or
+        `throughput` (case-insensitive).
+
+        Args:
+            csv_path: Path to the logistic fits CSV.
+        """
+        csv_path = Path(csv_path)
+        df = pd.read_csv(csv_path)
+
+        required_cols = [cls.COL_MODEL_LABEL, cls.COL_METRIC]
+        missing = [c for c in required_cols if c not in df.columns]
+        if missing:
+            raise ValueError(f"{csv_path} missing columns: {missing}. Got: {list(df.columns)}")
+
+        power: dict[str, LogisticModel] = {}
+        latency: dict[str, LogisticModel] = {}
+        throughput: dict[str, LogisticModel] = {}
+        targets = {"power": power, "latency": latency, "throughput": throughput}
+        for row in df.to_dict(orient="records"):
+            metric = str(row[cls.COL_METRIC]).strip().lower()
+            if metric in targets:
+                targets[metric][str(row[cls.COL_MODEL_LABEL])] = LogisticModel.from_dict(row)
+
+        if not power and not latency and not throughput:
+            raise ValueError(f"No logistic model rows loaded from {csv_path}")
+        return cls(power=power, latency=latency, throughput=throughput)
+
+
+@dataclass
+class _VoltageDualConfig:
+    """Internal voltage dual configuration derived from OFOConfig."""
 
     v_min: float = 0.95
     v_max: float = 1.05
-    ascent_step_size: float = 0.5  # ρ_v in G2G paper Eqs. 5-6
+    ascent_step_size: float = 0.5
 
 
 @dataclass
-class PrimalConfig:
-    """Configuration for the primal batch-size optimizer.
+class _PrimalConfig:
+    """Internal primal optimizer configuration derived from OFOConfig."""
 
-    Attributes:
-        descent_step_size: Primal gradient descent step size (ρ_x in G2G paper Eq. 8).
-        w_throughput: Weight on the (negative) throughput gradient.
-        w_switch: Weight on the switching cost regularizer
-            `gamma * ||x - x_prev||^2` (γ in G2G paper Eq. 4a).
-        voltage_gradient_scale: Scaling factor applied to the voltage gradient
-            term.  Multiplies `eta^T H e_i dP/dx`.  Not present in the G2G
-            paper's equations; used here as a tuning knob.
-    """
-
-    descent_step_size: float = 0.05  # ρ_x in G2G paper Eq. 8
+    descent_step_size: float = 0.05
     w_throughput: float = 0.1
     w_switch: float = 0.0
     voltage_gradient_scale: float = 1e6
@@ -75,7 +176,7 @@ class VoltageDualVariables:
         config: Voltage dual configuration (bounds and step size).
     """
 
-    def __init__(self, n_bus_phases: int, config: VoltageDualConfig) -> None:
+    def __init__(self, n_bus_phases: int, config: _VoltageDualConfig) -> None:
         self.config = config
         self.dual_undervoltage = np.zeros(int(n_bus_phases), dtype=float)  # λ in G2G paper Eq. 5
         self.dual_overvoltage = np.zeros(int(n_bus_phases), dtype=float)  # λ̄ in G2G paper Eq. 6
@@ -133,7 +234,7 @@ class PrimalBatchOptimizer:
         power_fits: dict[str, LogisticModel],
         latency_fits: dict[str, LogisticModel],
         throughput_fits: dict[str, LogisticModel],
-        config: PrimalConfig,
+        config: _PrimalConfig,
     ) -> None:
         self.models = list(models)
         self.feasible_batch_sizes = sorted({int(b) for b in feasible_batch_sizes})
@@ -299,71 +400,76 @@ class OFOBatchSizeController(Controller[LLMBatchSizeControlledDatacenter[LLMData
     Args:
         workload: LLM workload specification. Derives model list,
             feasible batch sizes, and ITL deadlines.
-        power_fits: Per-model logistic fit for power as a function of
-            log2(batch_size).
-        latency_fits: Per-model logistic fit for latency as a function of
-            log2(batch_size).
-        throughput_fits: Per-model logistic fit for throughput as a function
-            of log2(batch_size).
-        primal_config: Primal optimizer configuration.
-        voltage_dual_config: Voltage dual configuration (v_min, v_max,
-            ascent_step_size).
-        latency_dual_step_size: Latency dual step size (ρ_l).
+        models: Per-model logistic models for power, latency, and
+            throughput used in gradient computation.
+        config: Unified OFO tuning parameters.
         dt_s: Control interval (seconds).
-        sensitivity_update_interval: Re-estimate sensitivity every N control
-            steps (0 = only once at init).
-        sensitivity_perturbation_kw: Perturbation size for sensitivity
-            estimation.
     """
 
     def __init__(
         self,
         workload: LLMInferenceWorkload,
         *,
-        power_fits: dict[str, LogisticModel],
-        latency_fits: dict[str, LogisticModel],
-        throughput_fits: dict[str, LogisticModel],
-        primal_config: PrimalConfig,
-        voltage_dual_config: VoltageDualConfig,
-        latency_dual_step_size: float = 1.0,
+        models: LogisticModelStore,
+        config: OFOConfig | None = None,
         dt_s: Fraction = Fraction(1),
-        sensitivity_update_interval: int = 0,
-        sensitivity_perturbation_kw: float = 100.0,
     ) -> None:
-        models = list(workload.models)
+        if config is None:
+            config = OFOConfig()
+
+        model_specs = list(workload.models)
+
+        for ms in model_specs:
+            label = ms.model_label
+            for metric_name, accessor in [
+                ("power", models.power),
+                ("latency", models.latency),
+                ("throughput", models.throughput),
+            ]:
+                try:
+                    accessor(label)
+                except KeyError:
+                    raise ValueError(f"LogisticModelStore missing {metric_name} model for {label!r}.") from None
 
         self._dt_s = dt_s
-        self._models = models
+        self._models = model_specs
+        self._config = config
         self._itl_deadline_by_model = dict(workload.itl_deadline_by_model)
-        self._latency_dual_step_size = float(latency_dual_step_size)  # ρ_l
-        self._sensitivity_update_interval = int(sensitivity_update_interval)
-        self._sensitivity_perturbation_kw = float(sensitivity_perturbation_kw)
+        self._latency_dual_step_size = float(config.latency_dual_step_size)
+        self._sensitivity_update_interval = int(config.sensitivity_update_interval)
+        self._sensitivity_perturbation_kw = float(config.sensitivity_perturbation_kw)
 
-        # Voltage duals are initialized lazily once voltage feature is available.
         self._voltage_dual: VoltageDualVariables | None = None
-        self._voltage_dual_config = voltage_dual_config
+        self._voltage_dual_config = _VoltageDualConfig(
+            v_min=config.v_min,
+            v_max=config.v_max,
+            ascent_step_size=config.voltage_dual_step_size,
+        )
 
-        # Latency duals (μ_i per model, G2G paper Eq. 7)
-        self._latency_dual_by_model: dict[str, float] = {ms.model_label: 0.0 for ms in models}
+        self._latency_dual_by_model: dict[str, float] = {ms.model_label: 0.0 for ms in model_specs}
 
-        # Primal optimizer
+        primal_config = _PrimalConfig(
+            descent_step_size=config.descent_step_size,
+            w_throughput=config.w_throughput,
+            w_switch=config.w_switch,
+            voltage_gradient_scale=config.voltage_gradient_scale,
+        )
         self._optimizer = PrimalBatchOptimizer(
-            models=models,
+            models=model_specs,
             feasible_batch_sizes=workload.feasible_batch_sizes_union,
-            power_fits=power_fits,
-            latency_fits=latency_fits,
-            throughput_fits=throughput_fits,
+            power_fits=models.power_fits,
+            latency_fits=models.latency_fits,
+            throughput_fits=models.throughput_fits,
             config=primal_config,
         )
-        self._optimizer.init_from_batches({ms.model_label: ms.initial_batch_size for ms in models})
+        self._optimizer.init_from_batches({ms.model_label: ms.initial_batch_size for ms in model_specs})
 
-        # Sensitivity estimation state (H = ∂v/∂p, G2G paper Eq. 13)
         self._sensitivity_matrix: np.ndarray | None = None
         self._control_step_count: int = 0
 
         logger.info(
             "OFOBatchSizeController: %d models, dt=%s s, feasible_batches=%s",
-            len(models),
+            len(model_specs),
             dt_s,
             workload.feasible_batch_sizes_union,
         )

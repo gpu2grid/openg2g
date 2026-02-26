@@ -7,7 +7,8 @@ to datacenter scale using the shared PowerAugmenter pipeline.
 Edit the deployment definitions below to match your cluster before running.
 
 Usage:
-    python examples/online/run_ofo.py --data-dir data/generated --duration 3600
+    python -m examples.online.run_ofo --data-dir data/generated \
+        --ieee-case-dir examples/ieee13 --requests-dir data/online/requests
 """
 
 from __future__ import annotations
@@ -19,23 +20,19 @@ from fractions import Fraction
 from pathlib import Path
 
 import numpy as np
-import pandas as pd
-from mlenergy_data.modeling import LogisticModel
-from zeus.monitor.power_streaming import PowerStreamingClient
-from zeus.utils.zeusd import ZeusdConfig
 
 from openg2g.controller.ofo import (
+    LogisticModelStore,
     OFOBatchSizeController,
-    PrimalConfig,
-    VoltageDualConfig,
+    OFOConfig,
 )
 from openg2g.controller.tap_schedule import TapScheduleController
 from openg2g.coordinator import Coordinator
+from openg2g.datacenter.config import DatacenterConfig, PowerAugmentationConfig
 from openg2g.datacenter.online import (
     GPUEndpointMapping,
-    LoadGenerationConfig,
+    LiveServerConfig,
     OnlineDatacenter,
-    PowerAugmentationConfig,
     VLLMDeployment,
 )
 from openg2g.grid.base import Phase
@@ -93,22 +90,6 @@ V_MAX = 1.05
 DC_BUS = "671"
 
 
-def _load_logistic_fits_merged(
-    csv_path: Path,
-) -> tuple[dict[str, LogisticModel], dict[str, LogisticModel], dict[str, LogisticModel]]:
-    """Load power, latency, throughput fits from a merged CSV."""
-    df = pd.read_csv(csv_path)
-    power: dict[str, LogisticModel] = {}
-    latency: dict[str, LogisticModel] = {}
-    throughput: dict[str, LogisticModel] = {}
-    targets = {"power": power, "latency": latency, "throughput": throughput}
-    for row in df.to_dict(orient="records"):
-        metric = str(row["metric"]).strip().lower()
-        if metric in targets:
-            targets[metric][str(row["model_label"])] = LogisticModel.from_dict(row)
-    return power, latency, throughput
-
-
 def _load_requests(requests_dir: Path, model_labels: list[str]) -> dict[str, list[dict]]:
     """Load pre-built request dicts from per-model JSONL files."""
     result: dict[str, list[dict]] = {}
@@ -128,10 +109,8 @@ def _load_requests(requests_dir: Path, model_labels: list[str]) -> dict[str, lis
     return result
 
 
-def main(args: argparse.Namespace) -> None:
-    project_dir = Path(__file__).resolve().parent.parent.parent
-    case_dir = Path(__file__).resolve().parent.parent / "ieee13"
-    save_dir = project_dir / "outputs" / "online_ofo"
+def main(*, data_dir: Path, ieee_case_dir: Path, requests_dir: Path, duration: int = 3600) -> None:
+    save_dir = Path("outputs") / "online_ofo"
     save_dir.mkdir(parents=True, exist_ok=True)
 
     file_handler = logging.FileHandler(save_dir / "console_output.txt", mode="w")
@@ -140,65 +119,36 @@ def main(args: argparse.Namespace) -> None:
 
     dt_dc = Fraction(1, 10)
     dt_ctrl = Fraction(1)
-    t_total_s = args.duration
+    t_total_s = duration
 
     model_labels = [d.model_label for d in DEPLOYMENTS]
 
     logger.info("Loading pre-built requests...")
-    requests_dir = project_dir / "data" / "online" / "requests"
     requests_by_model = _load_requests(requests_dir, model_labels)
 
     logger.info("Loading logistic fits...")
-    data_dir = Path(args.data_dir) if args.data_dir else project_dir / "data" / "generated"
-    power_fits, latency_fits, throughput_fits = _load_logistic_fits_merged(data_dir / "logistic_fits.csv")
-
-    logger.info("Setting up PowerStreamingClient...")
-    servers_by_key: dict[str, ZeusdConfig] = {}
-    gpu_indices_by_key: dict[str, list[int]] = {}
-    for d in DEPLOYMENTS:
-        for ep in d.gpu_endpoints:
-            key = ep.endpoint_key
-            if key not in gpu_indices_by_key:
-                gpu_indices_by_key[key] = []
-            for idx in ep.gpu_indices:
-                if idx not in gpu_indices_by_key[key]:
-                    gpu_indices_by_key[key].append(idx)
-            servers_by_key[key] = ZeusdConfig.tcp(
-                ep.host,
-                ep.port,
-                gpu_indices=gpu_indices_by_key[key],
-                cpu_indices=[],
-            )
-
-    power_client = PowerStreamingClient(servers=list(servers_by_key.values()))
-
-    augmentation = PowerAugmentationConfig(
-        base_kw_per_phase=500.0,
-        noise_fraction=0.02,
-        stagger_buffer_s=10.0,
-        gpus_per_server=8,
-        amplitude_scale_range=(0.9, 1.1),
-        seed=0,
-    )
-
-    load_gen = LoadGenerationConfig(
-        max_output_tokens=512,
-        itl_window_s=1.0,
-    )
+    logistic_models = LogisticModelStore.load(data_dir / "logistic_fits.csv")
 
     logger.info("Initializing OnlineDatacenter...")
     dc = OnlineDatacenter(
-        deployments=DEPLOYMENTS,
-        power_client=power_client,
-        augmentation=augmentation,
-        load_gen=load_gen,
-        requests_by_model=requests_by_model,
+        DatacenterConfig(gpus_per_server=8, base_kw_per_phase=500.0),
+        DEPLOYMENTS,
+        requests_by_model,
         dt_s=dt_dc,
+        seed=0,
+        power_augmentation=PowerAugmentationConfig(
+            amplitude_scale_range=(0.9, 1.1),
+            noise_fraction=0.02,
+        ),
+        live_server=LiveServerConfig(
+            max_output_tokens=512,
+            itl_window_s=1.0,
+        ),
     )
 
     logger.info("Initializing OpenDSSGrid...")
     grid = OpenDSSGrid(
-        dss_case_dir=str(case_dir),
+        dss_case_dir=str(ieee_case_dir),
         dss_master_file="IEEE13Nodeckt.dss",
         dc_bus=DC_BUS,
         dc_bus_kv=4.16,
@@ -212,24 +162,20 @@ def main(args: argparse.Namespace) -> None:
 
     ofo_ctrl = OFOBatchSizeController(
         WORKLOAD,
-        power_fits=power_fits,
-        latency_fits=latency_fits,
-        throughput_fits=throughput_fits,
-        primal_config=PrimalConfig(
+        models=logistic_models,
+        config=OFOConfig(
             descent_step_size=0.1,
             w_throughput=1e-3,
             w_switch=1.0,
             voltage_gradient_scale=1e6,
-        ),
-        voltage_dual_config=VoltageDualConfig(
             v_min=V_MIN,
             v_max=V_MAX,
-            ascent_step_size=1.0,
+            voltage_dual_step_size=1.0,
+            latency_dual_step_size=1.0,
+            sensitivity_update_interval=3600,
+            sensitivity_perturbation_kw=100.0,
         ),
-        latency_dual_step_size=1.0,
         dt_s=dt_ctrl,
-        sensitivity_update_interval=3600,
-        sensitivity_perturbation_kw=100.0,
     )
 
     logger.info("Running online simulation for %d seconds...", t_total_s)
@@ -273,8 +219,18 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--data-dir",
-        default=None,
-        help="Toolkit-generated data directory (contains logistic_fits.csv). Defaults to data/generated/.",
+        required=True,
+        help="Toolkit-generated data directory (contains logistic_fits.csv).",
+    )
+    parser.add_argument(
+        "--ieee-case-dir",
+        required=True,
+        help="OpenDSS case directory (e.g. examples/ieee13).",
+    )
+    parser.add_argument(
+        "--requests-dir",
+        required=True,
+        help="Directory with per-model JSONL request files.",
     )
     parser.add_argument(
         "--log-level",
@@ -290,4 +246,9 @@ if __name__ == "__main__":
         datefmt="%H:%M:%S",
     )
 
-    main(args)
+    main(
+        data_dir=Path(args.data_dir),
+        duration=args.duration,
+        ieee_case_dir=Path(args.ieee_case_dir),
+        requests_dir=Path(args.requests_dir),
+    )

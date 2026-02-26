@@ -152,12 +152,12 @@ __init__() ──> reset() ──> start() ──> step() / apply_control() ─�
 This is mainly to allow reuse component objects across multiple [`Coordinator.run()`][openg2g.coordinator.Coordinator.run] calls with different configurations without having to re-instantiate all of them all the time:
 
 ```python
-grid = OpenDSSGrid(...)               # stores config only
-ctrl = OFOBatchSizeController(...)        # stores fits + tuning
-for config in datacenter_configs:
-    dc = OfflineDatacenter(**config)  # builds power templates
+grid = OpenDSSGrid(...)                    # stores config only
+ctrl = OFOBatchSizeController(...)         # stores fits + tuning
+for workload in workloads:
+    dc = OfflineDatacenter(dc_config, workload, dt_s=dt)  # builds power templates
     coord = Coordinator(dc, grid, [ctrl], total_duration_s=3600, dc_bus="671")
-    log = coord.run()                 # reset -> start -> loop -> stop
+    log = coord.run()                      # reset -> start -> loop -> stop
 ```
 
 

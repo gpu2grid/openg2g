@@ -26,43 +26,46 @@ The sections below show how to set up each component.
 ### Datacenter
 
 The [`OfflineDatacenter`][openg2g.datacenter.offline.OfflineDatacenter] replays GPU power traces built from the [data pipeline](data-pipeline.md).
-Load traces from the generated manifest, build templates for the simulation config, then create the datacenter with a [`DatacenterConfig`][openg2g.datacenter.config.DatacenterConfig] and [`WorkloadConfig`][openg2g.datacenter.config.WorkloadConfig]:
+Load traces from the generated manifest, build templates for the simulation config, then create the datacenter with a [`DatacenterConfig`][openg2g.datacenter.config.DatacenterConfig] and [`OfflineWorkload`][openg2g.datacenter.offline.OfflineWorkload]:
 
 ```python
 from fractions import Fraction
 
-from openg2g.datacenter.config import DatacenterConfig, WorkloadConfig
-from openg2g.datacenter.offline import OfflineDatacenter, PowerTraceStore
+from openg2g.datacenter.config import DatacenterConfig, PowerAugmentationConfig, ServerRamp, TrainingRun
+from openg2g.datacenter.offline import OfflineDatacenter, OfflineInferenceData, OfflineWorkload, PowerTraceStore
 from openg2g.datacenter.training_overlay import TrainingTrace
 from openg2g.models.spec import LLMInferenceModelSpec, LLMInferenceWorkload
-from openg2g.types import ServerRamp, TrainingRun
 
 store = PowerTraceStore.load("data/generated/traces_summary.csv")
 templates = store.build_templates(duration_s=3600.0, dt_s=Fraction(1, 10))
 
 training_trace = TrainingTrace.load("data/generated/synthetic_training_trace.csv")
 
-workload = WorkloadConfig(
-    inference=LLMInferenceWorkload(models=(
-        LLMInferenceModelSpec(
-            model_label="Llama-3.1-8B", num_replicas=720, gpus_per_replica=1, initial_batch_size=128,
-        ),
-        LLMInferenceModelSpec(
-            model_label="Llama-3.1-70B", num_replicas=180, gpus_per_replica=4, initial_batch_size=128,
-        ),
-    )),
+workload = OfflineWorkload(
+    inference_data=OfflineInferenceData(
+        LLMInferenceWorkload(models=(
+            LLMInferenceModelSpec(
+                model_label="Llama-3.1-8B", num_replicas=720, gpus_per_replica=1, initial_batch_size=128,
+            ),
+            LLMInferenceModelSpec(
+                model_label="Llama-3.1-70B", num_replicas=180, gpus_per_replica=4, initial_batch_size=128,
+            ),
+        )),
+        power_templates=templates,
+    ),
     server_ramps=ServerRamp(t_start=2500.0, t_end=3000.0, target=0.2),
     training=TrainingRun(t_start=1000.0, t_end=2000.0, n_gpus=2400, trace=training_trace),
 )
 
 dc = OfflineDatacenter(
-    datacenter=DatacenterConfig(gpus_per_server=8, base_kw_per_phase=500.0),
-    workload=workload,
-    template_store=templates,
+    DatacenterConfig(gpus_per_server=8, base_kw_per_phase=500.0),
+    workload,
     dt_s=Fraction(1, 10),
     seed=0,
-    amplitude_scale_range=(0.98, 1.02),
-    noise_fraction=0.005,
+    power_augmentation=PowerAugmentationConfig(
+        amplitude_scale_range=(0.98, 1.02),
+        noise_fraction=0.005,
+    ),
 )
 ```
 

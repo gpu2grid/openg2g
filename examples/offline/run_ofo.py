@@ -1,8 +1,7 @@
 """OFO closed-loop simulation using the openg2g library.
 
-Reproduces the results of final_ofo_test.py using the modular library
-components: OfflineDatacenter + OpenDSSGrid + [TapScheduleController,
-OFOBatchSizeController] + Coordinator.
+Components: OfflineDatacenter + OpenDSSGrid + [TapScheduleController,
+OFOBatchController] + Coordinator.
 """
 
 from __future__ import annotations
@@ -13,11 +12,30 @@ from fractions import Fraction
 from pathlib import Path
 
 import numpy as np
-import pandas as pd
-from mlenergy_data.modeling import LogisticModel
-from plotting import (
+
+from openg2g.controller.ofo import (
+    LogisticModelStore,
+    OFOBatchSizeController,
+    OFOConfig,
+)
+from openg2g.controller.tap_schedule import TapScheduleController
+from openg2g.coordinator import Coordinator
+from openg2g.datacenter.config import DatacenterConfig, PowerAugmentationConfig, ServerRamp, TrainingRun
+from openg2g.datacenter.offline import (
+    ITLFitStore,
+    OfflineDatacenter,
+    OfflineInferenceData,
+    OfflineWorkload,
+    PowerTraceStore,
+)
+from openg2g.datacenter.training_overlay import TrainingTrace
+from openg2g.grid.opendss import OpenDSSGrid
+from openg2g.metrics.voltage import compute_allbus_voltage_stats
+from openg2g.models.spec import LLMInferenceModelSpec, LLMInferenceWorkload
+from openg2g.types import TapPosition, TapSchedule
+
+from .plotting import (
     extract_per_model_timeseries,
-    load_itl_fits_from_csv,
     plot_allbus_voltages_per_phase,
     plot_batch_schedule,
     plot_latency_samples,
@@ -26,24 +44,6 @@ from plotting import (
     plot_power_3ph,
     plot_voltage_dc_bus,
 )
-
-from openg2g.controller.ofo import (
-    OFOBatchSizeController,
-    PrimalConfig,
-    VoltageDualConfig,
-)
-from openg2g.controller.tap_schedule import TapScheduleController
-from openg2g.coordinator import Coordinator
-from openg2g.datacenter.config import DatacenterConfig, ServerRamp, TrainingRun, WorkloadConfig
-from openg2g.datacenter.offline import (
-    OfflineDatacenter,
-    PowerTraceStore,
-)
-from openg2g.datacenter.training_overlay import TrainingTrace
-from openg2g.grid.opendss import OpenDSSGrid
-from openg2g.metrics.voltage import compute_allbus_voltage_stats
-from openg2g.models.spec import LLMInferenceModelSpec, LLMInferenceWorkload
-from openg2g.types import TapPosition, TapSchedule
 
 logger = logging.getLogger("run_ofo")
 
@@ -95,26 +95,8 @@ MODELS = (
 INFERENCE = LLMInferenceWorkload(models=MODELS)
 
 
-def _load_logistic_fits_merged(
-    csv_path: Path,
-) -> tuple[dict[str, LogisticModel], dict[str, LogisticModel], dict[str, LogisticModel]]:
-    """Load power, latency, throughput fits from a merged CSV."""
-    df = pd.read_csv(csv_path)
-    power: dict[str, LogisticModel] = {}
-    latency: dict[str, LogisticModel] = {}
-    throughput: dict[str, LogisticModel] = {}
-    targets = {"power": power, "latency": latency, "throughput": throughput}
-    for row in df.to_dict(orient="records"):
-        metric = str(row["metric"]).strip().lower()
-        if metric in targets:
-            targets[metric][str(row["model_label"])] = LogisticModel.from_dict(row)
-    return power, latency, throughput
-
-
-def main(args: argparse.Namespace) -> None:
-    project_dir = Path(__file__).resolve().parent.parent.parent
-    case_dir = Path(__file__).resolve().parent.parent / "ieee13"
-    save_dir = project_dir / "outputs" / "ofo"
+def main(*, data_dir: Path, training_trace_path: Path, ieee_case_dir: Path) -> None:
+    save_dir = Path("outputs") / "ofo"
     save_dir.mkdir(parents=True, exist_ok=True)
 
     file_handler = logging.FileHandler(save_dir / "console_output.txt", mode="w")
@@ -132,19 +114,22 @@ def main(args: argparse.Namespace) -> None:
     TAP_STEP = 0.00625  # standard 5/8% tap step
     initial_taps = TapPosition(a=1.0 + 14 * TAP_STEP, b=1.0 + 6 * TAP_STEP, c=1.0 + 15 * TAP_STEP)
 
-    data_dir = Path(args.data_dir)
-    training_trace = TrainingTrace.load(Path(args.training_trace))
+    training_trace = TrainingTrace.load(training_trace_path)
 
     logger.info("Loading power traces...")
     store = PowerTraceStore.load(data_dir / "traces_summary.csv")
     templates = store.build_templates(duration_s=600.0, dt_s=dt_dc)
 
     logger.info("Loading latency fits...")
-    itl_fits = load_itl_fits_from_csv(data_dir / "latency_fits.csv")
+    itl_fits = ITLFitStore.load(data_dir / "latency_fits.csv")
 
     dc_config = DatacenterConfig(gpus_per_server=gpus_per_server, base_kw_per_phase=500.0)
-    workload = WorkloadConfig(
-        inference=INFERENCE,
+    workload = OfflineWorkload(
+        inference_data=OfflineInferenceData(
+            INFERENCE,
+            power_templates=templates,
+            itl_fits=itl_fits,
+        ),
         training=TrainingRun(
             t_start=1000.0,
             t_end=2000.0,
@@ -159,22 +144,20 @@ def main(args: argparse.Namespace) -> None:
     dc = OfflineDatacenter(
         dc_config,
         workload,
-        template_store=templates,
         dt_s=dt_dc,
         seed=0,
-        amplitude_scale_range=(0.98, 1.02),
-        noise_fraction=0.005,
-        itl_distributions=itl_fits,
-        itl_approx_sampling_thresh=30,
-        latency_seed=0,
+        power_augmentation=PowerAugmentationConfig(
+            amplitude_scale_range=(0.98, 1.02),
+            noise_fraction=0.005,
+        ),
     )
 
     logger.info("Loading logistic fits...")
-    power_fits, latency_fits, throughput_fits = _load_logistic_fits_merged(data_dir / "logistic_fits.csv")
+    logistic_models = LogisticModelStore.load(data_dir / "logistic_fits.csv")
 
     logger.info("Initializing OpenDSSGrid...")
     grid = OpenDSSGrid(
-        dss_case_dir=str(case_dir),
+        dss_case_dir=str(ieee_case_dir),
         dss_master_file="IEEE13Nodeckt.dss",
         dc_bus=dc_bus,
         dc_bus_kv=4.16,
@@ -188,24 +171,20 @@ def main(args: argparse.Namespace) -> None:
 
     ofo_ctrl = OFOBatchSizeController(
         INFERENCE,
-        power_fits=power_fits,
-        latency_fits=latency_fits,
-        throughput_fits=throughput_fits,
-        primal_config=PrimalConfig(
+        models=logistic_models,
+        config=OFOConfig(
             descent_step_size=0.1,
             w_throughput=1e-3,
             w_switch=1.0,
             voltage_gradient_scale=1e6,
-        ),
-        voltage_dual_config=VoltageDualConfig(
             v_min=v_min,
             v_max=v_max,
-            ascent_step_size=1.0,
+            voltage_dual_step_size=1.0,
+            latency_dual_step_size=1.0,
+            sensitivity_update_interval=3600,
+            sensitivity_perturbation_kw=100.0,
         ),
-        latency_dual_step_size=1.0,
         dt_s=dt_ctrl,
-        sensitivity_update_interval=3600,
-        sensitivity_perturbation_kw=100.0,
     )
 
     logger.info("Running simulation...")
@@ -313,6 +292,11 @@ if __name__ == "__main__":
         help="Path to synthetic training trace CSV.",
     )
     parser.add_argument(
+        "--ieee-case-dir",
+        required=True,
+        help="OpenDSS case directory (e.g. examples/ieee13).",
+    )
+    parser.add_argument(
         "--log-level",
         default="INFO",
         choices=["DEBUG", "INFO", "WARNING"],
@@ -326,4 +310,8 @@ if __name__ == "__main__":
         datefmt="%H:%M:%S",
     )
 
-    main(args)
+    main(
+        data_dir=Path(args.data_dir),
+        training_trace_path=Path(args.training_trace),
+        ieee_case_dir=Path(args.ieee_case_dir),
+    )
