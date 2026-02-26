@@ -41,7 +41,7 @@ pip install "openg2g[opendss]"
 ```bash
 git clone https://github.com/gpu2grid/openg2g.git
 cd openg2g
-uv sync
+uv sync  # or: pip install -e . --group dev
 ```
 
 ## Quick Start

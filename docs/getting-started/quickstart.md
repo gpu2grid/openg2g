@@ -21,7 +21,7 @@ This is to get the example scripts and data build utilities.
 ```bash
 git clone https://github.com/gpu2grid/openg2g.git
 cd openg2g
-uv sync && source .venv/bin/activate  # or: pip install -e ".[opendss]"
+uv sync && source .venv/bin/activate  # or: pip install -e . --group dev
 ```
 
 ## Build Simulation Data
