@@ -201,6 +201,26 @@ class DatacenterConfig:
             raise ValueError(f"gpus_per_server must be >= 1, got {self.gpus_per_server}.")
 
 
+@dataclass(frozen=True)
+class PowerAugmentationConfig:
+    """Power augmentation settings for virtual server scaling.
+
+    Controls per-server amplitude jitter and additive noise applied during
+    power augmentation. Shared by both offline and online datacenter
+    backends.
+
+    Attributes:
+        amplitude_scale_range: `(low, high)` range for per-server amplitude
+            scaling. Each virtual server draws a uniform multiplier from
+            this range.
+        noise_fraction: Gaussian noise standard deviation as a fraction of
+            per-server power.
+    """
+
+    amplitude_scale_range: tuple[float, float] = (1.0, 1.0)
+    noise_fraction: float = 0.0
+
+
 class WorkloadConfig:
     """What runs in the datacenter: inference, training, and ramp events.
 

@@ -9,23 +9,25 @@ import pytest
 from mlenergy_data.modeling import ITLMixtureModel
 
 from openg2g.clock import SimulationClock
-from openg2g.datacenter.config import DatacenterConfig, WorkloadConfig
+from openg2g.datacenter.config import DatacenterConfig
 from openg2g.datacenter.offline import (
+    ITLFitStore,
     OfflineDatacenter,
     OfflineDatacenterState,
+    OfflineInferenceData,
+    OfflineWorkload,
     PowerTemplateStore,
     PowerTrace,
     PowerTraceStore,
     _build_per_gpu_power_template,
 )
-from openg2g.models.spec import LLMInferenceModelSpec, LLMInferenceWorkload
+from openg2g.models.spec import LLMInferenceModelSpec
 from openg2g.types import DatacenterCommand, SetBatchSize
 
 MODEL = LLMInferenceModelSpec(
     model_label="TestModel", num_replicas=10, gpus_per_replica=1, initial_batch_size=128, itl_deadline_s=0.1
 )
 DC_CFG = DatacenterConfig(gpus_per_server=8)
-WORKLOAD = WorkloadConfig(inference=LLMInferenceWorkload(models=(MODEL,)))
 
 
 def _make_simple_store(dt: float = 0.1, T: float = 100.0) -> PowerTemplateStore:
@@ -44,9 +46,20 @@ def _make_simple_store(dt: float = 0.1, T: float = 100.0) -> PowerTemplateStore:
     return store.build_templates(duration_s=T, dt_s=dt)
 
 
+def _make_workload(templates: PowerTemplateStore, itl_fits: ITLFitStore | None = None) -> OfflineWorkload:
+    """Create an OfflineWorkload from templates and optional ITL fits."""
+    return OfflineWorkload(
+        inference_data=OfflineInferenceData(
+            (MODEL,),
+            power_templates=templates,
+            itl_fits=itl_fits,
+        ),
+    )
+
+
 def test_step_returns_offline_state():
     store = _make_simple_store()
-    dc = OfflineDatacenter(DC_CFG, WORKLOAD, template_store=store, dt_s=Fraction(1, 10))
+    dc = OfflineDatacenter(DC_CFG, _make_workload(store), dt_s=Fraction(1, 10))
 
     clock = SimulationClock(tick_s=Fraction(1, 10))
     state = dc.step(clock)
@@ -62,7 +75,7 @@ def test_step_returns_offline_state():
 def test_step_produces_correct_number_of_states():
     """Stepping produces one state per call with monotonically increasing times."""
     store = _make_simple_store()
-    dc = OfflineDatacenter(DC_CFG, WORKLOAD, template_store=store, dt_s=Fraction(1, 10))
+    dc = OfflineDatacenter(DC_CFG, _make_workload(store), dt_s=Fraction(1, 10))
 
     clock = SimulationClock(tick_s=Fraction(1, 10))
     states = []
@@ -79,7 +92,7 @@ def test_step_produces_correct_number_of_states():
 def test_batch_change_takes_effect_immediately():
     """Batch size change via apply_control takes effect on the very next step."""
     store = _make_simple_store()
-    dc = OfflineDatacenter(DC_CFG, WORKLOAD, template_store=store, dt_s=Fraction(1, 10))
+    dc = OfflineDatacenter(DC_CFG, _make_workload(store), dt_s=Fraction(1, 10))
 
     clock = SimulationClock(tick_s=Fraction(1, 10))
 
@@ -119,8 +132,8 @@ def test_offline_datacenter_emits_observed_itl_when_latency_fits_is_set():
         sigma_stall=0.2,
         scale_stall=0.1,
     )
-    latency_fits = {"TestModel": {128: fake_params}}
-    dc = OfflineDatacenter(DC_CFG, WORKLOAD, template_store=store, dt_s=Fraction(1, 10), itl_distributions=latency_fits)
+    latency_fits = ITLFitStore({"TestModel": {128: fake_params}})
+    dc = OfflineDatacenter(DC_CFG, _make_workload(store, itl_fits=latency_fits), dt_s=Fraction(1, 10))
 
     state = dc.step(SimulationClock(tick_s=Fraction(1, 10)))
     assert "TestModel" in state.observed_itl_s_by_model
@@ -134,7 +147,7 @@ def test_apply_control_rejects_unknown_command():
         pass
 
     store = _make_simple_store()
-    dc = OfflineDatacenter(DC_CFG, WORKLOAD, template_store=store, dt_s=Fraction(1, 10))
+    dc = OfflineDatacenter(DC_CFG, _make_workload(store), dt_s=Fraction(1, 10))
 
     with pytest.raises(TypeError, match="OfflineDatacenter does not support"):
         dc.apply_control(_CustomCommand())

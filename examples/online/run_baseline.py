@@ -14,7 +14,8 @@ via `BatchSizeScheduleController`.
 Edit the deployment definitions below to match your cluster before running.
 
 Usage:
-    python examples/online/run_baseline.py --mode no-tap --duration 3600
+    python -m examples.online.run_baseline --mode no-tap \
+        --ieee-case-dir examples/ieee13 --requests-dir data/online/requests
 """
 
 from __future__ import annotations
@@ -25,16 +26,13 @@ import logging
 from fractions import Fraction
 from pathlib import Path
 
-from zeus.monitor.power_streaming import PowerStreamingClient
-from zeus.utils.zeusd import ZeusdConfig
-
 from openg2g.controller.tap_schedule import TapScheduleController
 from openg2g.coordinator import Coordinator
+from openg2g.datacenter.config import DatacenterConfig, PowerAugmentationConfig
 from openg2g.datacenter.online import (
     GPUEndpointMapping,
-    LoadGenerationConfig,
+    LiveServerConfig,
     OnlineDatacenter,
-    PowerAugmentationConfig,
     VLLMDeployment,
 )
 from openg2g.grid.base import Phase
@@ -112,11 +110,8 @@ def _load_requests(requests_dir: Path, model_labels: list[str]) -> dict[str, lis
     return result
 
 
-def main(args: argparse.Namespace) -> None:
-    mode = args.mode
-    project_dir = Path(__file__).resolve().parent.parent.parent
-    case_dir = Path(__file__).resolve().parent.parent / "ieee13"
-    save_dir = project_dir / "outputs" / f"online_baseline_{mode}"
+def main(*, mode: str, ieee_case_dir: Path, requests_dir: Path, duration: int = 3600) -> None:
+    save_dir = Path("outputs") / f"online_baseline_{mode}"
     save_dir.mkdir(parents=True, exist_ok=True)
 
     file_handler = logging.FileHandler(save_dir / "console_output.txt", mode="w")
@@ -125,63 +120,35 @@ def main(args: argparse.Namespace) -> None:
 
     dt_dc = Fraction(1, 10)
     dt_ctrl = Fraction(1)
-    t_total_s = args.duration
+    t_total_s = duration
 
     tap_ctrl_schedule = TAP_CHANGE_SCHEDULE if mode == "tap-change" else TapSchedule(())
 
     model_labels = [d.model_label for d in DEPLOYMENTS]
 
     logger.info("Loading pre-built requests...")
-    requests_dir = project_dir / "data" / "online" / "requests"
     requests_by_model = _load_requests(requests_dir, model_labels)
-
-    logger.info("Setting up PowerStreamingClient...")
-    servers_by_key: dict[str, ZeusdConfig] = {}
-    gpu_indices_by_key: dict[str, list[int]] = {}
-    for d in DEPLOYMENTS:
-        for ep in d.gpu_endpoints:
-            key = ep.endpoint_key
-            if key not in gpu_indices_by_key:
-                gpu_indices_by_key[key] = []
-            for idx in ep.gpu_indices:
-                if idx not in gpu_indices_by_key[key]:
-                    gpu_indices_by_key[key].append(idx)
-            servers_by_key[key] = ZeusdConfig.tcp(
-                ep.host,
-                ep.port,
-                gpu_indices=gpu_indices_by_key[key],
-                cpu_indices=[],
-            )
-
-    power_client = PowerStreamingClient(servers=list(servers_by_key.values()))
-
-    augmentation = PowerAugmentationConfig(
-        base_kw_per_phase=500.0,
-        noise_fraction=0.02,
-        stagger_buffer_s=10.0,
-        gpus_per_server=8,
-        amplitude_scale_range=(0.9, 1.1),
-        seed=0,
-    )
-
-    load_gen = LoadGenerationConfig(
-        max_output_tokens=512,
-        itl_window_s=1.0,
-    )
 
     logger.info("Initializing OnlineDatacenter...")
     dc = OnlineDatacenter(
-        deployments=DEPLOYMENTS,
-        power_client=power_client,
-        augmentation=augmentation,
-        load_gen=load_gen,
-        requests_by_model=requests_by_model,
+        DatacenterConfig(gpus_per_server=8, base_kw_per_phase=500.0),
+        DEPLOYMENTS,
+        requests_by_model,
         dt_s=dt_dc,
+        seed=0,
+        power_augmentation=PowerAugmentationConfig(
+            amplitude_scale_range=(0.9, 1.1),
+            noise_fraction=0.02,
+        ),
+        live_server=LiveServerConfig(
+            max_output_tokens=512,
+            itl_window_s=1.0,
+        ),
     )
 
     logger.info("Initializing OpenDSSGrid...")
     grid = OpenDSSGrid(
-        dss_case_dir=str(case_dir),
+        dss_case_dir=str(ieee_case_dir),
         dss_master_file="IEEE13Nodeckt.dss",
         dc_bus=DC_BUS,
         dc_bus_kv=4.16,
@@ -229,6 +196,16 @@ if __name__ == "__main__":
         help="Simulation duration in seconds (default: 3600).",
     )
     parser.add_argument(
+        "--ieee-case-dir",
+        required=True,
+        help="OpenDSS case directory (e.g. examples/ieee13).",
+    )
+    parser.add_argument(
+        "--requests-dir",
+        required=True,
+        help="Directory with per-model JSONL request files.",
+    )
+    parser.add_argument(
         "--log-level",
         default="INFO",
         choices=["DEBUG", "INFO", "WARNING"],
@@ -242,4 +219,9 @@ if __name__ == "__main__":
         datefmt="%H:%M:%S",
     )
 
-    main(args)
+    main(
+        mode=args.mode,
+        duration=args.duration,
+        ieee_case_dir=Path(args.ieee_case_dir),
+        requests_dir=Path(args.requests_dir),
+    )

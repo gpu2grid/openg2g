@@ -1,8 +1,7 @@
 """Generate a synthetic GPU training-like power trace.
 
-Extracted from baseline_wo_control.py. Produces a CSV with columns
-``t_s`` and ``power_W`` that can be used as a training overlay in
-the simulation.
+Produces a CSV with columns ``t_s`` and ``power_W`` that can be used as a
+training overlay in the simulation.
 """
 
 from __future__ import annotations

@@ -52,23 +52,27 @@ For a full walkthrough including data setup, see the [Getting Started guide](htt
 from fractions import Fraction
 
 from openg2g.coordinator import Coordinator
-from openg2g.datacenter.config import DatacenterConfig, WorkloadConfig
-from openg2g.datacenter.offline import OfflineDatacenter, PowerTraceStore
+from openg2g.datacenter.config import DatacenterConfig
+from openg2g.datacenter.offline import (
+    OfflineDatacenter, OfflineInferenceData, OfflineWorkload, PowerTraceStore,
+)
 from openg2g.grid.opendss import OpenDSSGrid
 from openg2g.controller.noop import NoopController
 from openg2g.models.spec import LLMInferenceModelSpec, LLMInferenceWorkload
 from openg2g.types import TapPosition
 
 # 1. Set up a trace-based datacenter
-workload = WorkloadConfig(
-    inference=LLMInferenceWorkload(models=(
-        LLMInferenceModelSpec("Llama-3.1-8B", num_replicas=720, gpus_per_replica=1, initial_batch_size=128),
-        LLMInferenceModelSpec("Llama-3.1-70B", num_replicas=180, gpus_per_replica=4, initial_batch_size=128),
-    )),
-)
+models = LLMInferenceWorkload(models=(
+    LLMInferenceModelSpec("Llama-3.1-8B", num_replicas=720, gpus_per_replica=1, initial_batch_size=128),
+    LLMInferenceModelSpec("Llama-3.1-70B", num_replicas=180, gpus_per_replica=4, initial_batch_size=128),
+))
 store = PowerTraceStore.load("data/generated/traces_summary.csv")
 templates = store.build_templates(duration_s=3600, dt_s=Fraction(1, 10))
-dc = OfflineDatacenter(DatacenterConfig(), workload, template_store=templates, dt_s=Fraction(1, 10))
+dc = OfflineDatacenter(
+    DatacenterConfig(),
+    OfflineWorkload(inference_data=OfflineInferenceData(models, power_templates=templates)),
+    dt_s=Fraction(1, 10),
+)
 
 # 2. Set up the grid
 TAP_STEP = 0.00625
@@ -94,11 +98,7 @@ coord = Coordinator(
 log = coord.run()
 ```
 
-See [`examples/`](examples/) for complete simulation scripts:
-
-- `run_baseline.py --mode no-tap`: fixed taps, no OFO
-- `run_baseline.py --mode tap-change`: scheduled tap changes, no OFO
-- `run_ofo.py`: OFO closed-loop batch size control
+See [`examples/`](examples/) for complete simulation scripts (offline trace-replay and online hardware-in-the-loop variants).
 
 ## Running Example Simulations
 
@@ -127,20 +127,23 @@ python data/offline/generate_training_trace.py \
 # Baseline: fixed taps
 python examples/offline/run_baseline.py --mode no-tap \
   --data-dir data/generated \
-  --training-trace data/generated/synthetic_training_trace.csv
+  --training-trace data/generated/synthetic_training_trace.csv \
+  --ieee-case-dir examples/ieee13
 
 # Baseline: scheduled tap changes
 python examples/offline/run_baseline.py --mode tap-change \
   --data-dir data/generated \
-  --training-trace data/generated/synthetic_training_trace.csv
+  --training-trace data/generated/synthetic_training_trace.csv \
+  --ieee-case-dir examples/ieee13
 
 # OFO closed-loop control
 python examples/offline/run_ofo.py \
   --data-dir data/generated \
-  --training-trace data/generated/synthetic_training_trace.csv
+  --training-trace data/generated/synthetic_training_trace.csv \
+  --ieee-case-dir examples/ieee13
 ```
 
-`--data-dir` and `--training-trace` are required for all simulation drivers.
+`--data-dir`, `--training-trace`, and `--ieee-case-dir` are required for all offline simulation drivers.
 
 ## Documentation
 

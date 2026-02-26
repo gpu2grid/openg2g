@@ -130,11 +130,13 @@ At simulation time, the generated artifacts are consumed by two components:
 ```bash
 python examples/offline/run_baseline.py --mode no-tap \
   --data-dir data/generated \
-  --training-trace data/generated/synthetic_training_trace.csv
+  --training-trace data/generated/synthetic_training_trace.csv \
+  --ieee-case-dir examples/ieee13
 
 python examples/offline/run_ofo.py \
   --data-dir data/generated \
-  --training-trace data/generated/synthetic_training_trace.csv
+  --training-trace data/generated/synthetic_training_trace.csv \
+  --ieee-case-dir examples/ieee13
 ```
 
-`--data-dir` and `--training-trace` are required for all simulation drivers.
+`--data-dir`, `--training-trace`, and `--ieee-case-dir` are required for all offline simulation drivers.
