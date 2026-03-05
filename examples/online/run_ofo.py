@@ -2,169 +2,142 @@
 
 Connects to live vLLM servers and zeusd instances for hardware-in-the-loop
 OFO control.  Power readings from a small number of real GPUs are augmented
-to datacenter scale using the shared PowerAugmenter pipeline.
+to datacenter scale using the shared InferencePowerAugmenter pipeline.
 
-Edit the deployment definitions below to match your cluster before running.
+Edit the deployment definitions in config.json to match your cluster.
 
 Usage:
-    python -m examples.online.run_ofo --data-dir data/generated \
-        --ieee-case-dir examples/ieee13 --requests-dir data/online/requests
+    python examples/online/run_ofo.py --config examples/online/config.json
 """
 
 from __future__ import annotations
 
-import argparse
+import hashlib
 import json
 import logging
 from fractions import Fraction
 from pathlib import Path
 
 import numpy as np
+from pydantic import BaseModel
 
 from openg2g.controller.ofo import (
     LogisticModelStore,
     OFOBatchSizeController,
     OFOConfig,
 )
-from openg2g.controller.tap_schedule import TapScheduleController
 from openg2g.coordinator import Coordinator
 from openg2g.datacenter.config import DatacenterConfig, PowerAugmentationConfig
 from openg2g.datacenter.online import (
-    GPUEndpointMapping,
     LiveServerConfig,
     OnlineDatacenter,
     VLLMDeployment,
 )
-from openg2g.grid.base import Phase
+from openg2g.datacenter.workloads.inference import MLEnergySource, RequestsConfig, RequestStore
+from openg2g.grid.config import TapPosition
 from openg2g.grid.opendss import OpenDSSGrid
 from openg2g.metrics.voltage import compute_allbus_voltage_stats
-from openg2g.models.spec import LLMInferenceModelSpec, LLMInferenceWorkload
-from openg2g.types import TapPosition, TapSchedule
 
 logger = logging.getLogger("run_ofo")
 
 TAP_STEP = 0.00625
 INITIAL_TAPS = TapPosition(a=1.0 + 14 * TAP_STEP, b=1.0 + 6 * TAP_STEP, c=1.0 + 15 * TAP_STEP)
 
-MAX_BATCH_SIZE = 512
-
-DEPLOYMENTS = [
-    VLLMDeployment(
-        spec=LLMInferenceModelSpec(
-            model_label="Llama-3.1-8B",
-            num_replicas=720,
-            gpus_per_replica=1,
-            feasible_batch_sizes=tuple(range(1, MAX_BATCH_SIZE + 1)),
-            initial_batch_size=128,
-            itl_deadline_s=0.08,
-        ),
-        vllm_base_url="http://node1:8000",
-        model_name="meta-llama/Llama-3.1-8B-Instruct",
-        gpu_endpoints=(
-            GPUEndpointMapping(host="node1", port=4938, gpu_indices=(0, 1, 2, 3), phase=Phase.A),
-            GPUEndpointMapping(host="node1", port=4938, gpu_indices=(4, 5, 6, 7), phase=Phase.B),
-        ),
-    ),
-    VLLMDeployment(
-        spec=LLMInferenceModelSpec(
-            model_label="Llama-3.1-70B",
-            num_replicas=180,
-            gpus_per_replica=4,
-            feasible_batch_sizes=tuple(range(1, MAX_BATCH_SIZE + 1)),
-            initial_batch_size=128,
-            itl_deadline_s=0.10,
-        ),
-        vllm_base_url="http://node2:8000",
-        model_name="meta-llama/Llama-3.1-70B-Instruct",
-        gpu_endpoints=(
-            GPUEndpointMapping(host="node2", port=4938, gpu_indices=(0, 1, 2, 3), phase=Phase.A),
-            GPUEndpointMapping(host="node2", port=4938, gpu_indices=(4, 5, 6, 7), phase=Phase.C),
-        ),
-    ),
-]
-
-WORKLOAD = LLMInferenceWorkload(models=tuple(d.spec for d in DEPLOYMENTS))
-
 V_MIN = 0.95
 V_MAX = 1.05
 DC_BUS = "671"
+GPUS_PER_SERVER = 8
+DT_DC = Fraction(1, 10)
+DT_CTRL = Fraction(1)
+T_TOTAL_S = 3600
 
 
-def _load_requests(requests_dir: Path, model_labels: list[str]) -> dict[str, list[dict]]:
-    """Load pre-built request dicts from per-model JSONL files."""
-    result: dict[str, list[dict]] = {}
-    for label in model_labels:
-        path = requests_dir / f"{label}.jsonl"
-        if not path.exists():
-            logger.warning("No request file found for %s at %s", label, path)
-            continue
-        requests = []
-        with open(path) as f:
-            for line in f:
-                line = line.strip()
-                if line:
-                    requests.append(json.loads(line))
-        result[label] = requests
-        logger.info("Loaded %d requests for %s", len(requests), label)
-    return result
+class OnlineConfig(BaseModel):
+    deployments: list[VLLMDeployment]
+    requests: RequestsConfig = RequestsConfig()
+    requests_dir: Path | None = None
+    ieee_case_dir: Path
+    data_dir: Path | None = None
+    data_sources: list[MLEnergySource] = []
+    mlenergy_data_dir: Path | None = None
+
+    @property
+    def requests_hash(self) -> str:
+        blob = json.dumps(
+            (self.requests.model_dump(mode="json"), sorted(d.spec.model_label for d in self.deployments)),
+            sort_keys=True,
+        ).encode()
+        return hashlib.sha256(blob).hexdigest()[:16]
+
+    @property
+    def data_hash(self) -> str:
+        blob = json.dumps(
+            (sorted([s.model_dump(mode="json") for s in self.data_sources], key=lambda s: s["model_label"]),),
+            sort_keys=True,
+        ).encode()
+        return hashlib.sha256(blob).hexdigest()[:16]
 
 
-def main(*, data_dir: Path, ieee_case_dir: Path, requests_dir: Path, duration: int = 3600) -> None:
-    save_dir = Path("outputs") / "online_ofo"
+def main(*, config_path: Path) -> None:
+    config = OnlineConfig.model_validate_json(config_path.read_bytes())
+
+    models = tuple(d.spec for d in config.deployments)
+    requests_dir = config.requests_dir or Path("data/online") / config.requests_hash
+
+    save_dir = (Path("outputs") / "online_ofo").resolve()
     save_dir.mkdir(parents=True, exist_ok=True)
 
     file_handler = logging.FileHandler(save_dir / "console_output.txt", mode="w")
     file_handler.setFormatter(logging.Formatter("%(asctime)s %(name)s %(levelname)s %(message)s", datefmt="%H:%M:%S"))
     logging.getLogger().addHandler(file_handler)
 
-    dt_dc = Fraction(1, 10)
-    dt_ctrl = Fraction(1)
-    t_total_s = duration
+    RequestStore.ensure(requests_dir, [d.spec for d in config.deployments], config.requests)
 
-    model_labels = [d.model_label for d in DEPLOYMENTS]
-
-    logger.info("Loading pre-built requests...")
-    requests_by_model = _load_requests(requests_dir, model_labels)
-
-    logger.info("Loading logistic fits...")
-    logistic_models = LogisticModelStore.load(data_dir / "logistic_fits.csv")
+    data_sources = {s.model_label: s for s in config.data_sources} if config.data_sources else None
+    data_dir = config.data_dir or Path("data/offline") / config.data_hash
+    logistic_models = LogisticModelStore.ensure(
+        data_dir / "logistic_fits.csv",
+        models,
+        data_sources,
+        mlenergy_data_dir=config.mlenergy_data_dir,
+        plot=False,
+    )
 
     logger.info("Initializing OnlineDatacenter...")
+    dc_config = DatacenterConfig(gpus_per_server=GPUS_PER_SERVER, base_kw_per_phase=500.0)
     dc = OnlineDatacenter(
-        DatacenterConfig(gpus_per_server=8, base_kw_per_phase=500.0),
-        DEPLOYMENTS,
-        requests_by_model,
-        dt_s=dt_dc,
+        dc_config,
+        config.deployments,
+        dt_s=DT_DC,
         seed=0,
         power_augmentation=PowerAugmentationConfig(
             amplitude_scale_range=(0.9, 1.1),
             noise_fraction=0.02,
         ),
         live_server=LiveServerConfig(
-            max_output_tokens=512,
+            requests_dir=requests_dir,
+            max_output_tokens=config.requests.max_completion_tokens,
             itl_window_s=1.0,
         ),
     )
 
     logger.info("Initializing OpenDSSGrid...")
     grid = OpenDSSGrid(
-        dss_case_dir=str(ieee_case_dir),
+        dss_case_dir=config.ieee_case_dir,
         dss_master_file="IEEE13Nodeckt.dss",
         dc_bus=DC_BUS,
         dc_bus_kv=4.16,
-        power_factor=0.95,
+        power_factor=dc_config.power_factor,
         dt_s=Fraction(1, 10),
         connection_type="wye",
         initial_tap_position=INITIAL_TAPS,
     )
 
-    tap_ctrl = TapScheduleController(schedule=TapSchedule(()), dt_s=dt_ctrl)
-
     ofo_ctrl = OFOBatchSizeController(
-        WORKLOAD,
+        models,
         models=logistic_models,
         config=OFOConfig(
-            descent_step_size=0.1,
+            primal_step_size=0.1,
             w_throughput=1e-3,
             w_switch=1.0,
             voltage_gradient_scale=1e6,
@@ -175,15 +148,15 @@ def main(*, data_dir: Path, ieee_case_dir: Path, requests_dir: Path, duration: i
             sensitivity_update_interval=3600,
             sensitivity_perturbation_kw=100.0,
         ),
-        dt_s=dt_ctrl,
+        dt_s=DT_CTRL,
     )
 
-    logger.info("Running online simulation for %d seconds...", t_total_s)
+    logger.info("Running online simulation for %d seconds...", T_TOTAL_S)
     coord = Coordinator(
         datacenter=dc,
         grid=grid,
-        controllers=[tap_ctrl, ofo_ctrl],
-        total_duration_s=t_total_s,
+        controllers=[ofo_ctrl],
+        total_duration_s=T_TOTAL_S,
         dc_bus=DC_BUS,
         live=True,
     )
@@ -210,45 +183,24 @@ def main(*, data_dir: Path, ieee_case_dir: Path, requests_dir: Path, duration: i
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Online OFO closed-loop simulation (hardware-in-the-loop)")
-    parser.add_argument(
-        "--duration",
-        type=int,
-        default=3600,
-        help="Simulation duration in seconds (default: 3600).",
-    )
-    parser.add_argument(
-        "--data-dir",
-        required=True,
-        help="Toolkit-generated data directory (contains logistic_fits.csv).",
-    )
-    parser.add_argument(
-        "--ieee-case-dir",
-        required=True,
-        help="OpenDSS case directory (e.g. examples/ieee13).",
-    )
-    parser.add_argument(
-        "--requests-dir",
-        required=True,
-        help="Directory with per-model JSONL request files.",
-    )
-    parser.add_argument(
-        "--log-level",
-        default="INFO",
-        choices=["DEBUG", "INFO", "WARNING"],
-        help="Logging verbosity (default: INFO).",
-    )
-    args = parser.parse_args()
+    from dataclasses import dataclass
+
+    import tyro
+
+    @dataclass
+    class Args:
+        config: str
+        """Path to the online config JSON file."""
+        log_level: str = "INFO"
+        """Logging verbosity (DEBUG, INFO, WARNING)."""
+
+    args = tyro.cli(Args)
 
     logging.basicConfig(
         level=getattr(logging, args.log_level),
         format="%(levelname)s %(asctime)s [%(name)s:%(lineno)d] %(message)s",
         datefmt="%H:%M:%S",
     )
+    logging.getLogger("httpx").setLevel(logging.WARNING)
 
-    main(
-        data_dir=Path(args.data_dir),
-        duration=args.duration,
-        ieee_case_dir=Path(args.ieee_case_dir),
-        requests_dir=Path(args.requests_dir),
-    )
+    main(config_path=Path(args.config))

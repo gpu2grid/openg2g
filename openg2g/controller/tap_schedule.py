@@ -7,9 +7,11 @@ from fractions import Fraction
 from openg2g.clock import SimulationClock
 from openg2g.controller.base import Controller
 from openg2g.datacenter.base import DatacenterBackend
+from openg2g.datacenter.command import DatacenterCommand
 from openg2g.events import EventEmitter
 from openg2g.grid.base import GridBackend
-from openg2g.types import ControlAction, SetTaps, TapPosition, TapSchedule
+from openg2g.grid.command import GridCommand, SetTaps
+from openg2g.grid.config import TapPosition, TapSchedule
 
 
 class TapScheduleController(Controller[DatacenterBackend, GridBackend]):
@@ -17,16 +19,11 @@ class TapScheduleController(Controller[DatacenterBackend, GridBackend]):
 
     Args:
         schedule: Tap schedule built via
-            [`TapPosition(...).at(t=...) | ...`][openg2g.types.TapSchedule].
+            [`TapPosition(...).at(t=...) | ...`][openg2g.grid.config.TapSchedule].
         dt_s: How often the controller checks the schedule (seconds).
     """
 
-    def __init__(
-        self,
-        *,
-        schedule: TapSchedule,
-        dt_s: Fraction = Fraction(1),
-    ) -> None:
+    def __init__(self, *, schedule: TapSchedule, dt_s: Fraction = Fraction(1)) -> None:
         self._dt_s = dt_s
         self._entries = list(schedule)
         self._idx = 0
@@ -44,7 +41,7 @@ class TapScheduleController(Controller[DatacenterBackend, GridBackend]):
         datacenter: DatacenterBackend,
         grid: GridBackend,
         events: EventEmitter,
-    ) -> ControlAction:
+    ) -> list[DatacenterCommand | GridCommand]:
 
         t_now = clock.time_s
         merged_a: float | None = None
@@ -67,5 +64,7 @@ class TapScheduleController(Controller[DatacenterBackend, GridBackend]):
                 break
 
         if any_fired and (merged_a is not None or merged_b is not None or merged_c is not None):
-            return ControlAction(commands=[SetTaps(tap_position=TapPosition(a=merged_a, b=merged_b, c=merged_c))])
-        return ControlAction(commands=[])
+            tap = TapPosition(a=merged_a, b=merged_b, c=merged_c)
+            events.emit("controller.tap_schedule.fired", {"tap_position": tap})
+            return [SetTaps(tap_position=tap)]
+        return []

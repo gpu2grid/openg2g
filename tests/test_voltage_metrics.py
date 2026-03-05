@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import math
-
 import pytest
 
 from openg2g.grid.base import BusVoltages, GridState, PhaseVoltages
@@ -21,12 +19,13 @@ def _make_grid_state(
 
 class TestComputeAllbusVoltageStats:
     def test_empty_states(self) -> None:
-        """Empty input should return NaN for voltage extremes and zero violations."""
-        stats = compute_allbus_voltage_stats([])
-        assert math.isnan(stats.worst_vmin)
-        assert math.isnan(stats.worst_vmax)
-        assert stats.violation_time_s == 0.0
-        assert stats.integral_violation_pu_s == 0.0
+        with pytest.raises(ValueError, match="At least two"):
+            compute_allbus_voltage_stats([])
+
+    def test_single_state_rejected(self) -> None:
+        states = [_make_grid_state(0.0, {"bus1": (1.0, 1.0, 1.0)})]
+        with pytest.raises(ValueError, match="got 1"):
+            compute_allbus_voltage_stats(states)
 
     def test_no_violations(self) -> None:
         """All voltages within bounds should produce zero violation metrics."""
@@ -68,11 +67,12 @@ class TestComputeAllbusVoltageStats:
         independently in the same timestep."""
         states = [
             _make_grid_state(0.0, {"bus1": (0.93, 1.07, 1.0)}),
+            _make_grid_state(1.0, {"bus1": (0.93, 1.07, 1.0)}),
         ]
         stats = compute_allbus_voltage_stats(states, v_min=0.95, v_max=1.05)
         assert stats.worst_vmin == pytest.approx(0.93)
         assert stats.worst_vmax == pytest.approx(1.07)
-        assert stats.integral_violation_pu_s == pytest.approx(0.04)
+        assert stats.integral_violation_pu_s == pytest.approx(0.08)
 
     def test_multiple_buses_summed(self) -> None:
         """Violations across different buses should be summed per timestep."""
@@ -130,6 +130,13 @@ class TestComputeAllbusVoltageStats:
                     "bus1": (1.0, 1.0, 1.0),
                 },
             ),
+            _make_grid_state(
+                1.0,
+                {
+                    "RG60": (0.80, 0.80, 0.80),
+                    "bus1": (1.0, 1.0, 1.0),
+                },
+            ),
         ]
         stats = compute_allbus_voltage_stats(states, v_min=0.95, v_max=1.05, exclude_buses=("rg60",))
         assert stats.worst_vmin == 1.0
@@ -173,11 +180,13 @@ class TestComputeAllbusVoltageStats:
         assert stats.violation_time_s == pytest.approx(1.0)
         assert stats.integral_violation_pu_s == pytest.approx(0.02)
 
-    def test_single_state(self) -> None:
-        """A single snapshot should use dt=1.0 as fallback since no time
-        diff is available."""
-        states = [_make_grid_state(5.0, {"bus1": (0.90, 1.0, 1.0)})]
+    def test_two_states_minimum(self) -> None:
+        """Two states is the minimum required input."""
+        states = [
+            _make_grid_state(0.0, {"bus1": (0.90, 1.0, 1.0)}),
+            _make_grid_state(1.0, {"bus1": (0.90, 1.0, 1.0)}),
+        ]
         stats = compute_allbus_voltage_stats(states, v_min=0.95, v_max=1.05)
         assert stats.worst_vmin == pytest.approx(0.90)
-        assert stats.integral_violation_pu_s == pytest.approx(0.05)
-        assert stats.violation_time_s == pytest.approx(1.0)
+        assert stats.integral_violation_pu_s == pytest.approx(0.10)
+        assert stats.violation_time_s == pytest.approx(2.0)

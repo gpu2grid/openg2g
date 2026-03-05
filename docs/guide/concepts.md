@@ -50,7 +50,7 @@ Controllers close the feedback loop.
 They read the latest datacenter and grid state, and issue control actions (e.g., adjusting batch sizes, changing tap positions) to either the datacenter or to the grid.
 Multiple controllers compose in order within the simulation coordinator, so you can combine strategies, e.g., a tap schedule controller alongside an LLM inference batch size controller.
 
-OpenG2G ships with several built-in controllers including an [Online Feedback Optimization (OFO)](building-simulators.md#the-ofo-controller) controller for batch size regulation, a tap schedule controller, and a no-op controller for baselines. You can also implement your own by subclassing the [`Controller`][openg2g.controller.base.Controller] interface; see [Writing Custom Components](building-simulators.md#writing-custom-components).
+OpenG2G ships with several built-in controllers including an [Online Feedback Optimization (OFO)](building-simulators.md#ofobatchsizecontroller) controller for batch size regulation, a tap schedule controller, and a no-op controller for baselines. You can also implement your own by subclassing the [`Controller`][openg2g.controller.base.Controller] interface; see [Writing Custom Components](building-simulators.md#writing-custom-components).
 
 ## What Can You Explore?
 

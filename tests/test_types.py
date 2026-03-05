@@ -1,17 +1,23 @@
-"""Tests for openg2g.types: state dataclasses, TapPosition, TapSchedule, ServerRamp,
-ServerRampSchedule, ActivationStrategy, TrainingRun, TrainingSchedule."""
+"""Tests for config/schedule types: TapPosition, TapSchedule, InferenceRamp,
+InferenceRampSchedule, ActivationPolicy, TrainingRun, TrainingSchedule."""
 
 from __future__ import annotations
 
 import numpy as np
 import pytest
 
-from openg2g.datacenter.config import ServerRamp, ServerRampSchedule, TrainingRun, TrainingSchedule
-from openg2g.datacenter.layout import ActivationStrategy, RampActivationStrategy
+from openg2g.common import ThreePhase
+from openg2g.datacenter.config import (
+    InferenceRamp,
+    InferenceRampSchedule,
+    TrainingRun,
+    TrainingSchedule,
+)
+from openg2g.datacenter.layout import ActivationPolicy, RampActivationPolicy
 from openg2g.datacenter.online import OnlineDatacenterState
-from openg2g.datacenter.training_overlay import TrainingTrace
+from openg2g.datacenter.workloads.training import TrainingTrace
 from openg2g.grid.base import BusVoltages, GridState, PhaseVoltages
-from openg2g.types import TapPosition, TapSchedule, ThreePhase
+from openg2g.grid.config import TapPosition, TapSchedule
 
 _DUMMY_TRACE = TrainingTrace(t_s=np.array([0.0, 1.0]), power_w=np.array([100.0, 200.0]))
 
@@ -110,69 +116,76 @@ class TestTapSchedule:
             TapSchedule(((0.0, TapPosition(a=1.0)), (0.0, TapPosition(a=1.1))))
 
 
-class TestServerRamp:
+class TestInferenceRamp:
     def test_basic(self) -> None:
-        """ServerRamp should store its start, end, and target fraction."""
-        r = ServerRamp(t_start=1000, t_end=2000, target=0.5)
-        assert r.t_start == 1000
-        assert r.t_end == 2000
+        """InferenceRamp should store its target fraction."""
+        r = InferenceRamp(target=0.5)
         assert r.target == 0.5
-
-    def test_invalid_time_order(self) -> None:
-        """t_end before t_start should raise ValueError."""
-        with pytest.raises(ValueError, match=r"t_end.*must be >= t_start"):
-            ServerRamp(t_start=2000, t_end=1000, target=0.5)
 
     def test_invalid_target_low(self) -> None:
         """Negative target fraction should raise ValueError."""
         with pytest.raises(ValueError, match="target must be in"):
-            ServerRamp(t_start=0, t_end=100, target=-0.1)
+            InferenceRamp(target=-0.1)
 
     def test_invalid_target_high(self) -> None:
         """Target fraction above 1.0 should raise ValueError."""
         with pytest.raises(ValueError, match="target must be in"):
-            ServerRamp(t_start=0, t_end=100, target=1.5)
+            InferenceRamp(target=1.5)
+
+    def test_at_returns_schedule(self) -> None:
+        """Calling .at() should wrap in a single-entry InferenceRampSchedule."""
+        s = InferenceRamp(target=0.5).at(t_start=1000, t_end=2000)
+        assert isinstance(s, InferenceRampSchedule)
+        assert len(s) == 1
+
+    def test_at_invalid_time_order(self) -> None:
+        """t_end before t_start should raise ValueError."""
+        with pytest.raises(ValueError, match=r"t_end.*must be >= t_start"):
+            InferenceRamp(target=0.5).at(t_start=2000, t_end=1000)
 
     def test_pipe_creates_schedule(self) -> None:
-        """Piping two ServerRamps should produce a ServerRampSchedule."""
-        s = ServerRamp(t_start=100, t_end=200, target=0.5) | ServerRamp(t_start=300, t_end=400, target=1.0)
-        assert isinstance(s, ServerRampSchedule)
+        """Piping two scheduled ramps should produce an InferenceRampSchedule."""
+        s = InferenceRamp(target=0.5).at(t_start=100, t_end=200) | InferenceRamp(target=1.0).at(t_start=300, t_end=400)
+        assert isinstance(s, InferenceRampSchedule)
         assert len(s) == 2
 
-    def test_pipe_with_schedule(self) -> None:
-        """Chaining three ServerRamps with | should accumulate all entries."""
-        r1 = ServerRamp(t_start=100, t_end=200, target=0.5)
-        r2 = ServerRamp(t_start=300, t_end=400, target=1.0)
-        r3 = ServerRamp(t_start=500, t_end=600, target=0.3)
-        s = r1 | r2 | r3
-        assert isinstance(s, ServerRampSchedule)
+    def test_pipe_three(self) -> None:
+        """Chaining three ramps with | should accumulate all entries."""
+        s = (
+            InferenceRamp(target=0.5).at(t_start=100, t_end=200)
+            | InferenceRamp(target=1.0).at(t_start=300, t_end=400)
+            | InferenceRamp(target=0.3).at(t_start=500, t_end=600)
+        )
+        assert isinstance(s, InferenceRampSchedule)
         assert len(s) == 3
 
 
-class TestServerRampSchedule:
+class TestInferenceRampSchedule:
     def test_fraction_before_first_ramp(self) -> None:
         """Before the first ramp starts, the active fraction should be 1.0."""
-        s = ServerRampSchedule(entries=(ServerRamp(t_start=1000, t_end=2000, target=0.5),))
+        s = InferenceRamp(target=0.5).at(t_start=1000, t_end=2000)
         assert s.fraction_at(0.0) == 1.0
         assert s.fraction_at(999.0) == 1.0
 
     def test_fraction_during_ramp(self) -> None:
         """During a ramp, the fraction should linearly interpolate from
         the previous level to the target."""
-        s = ServerRampSchedule(entries=(ServerRamp(t_start=1000, t_end=2000, target=0.0),))
+        s = InferenceRamp(target=0.0).at(t_start=1000, t_end=2000)
         assert s.fraction_at(1000.0) == 1.0
         assert s.fraction_at(1500.0) == pytest.approx(0.5)
         assert s.fraction_at(2000.0) == pytest.approx(0.0)
 
     def test_fraction_after_ramp(self) -> None:
         """After a ramp completes, the fraction should hold at the target."""
-        s = ServerRampSchedule(entries=(ServerRamp(t_start=1000, t_end=2000, target=0.2),))
+        s = InferenceRamp(target=0.2).at(t_start=1000, t_end=2000)
         assert s.fraction_at(3000.0) == pytest.approx(0.2)
 
     def test_two_ramps(self) -> None:
         """Two sequential ramps: first ramps down to 0.2, second ramps back
         up to 1.0. The fraction should hold between ramps."""
-        s = ServerRamp(t_start=1000, t_end=2000, target=0.2) | ServerRamp(t_start=3000, t_end=3500, target=1.0)
+        s = InferenceRamp(target=0.2).at(t_start=1000, t_end=2000) | InferenceRamp(target=1.0).at(
+            t_start=3000, t_end=3500
+        )
         assert s.fraction_at(0.0) == 1.0
         assert s.fraction_at(1500.0) == pytest.approx(0.6)
         assert s.fraction_at(2500.0) == pytest.approx(0.2)
@@ -181,14 +194,14 @@ class TestServerRampSchedule:
 
     def test_instant_ramp(self) -> None:
         """A ramp with t_start == t_end should produce an instant step change."""
-        s = ServerRampSchedule(entries=(ServerRamp(t_start=1000, t_end=1000, target=0.5),))
+        s = InferenceRamp(target=0.5).at(t_start=1000, t_end=1000)
         assert s.fraction_at(999.0) == 1.0
         assert s.fraction_at(1000.0) == 0.5
         assert s.fraction_at(1001.0) == 0.5
 
     def test_fraction_array(self) -> None:
         """fraction_at should accept a numpy array and return element-wise results."""
-        s = ServerRampSchedule(entries=(ServerRamp(t_start=1000, t_end=2000, target=0.0),))
+        s = InferenceRamp(target=0.0).at(t_start=1000, t_end=2000)
         t = np.array([0.0, 1000.0, 1500.0, 2000.0, 3000.0])
         result = s.fraction_at(t)
         expected = np.array([1.0, 1.0, 0.5, 0.0, 0.0])
@@ -196,39 +209,55 @@ class TestServerRampSchedule:
 
     def test_sorted_by_start(self) -> None:
         """Ramps piped in reverse order should still be sorted by t_start."""
-        s = ServerRamp(t_start=3000, t_end=3500, target=1.0) | ServerRamp(t_start=1000, t_end=2000, target=0.2)
-        starts = [r.t_start for r in s]
+        s = InferenceRamp(target=1.0).at(t_start=3000, t_end=3500) | InferenceRamp(target=0.2).at(
+            t_start=1000, t_end=2000
+        )
+        starts = [t_start for _, t_start, _ in s]
         assert starts == [1000, 3000]
 
 
 class TestTrainingRun:
     def test_basic(self) -> None:
-        """TrainingRun should store its time window, GPU count, and trace."""
-        r = TrainingRun(t_start=100, t_end=200, n_gpus=2400, trace=_DUMMY_TRACE)
-        assert r.t_start == 100
-        assert r.t_end == 200
+        """TrainingRun should store its GPU count and trace."""
+        r = TrainingRun(n_gpus=2400, trace=_DUMMY_TRACE)
         assert r.n_gpus == 2400
-
-    def test_invalid_time_order(self) -> None:
-        """t_end before t_start should raise ValueError."""
-        with pytest.raises(ValueError, match=r"t_end.*must be >= t_start"):
-            TrainingRun(t_start=200, t_end=100, n_gpus=2400, trace=_DUMMY_TRACE)
 
     def test_negative_gpus(self) -> None:
         """Negative GPU count should raise ValueError."""
-        with pytest.raises(ValueError, match="n_gpus must be >= 0"):
-            TrainingRun(t_start=0, t_end=100, n_gpus=-1, trace=_DUMMY_TRACE)
+        with pytest.raises(ValueError, match="n_gpus must be > 0"):
+            TrainingRun(n_gpus=-1, trace=_DUMMY_TRACE)
 
     def test_default_target_peak(self) -> None:
         """target_peak_W_per_gpu should default to 400.0."""
-        r = TrainingRun(t_start=0, t_end=100, n_gpus=100, trace=_DUMMY_TRACE)
+        r = TrainingRun(n_gpus=100, trace=_DUMMY_TRACE)
         assert r.target_peak_W_per_gpu == 400.0
 
+    def test_at_returns_schedule(self) -> None:
+        """Calling .at() should wrap in a single-entry TrainingSchedule."""
+        s = TrainingRun(n_gpus=100, trace=_DUMMY_TRACE).at(t_start=0, t_end=100)
+        assert isinstance(s, TrainingSchedule)
+        assert len(s) == 1
+
+    def test_at_invalid_time_order(self) -> None:
+        """t_end before t_start should raise ValueError."""
+        with pytest.raises(ValueError, match=r"t_end.*must be >= t_start"):
+            TrainingRun(n_gpus=100, trace=_DUMMY_TRACE).at(t_start=200, t_end=100)
+
+    def test_scheduled_fields(self) -> None:
+        """Schedule entries should expose run and time fields via tuple."""
+        r = TrainingRun(n_gpus=2400, trace=_DUMMY_TRACE, target_peak_W_per_gpu=500.0)
+        run, t_start, t_end = next(iter(r.at(t_start=100, t_end=200)))
+        assert run is r
+        assert run.n_gpus == 2400
+        assert run.target_peak_W_per_gpu == 500.0
+        assert t_start == 100
+        assert t_end == 200
+
     def test_pipe_creates_schedule(self) -> None:
-        """Piping two TrainingRuns should produce a TrainingSchedule."""
-        r1 = TrainingRun(t_start=0, t_end=100, n_gpus=100, trace=_DUMMY_TRACE)
-        r2 = TrainingRun(t_start=200, t_end=300, n_gpus=50, trace=_DUMMY_TRACE)
-        s = r1 | r2
+        """Piping two scheduled training runs should produce a TrainingSchedule."""
+        s = TrainingRun(n_gpus=100, trace=_DUMMY_TRACE).at(t_start=0, t_end=100) | TrainingRun(
+            n_gpus=50, trace=_DUMMY_TRACE
+        ).at(t_start=200, t_end=300)
         assert isinstance(s, TrainingSchedule)
         assert len(s) == 2
 
@@ -236,32 +265,31 @@ class TestTrainingRun:
 class TestTrainingSchedule:
     def test_sorted_by_start(self) -> None:
         """Runs piped in reverse order should still be sorted by t_start."""
-        r1 = TrainingRun(t_start=200, t_end=300, n_gpus=50, trace=_DUMMY_TRACE)
-        r2 = TrainingRun(t_start=0, t_end=100, n_gpus=100, trace=_DUMMY_TRACE)
-        s = r1 | r2
-        starts = [r.t_start for r in s]
+        s = TrainingRun(n_gpus=50, trace=_DUMMY_TRACE).at(t_start=200, t_end=300) | TrainingRun(
+            n_gpus=100, trace=_DUMMY_TRACE
+        ).at(t_start=0, t_end=100)
+        starts = [t_start for _, t_start, _ in s]
         assert starts == [0, 200]
 
     def test_pipe_three(self) -> None:
-        """Chaining three TrainingRuns with | should accumulate all entries."""
-        r1 = TrainingRun(t_start=0, t_end=100, n_gpus=100, trace=_DUMMY_TRACE)
-        r2 = TrainingRun(t_start=200, t_end=300, n_gpus=50, trace=_DUMMY_TRACE)
-        r3 = TrainingRun(t_start=400, t_end=500, n_gpus=25, trace=_DUMMY_TRACE)
-        s = r1 | r2 | r3
+        """Chaining three scheduled runs with | should accumulate all entries."""
+        s = (
+            TrainingRun(n_gpus=100, trace=_DUMMY_TRACE).at(t_start=0, t_end=100)
+            | TrainingRun(n_gpus=50, trace=_DUMMY_TRACE).at(t_start=200, t_end=300)
+            | TrainingRun(n_gpus=25, trace=_DUMMY_TRACE).at(t_start=400, t_end=500)
+        )
         assert len(s) == 3
 
     def test_bool(self) -> None:
         """An empty schedule should be falsy; a non-empty one should be truthy."""
-        s = TrainingSchedule(entries=())
+        s = TrainingSchedule()
         assert not s
-        r = TrainingRun(t_start=0, t_end=100, n_gpus=100, trace=_DUMMY_TRACE)
-        s2 = TrainingSchedule(entries=(r,))
+        s2 = TrainingRun(n_gpus=100, trace=_DUMMY_TRACE).at(t_start=0, t_end=100)
         assert s2
 
     def test_repr(self) -> None:
         """repr should include 'TrainingRun' for debuggability."""
-        r = TrainingRun(t_start=0, t_end=100, n_gpus=100, trace=_DUMMY_TRACE)
-        s = TrainingSchedule(entries=(r,))
+        s = TrainingRun(n_gpus=100, trace=_DUMMY_TRACE).at(t_start=0, t_end=100)
         assert "TrainingRun" in repr(s)
 
 
@@ -297,8 +325,8 @@ class TestOnlineDatacenterState:
             augmented_power_w_by_model={"8B": 1200e3},
             augmentation_factor_by_model={"8B": 10.0},
         )
-        assert state.power_w.total() == 1500e3
-        assert state.measured_power_w.total() == 150e3
+        assert state.power_w.a + state.power_w.b + state.power_w.c == 1500e3
+        assert state.measured_power_w.a + state.measured_power_w.b + state.measured_power_w.c == 150e3
         assert state.augmented_power_w_by_model["8B"] == 1200e3
         assert state.measured_power_w_by_model["8B"] == 120e3
         assert state.augmentation_factor_by_model["8B"] == 10.0
@@ -308,79 +336,66 @@ class TestOnlineDatacenterState:
             time_s=0.0,
             power_w=ThreePhase(a=0.0, b=0.0, c=0.0),
         )
-        assert state.measured_power_w.total() == 0.0
+        assert state.measured_power_w.a + state.measured_power_w.b + state.measured_power_w.c == 0.0
         assert state.measured_power_w_by_model == {}
         assert state.augmented_power_w_by_model == {}
         assert state.augmentation_factor_by_model == {}
 
 
-class TestRampActivationStrategy:
+class TestRampActivationPolicy:
     def test_all_active_before_ramp(self) -> None:
         """Before the first ramp, all servers should be active."""
-        schedule = ServerRampSchedule(entries=(ServerRamp(t_start=1000, t_end=2000, target=0.5),))
-        policy = RampActivationStrategy(schedule)
-        rng = np.random.default_rng(42)
-        bound = policy.for_model(num_servers=10, phase_list=np.zeros(10, dtype=int), rng=rng)
-        mask = bound.active_mask(0.0)
+        schedule = InferenceRamp(target=0.5).at(t_start=1000, t_end=2000)
+        policy = RampActivationPolicy(schedule, num_servers=10, rng=np.random.default_rng(42))
+        mask = policy.active_mask(0.0)
         assert mask.sum() == 10
 
     def test_ramp_down(self) -> None:
         """After ramp completes, only the target fraction of servers should be active."""
-        schedule = ServerRampSchedule(entries=(ServerRamp(t_start=0, t_end=0, target=0.5),))
-        policy = RampActivationStrategy(schedule)
-        rng = np.random.default_rng(42)
-        bound = policy.for_model(num_servers=10, phase_list=np.zeros(10, dtype=int), rng=rng)
-        mask = bound.active_mask(1.0)
+        schedule = InferenceRamp(target=0.5).at(t_start=0, t_end=0)
+        policy = RampActivationPolicy(schedule, num_servers=10, rng=np.random.default_rng(42))
+        mask = policy.active_mask(1.0)
         assert mask.sum() == 5
 
     def test_ramp_up(self) -> None:
         """Ramp up: start at 0.2, ramp to 1.0."""
-        schedule = ServerRamp(t_start=0, t_end=0, target=0.2) | ServerRamp(t_start=100, t_end=100, target=1.0)
-        policy = RampActivationStrategy(schedule)
-        rng = np.random.default_rng(42)
-        bound = policy.for_model(num_servers=10, phase_list=np.zeros(10, dtype=int), rng=rng)
-        mask_low = bound.active_mask(50.0)
-        mask_high = bound.active_mask(200.0)
+        schedule = InferenceRamp(target=0.2).at(t_start=0, t_end=0) | InferenceRamp(target=1.0).at(
+            t_start=100, t_end=100
+        )
+        policy = RampActivationPolicy(schedule, num_servers=10, rng=np.random.default_rng(42))
+        mask_low = policy.active_mask(50.0)
+        mask_high = policy.active_mask(200.0)
         assert mask_low.sum() == 2
         assert mask_high.sum() == 10
 
     def test_ramp_up_servers_superset(self) -> None:
         """Servers active at low fraction should be a subset of those active at high fraction."""
-        schedule = ServerRamp(t_start=0, t_end=0, target=0.3) | ServerRamp(t_start=100, t_end=100, target=0.7)
-        policy = RampActivationStrategy(schedule)
-        rng = np.random.default_rng(42)
-        bound = policy.for_model(num_servers=10, phase_list=np.zeros(10, dtype=int), rng=rng)
-        mask_low = bound.active_mask(50.0)
-        mask_high = bound.active_mask(200.0)
+        schedule = InferenceRamp(target=0.3).at(t_start=0, t_end=0) | InferenceRamp(target=0.7).at(
+            t_start=100, t_end=100
+        )
+        policy = RampActivationPolicy(schedule, num_servers=10, rng=np.random.default_rng(42))
+        mask_low = policy.active_mask(50.0)
+        mask_high = policy.active_mask(200.0)
         assert np.all(mask_high[mask_low])
 
     def test_deterministic_with_same_seed(self) -> None:
         """Same seed should produce the same activation mask."""
-        schedule = ServerRampSchedule(entries=(ServerRamp(t_start=0, t_end=0, target=0.5),))
-        policy = RampActivationStrategy(schedule)
-        bound1 = policy.for_model(num_servers=20, phase_list=np.zeros(20, dtype=int), rng=np.random.default_rng(0))
-        bound2 = policy.for_model(num_servers=20, phase_list=np.zeros(20, dtype=int), rng=np.random.default_rng(0))
-        np.testing.assert_array_equal(bound1.active_mask(1.0), bound2.active_mask(1.0))
+        schedule = InferenceRamp(target=0.5).at(t_start=0, t_end=0)
+        p1 = RampActivationPolicy(schedule, num_servers=20, rng=np.random.default_rng(0))
+        p2 = RampActivationPolicy(schedule, num_servers=20, rng=np.random.default_rng(0))
+        np.testing.assert_array_equal(p1.active_mask(1.0), p2.active_mask(1.0))
 
-    def test_phase_list_available_to_custom_policy(self) -> None:
-        """Custom policies should receive phase_list for phase-aware decisions."""
-        phase_list = np.array([0, 0, 0, 1, 1, 1, 2, 2, 2, 2])
-        received: dict[str, object] = {}
+    def test_custom_policy_subclass(self) -> None:
+        """Custom ActivationPolicy subclasses should work with ServerLayout."""
 
-        class _RecordingPolicy(ActivationStrategy):
-            def for_model(self, *, num_servers, phase_list, rng):
-                received["num_servers"] = num_servers
-                received["phase_list"] = phase_list
-                return _AllOnBound(num_servers)
-
-        class _AllOnBound:
+        class _AllOnPolicy(ActivationPolicy):
             def __init__(self, n: int) -> None:
                 self._n = n
 
             def active_mask(self, t: float) -> np.ndarray:
                 return np.ones(self._n, dtype=bool)
 
-        policy = _RecordingPolicy()
-        policy.for_model(num_servers=10, phase_list=phase_list, rng=np.random.default_rng(0))
-        assert received["num_servers"] == 10
-        np.testing.assert_array_equal(received["phase_list"], phase_list)
+        policy = _AllOnPolicy(10)
+        mask = policy.active_mask(0.0)
+        assert mask.sum() == 10
+        assert policy.active_indices(0.0).tolist() == list(range(10))

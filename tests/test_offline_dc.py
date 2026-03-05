@@ -9,47 +9,47 @@ import pytest
 from mlenergy_data.modeling import ITLMixtureModel
 
 from openg2g.clock import SimulationClock
-from openg2g.datacenter.config import DatacenterConfig
-from openg2g.datacenter.offline import (
+from openg2g.coordinator import SimulationLog
+from openg2g.datacenter.command import DatacenterCommand, SetBatchSize
+from openg2g.datacenter.config import DatacenterConfig, InferenceModelSpec
+from openg2g.datacenter.offline import OfflineDatacenter, OfflineDatacenterState, OfflineWorkload
+from openg2g.datacenter.workloads.inference import (
+    InferenceData,
+    InferenceTemplateStore,
+    InferenceTrace,
+    InferenceTraceStore,
     ITLFitStore,
-    OfflineDatacenter,
-    OfflineDatacenterState,
-    OfflineInferenceData,
-    OfflineWorkload,
-    PowerTemplateStore,
-    PowerTrace,
-    PowerTraceStore,
     _build_per_gpu_power_template,
 )
-from openg2g.models.spec import LLMInferenceModelSpec
-from openg2g.types import DatacenterCommand, SetBatchSize
+from openg2g.events import EventEmitter
 
-MODEL = LLMInferenceModelSpec(
+MODEL = InferenceModelSpec(
     model_label="TestModel", num_replicas=10, gpus_per_replica=1, initial_batch_size=128, itl_deadline_s=0.1
 )
 DC_CFG = DatacenterConfig(gpus_per_server=8)
+_EVENTS = EventEmitter(SimulationClock(Fraction(1, 10)), SimulationLog(), "custom")
 
 
-def _make_simple_store(dt: float = 0.1, T: float = 100.0) -> PowerTemplateStore:
-    """Create a minimal PowerTemplateStore with synthetic data."""
+def _make_simple_store(dt: float = 0.1, T: float = 100.0) -> InferenceTemplateStore:
+    """Create a minimal InferenceTemplateStore with synthetic data."""
     t = np.linspace(0, 10, 100)
     p = np.linspace(100, 200, 100)
 
     traces = {
         "TestModel": {
-            64: PowerTrace(t_s=t, power_w=p * (64 / 128.0), measured_gpus=1),
-            128: PowerTrace(t_s=t, power_w=p, measured_gpus=1),
+            64: InferenceTrace(t_s=t, power_w=p * (64 / 128.0), measured_gpus=1),
+            128: InferenceTrace(t_s=t, power_w=p, measured_gpus=1),
         }
     }
 
-    store = PowerTraceStore.from_traces(traces)
+    store = InferenceTraceStore(traces)
     return store.build_templates(duration_s=T, dt_s=dt)
 
 
-def _make_workload(templates: PowerTemplateStore, itl_fits: ITLFitStore | None = None) -> OfflineWorkload:
+def _make_workload(templates: InferenceTemplateStore, itl_fits: ITLFitStore | None = None) -> OfflineWorkload:
     """Create an OfflineWorkload from templates and optional ITL fits."""
     return OfflineWorkload(
-        inference_data=OfflineInferenceData(
+        inference_data=InferenceData(
             (MODEL,),
             power_templates=templates,
             itl_fits=itl_fits,
@@ -62,7 +62,7 @@ def test_step_returns_offline_state():
     dc = OfflineDatacenter(DC_CFG, _make_workload(store), dt_s=Fraction(1, 10))
 
     clock = SimulationClock(tick_s=Fraction(1, 10))
-    state = dc.step(clock)
+    state = dc.step(clock, _EVENTS)
 
     assert isinstance(state, OfflineDatacenterState)
     assert state.power_w.a >= 0
@@ -80,7 +80,7 @@ def test_step_produces_correct_number_of_states():
     clock = SimulationClock(tick_s=Fraction(1, 10))
     states = []
     for _ in range(10):
-        states.append(dc.step(clock))
+        states.append(dc.step(clock, _EVENTS))
         clock.advance()
 
     assert len(states) == 10
@@ -97,14 +97,13 @@ def test_batch_change_takes_effect_immediately():
     clock = SimulationClock(tick_s=Fraction(1, 10))
 
     for _ in range(5):
-        state = dc.step(clock)
+        state = dc.step(clock, _EVENTS)
         assert state.batch_size_by_model["TestModel"] == 128
         clock.advance()
 
-    dc.apply_control(SetBatchSize(batch_size_by_model={"TestModel": 64}))
-    assert dc.batch_by_model["TestModel"] == 64
+    dc.apply_control(SetBatchSize(batch_size_by_model={"TestModel": 64}), _EVENTS)
 
-    state = dc.step(clock)
+    state = dc.step(clock, _EVENTS)
     assert state.batch_size_by_model["TestModel"] == 64
 
 
@@ -112,7 +111,7 @@ def test_build_periodic_template_shape():
     """Template should have the right number of steps."""
     t = np.linspace(0, 10, 200)
     p = np.sin(t) * 100 + 200
-    trace = PowerTrace(t_s=t, power_w=p, measured_gpus=2)
+    trace = InferenceTrace(t_s=t, power_w=p, measured_gpus=2)
 
     tpl = _build_per_gpu_power_template(trace, dt_s=0.1, duration_s=50.0)
 
@@ -135,7 +134,7 @@ def test_offline_datacenter_emits_observed_itl_when_latency_fits_is_set():
     latency_fits = ITLFitStore({"TestModel": {128: fake_params}})
     dc = OfflineDatacenter(DC_CFG, _make_workload(store, itl_fits=latency_fits), dt_s=Fraction(1, 10))
 
-    state = dc.step(SimulationClock(tick_s=Fraction(1, 10)))
+    state = dc.step(SimulationClock(tick_s=Fraction(1, 10)), _EVENTS)
     assert "TestModel" in state.observed_itl_s_by_model
     assert np.isfinite(state.observed_itl_s_by_model["TestModel"])
 
@@ -150,4 +149,4 @@ def test_apply_control_rejects_unknown_command():
     dc = OfflineDatacenter(DC_CFG, _make_workload(store), dt_s=Fraction(1, 10))
 
     with pytest.raises(TypeError, match="OfflineDatacenter does not support"):
-        dc.apply_control(_CustomCommand())
+        dc.apply_control(_CustomCommand(), _EVENTS)

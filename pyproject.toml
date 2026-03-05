@@ -12,6 +12,7 @@ readme = "README.md"
 dependencies = [
     "numpy",
     "pandas",
+    "pydantic>=2.0",
     "aiohttp",
     "zeus>=0.15.0",
     "mlenergy-data",
@@ -29,7 +30,7 @@ opendss = ["opendssdirect.py"]
 test = ["pytest"]
 lint = ["ruff", "ty"]
 docs = ["zensical", "mkdocstrings[python]", "tomlkit"]
-examples = ["openg2g[opendss]", "matplotlib", "datasets", "openai", "pyyaml"]
+examples = ["openg2g[opendss]", "matplotlib", "datasets", "openai", "pyyaml", "tyro"]
 dev = [
     {include-group = "test"},
     {include-group = "lint"},
@@ -68,6 +69,7 @@ ignore = [
 
 [tool.ruff.lint.isort]
 known-first-party = ["openg2g"]
+known-local-folder = ["plotting"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

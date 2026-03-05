@@ -1,30 +1,27 @@
-"""Server layout and power augmentation primitives.
+"""Server layout and activation policy primitives.
 
-Provides the shared components for scaling per-GPU power measurements
-to datacenter-level three-phase power output. These primitives are
-backend-agnostic and can be used by both offline (trace-based) and
-online (live GPU) datacenters.
+Provides the topology and activation-policy building blocks used by
+datacenter backends. Power augmentation (scaling per-GPU power to
+three-phase datacenter power) lives in
+`openg2g.datacenter.workloads.inference`.
 """
 
 from __future__ import annotations
 
-import math
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import numpy as np
 
-from openg2g.datacenter.config import ServerRampSchedule
-from openg2g.models.spec import LLMInferenceModelSpec
-from openg2g.types import ThreePhase
-from openg2g.utils import split_integer_evenly
+from openg2g.datacenter.config import InferenceRampSchedule
 
 
 class ActivationPolicy(ABC):
     """Per-model activation policy that answers "which servers are active?"
 
-    Created by [`ActivationStrategy.for_model`][..ActivationStrategy.for_model]
-    and bound to a specific model's server pool.
+    Subclass to implement custom activation logic. The datacenter creates
+    one policy per model and passes it to
+    [`InferencePowerAugmenter`][openg2g.datacenter.workloads.inference.InferencePowerAugmenter].
     """
 
     @abstractmethod
@@ -50,58 +47,35 @@ class ActivationPolicy(ABC):
         return np.where(self.active_mask(t))[0]
 
 
-class ActivationStrategy(ABC):
-    """Factory that creates per-model
-    [`ActivationPolicy`][..ActivationPolicy] instances.
+class RampActivationPolicy(ActivationPolicy):
+    """Activate servers by fixed random priority, following an
+    [`InferenceRampSchedule`][openg2g.datacenter.config.InferenceRampSchedule].
 
-    A strategy is instantiated once and passed to the datacenter. When
-    the datacenter builds each model's server layout, it calls
-    [`for_model`][.for_model] to create a model-specific
-    [`ActivationPolicy`][..ActivationPolicy].
+    At time *t*, the top-*k* servers (by random priority) are active,
+    where `k = round(schedule.fraction_at(t) * num_servers)`.
 
-    Subclass to implement custom activation strategies. The `phase_list`
-    argument in [`for_model`][.for_model] enables phase-aware load
-    balancing.
+    This is the default policy used by
+    [`OfflineDatacenter`][openg2g.datacenter.offline.OfflineDatacenter].
+
+    Args:
+        schedule: Temporal ramp schedule mapping time to active-server fraction.
+        num_servers: Number of physical servers for this model.
+        rng: RNG for randomizing priority ordering. Consumed once at
+            construction time.
     """
-
-    @abstractmethod
-    def for_model(
-        self,
-        *,
-        num_servers: int,
-        phase_list: np.ndarray,
-        rng: np.random.Generator,
-    ) -> ActivationPolicy:
-        """Create a policy for one model's server pool.
-
-        Args:
-            num_servers: Number of physical servers for this model.
-            phase_list: Phase assignment per server (0=A, 1=B, 2=C), shape
-                `(num_servers,)`.
-            rng: RNG for randomized decisions (priority ordering, etc.).
-                Implementations must consume RNG calls deterministically
-                so that downstream layout generation is reproducible.
-
-        Returns:
-            Policy that answers
-                [`active_mask`][...ActivationPolicy.active_mask]
-                queries.
-        """
-
-
-class _RampActivationPolicy(ActivationPolicy):
-    """Policy for [`RampActivationStrategy`][..RampActivationStrategy]."""
 
     __slots__ = ("_n", "_priority", "_schedule")
 
     def __init__(
         self,
-        schedule: ServerRampSchedule,
+        schedule: InferenceRampSchedule,
         num_servers: int,
-        priority: np.ndarray,
+        rng: np.random.Generator,
     ) -> None:
         self._schedule = schedule
         self._n = num_servers
+        priority = np.arange(num_servers, dtype=int)
+        rng.shuffle(priority)
         self._priority = priority
 
     def active_mask(self, t: float) -> np.ndarray:
@@ -118,38 +92,15 @@ class _RampActivationPolicy(ActivationPolicy):
         return self._priority[:k].copy()
 
 
-class RampActivationStrategy(ActivationStrategy):
-    """Activate servers by fixed random priority, following a
-    [`ServerRampSchedule`][openg2g.datacenter.config.ServerRampSchedule].
-
-    At time *t*, the top-*k* servers (by random priority) are active,
-    where `k = round(schedule.fraction_at(t) * num_servers)`.
-
-    This is the default strategy used by
-    [`OfflineDatacenter`][openg2g.datacenter.offline.OfflineDatacenter].
-
-    Args:
-        schedule: Temporal ramp schedule mapping time to active-server fraction.
-    """
-
-    def __init__(self, schedule: ServerRampSchedule) -> None:
-        self._schedule = schedule
-
-    def for_model(
-        self,
-        *,
-        num_servers: int,
-        phase_list: np.ndarray,
-        rng: np.random.Generator,
-    ) -> ActivationPolicy:
-        priority = np.arange(num_servers, dtype=int)
-        rng.shuffle(priority)
-        return _RampActivationPolicy(self._schedule, num_servers, priority)
-
-
 @dataclass
 class ServerLayout:
     """Per-model server layout describing how GPUs are organized.
+
+    This describes the physical topology only. Activation policies (which
+    servers are on/off at a given time) are managed separately by the
+    datacenter and passed to
+    [`InferencePowerAugmenter`][openg2g.datacenter.workloads.inference.InferencePowerAugmenter]
+    alongside layouts.
 
     Attributes:
         num_servers: Number of physical servers for this model.
@@ -157,7 +108,6 @@ class ServerLayout:
         gpus_per_replica: GPUs per model replica.
         gpus_per_server_list: GPU count per server (last may be partial).
         phase_list: Phase assignment per server (0=A, 1=B, 2=C).
-        activation_policy: Determines which servers are active at time *t*.
         stagger_offsets: Per-server offsets for desynchronization. In offline
             mode these are integer indices into a power template; in online
             mode they can be float time offsets into a rolling buffer.
@@ -171,189 +121,6 @@ class ServerLayout:
     gpus_per_replica: int
     gpus_per_server_list: np.ndarray
     phase_list: np.ndarray
-    activation_policy: ActivationPolicy
     stagger_offsets: np.ndarray
     amplitude_scales: np.ndarray
     noise_fraction: float
-
-    @classmethod
-    def build(
-        cls,
-        model_spec: LLMInferenceModelSpec,
-        *,
-        gpus_per_server: int,
-        stagger_range: int | float,
-        activation_strategy: ActivationStrategy,
-        amplitude_scale_range: tuple[float, float],
-        noise_fraction: float,
-        rng: np.random.Generator,
-    ) -> ServerLayout:
-        """Build a server layout for one model.
-
-        This is a pure function of its inputs (plus RNG state). The caller
-        is responsible for providing a consistently-seeded RNG so that
-        layout generation is reproducible.
-
-        Args:
-            model_spec: Model specification (replicas, GPUs per replica, etc.).
-            gpus_per_server: Number of GPUs per physical server rack.
-            stagger_range: Upper bound for per-server stagger offsets. If `int`,
-                offsets are drawn from `rng.integers(0, stagger_range)` (for
-                offline template indexing). If `float`, offsets are drawn from
-                `rng.uniform(0, stagger_range)` (for online time-based staggering).
-            activation_strategy: Strategy for determining active servers.
-            amplitude_scale_range: `(low, high)` range for per-server amplitude
-                scaling. Each server draws a uniform multiplier from this range.
-            noise_fraction: Gaussian noise standard deviation as a fraction
-                of per-server power.
-            rng: Random number generator (consumed for phase assignment,
-                activation policy, stagger offsets, and amplitude scales).
-
-        Returns:
-            Frozen [`ServerLayout`][...ServerLayout] for the model.
-        """
-        num_replicas = int(model_spec.num_replicas)
-        gpus_per_replica = int(model_spec.gpus_per_replica)
-        total_gpus = num_replicas * gpus_per_replica
-        num_servers = int(math.ceil(total_gpus / gpus_per_server))
-
-        gpus_per_server_list = np.full(num_servers, gpus_per_server, dtype=int)
-        tail = total_gpus - (num_servers - 1) * gpus_per_server
-        gpus_per_server_list[-1] = int(tail) if tail > 0 else gpus_per_server
-
-        sA, sB, sC = split_integer_evenly(num_servers, 3)
-        phase_list = np.asarray(([0] * sA) + ([1] * sB) + ([2] * sC), dtype=int)
-        rng.shuffle(phase_list)
-
-        bound_policy = activation_strategy.for_model(
-            num_servers=num_servers,
-            phase_list=phase_list,
-            rng=rng,
-        )
-
-        if isinstance(stagger_range, int):
-            stagger_offsets = rng.integers(low=0, high=max(stagger_range, 1), size=num_servers)
-        else:
-            stagger_offsets = rng.uniform(0.0, max(float(stagger_range), 1e-9), size=num_servers)
-
-        amplitude_scales = rng.uniform(
-            float(amplitude_scale_range[0]),
-            float(amplitude_scale_range[1]),
-            size=num_servers,
-        )
-
-        return cls(
-            num_servers=num_servers,
-            total_gpus=total_gpus,
-            gpus_per_replica=gpus_per_replica,
-            gpus_per_server_list=gpus_per_server_list,
-            phase_list=phase_list,
-            activation_policy=bound_policy,
-            stagger_offsets=stagger_offsets,
-            amplitude_scales=amplitude_scales,
-            noise_fraction=float(noise_fraction),
-        )
-
-
-@dataclass(frozen=True)
-class AugmentedPower:
-    """Result of power augmentation for one simulation timestep.
-
-    Attributes:
-        power_w: Three-phase total power (watts), including base load.
-        power_by_model_w: Per-model total active power (watts).
-        active_replicas_by_model: Per-model active replica count.
-    """
-
-    power_w: ThreePhase
-    power_by_model_w: dict[str, float] = field(default_factory=dict)
-    active_replicas_by_model: dict[str, int] = field(default_factory=dict)
-
-
-class PowerAugmenter:
-    """Scales per-GPU power through server layouts to three-phase power.
-
-    Given per-GPU power values for each server (one value per server per
-    model), applies per-server scaling, noise, activation masking, and
-    phase summation to produce datacenter-level three-phase power.
-
-    This class is backend-agnostic. The offline datacenter feeds it
-    template-indexed values; the online datacenter can feed it
-    live-measured values.
-
-    Args:
-        layouts: Per-model server layouts.
-        base_w_per_phase: Constant base load per phase (watts).
-        seed: Random seed for noise RNG.
-    """
-
-    def __init__(
-        self,
-        layouts: dict[str, ServerLayout],
-        base_w_per_phase: float = 0.0,
-        seed: int = 0,
-    ) -> None:
-        self._layouts = layouts
-        self._base_w_per_phase = float(base_w_per_phase)
-        self._seed = int(seed)
-        self._rng = np.random.default_rng(self._seed)
-
-    def step(
-        self,
-        per_gpu_by_model: dict[str, np.ndarray],
-        t: float,
-    ) -> AugmentedPower:
-        """Augment per-server per-GPU power to three-phase power.
-
-        Args:
-            per_gpu_by_model: Mapping of model label to per-GPU power
-                array of shape `(num_servers,)`. Only models with active
-                replicas should be included.
-            t: Current simulation time (seconds), passed to activation
-                policies.
-
-        Returns:
-            [`AugmentedPower`][...AugmentedPower] with three-phase
-                power, per-model power, and per-model active replica
-                counts.
-        """
-        phase_power = np.full(3, self._base_w_per_phase, dtype=float)
-        power_by_model: dict[str, float] = {}
-        active_replicas_by_model: dict[str, int] = {}
-
-        for label, per_gpu in per_gpu_by_model.items():
-            layout = self._layouts[label]
-
-            server_powers = per_gpu * layout.gpus_per_server_list * layout.amplitude_scales
-            if layout.noise_fraction > 0:
-                levels = np.maximum(server_powers, 1.0)
-                server_powers = (
-                    server_powers + self._rng.normal(0.0, 1.0, size=layout.num_servers) * layout.noise_fraction * levels
-                )
-            server_powers = np.maximum(server_powers, 0.0)
-
-            active_indices = layout.activation_policy.active_indices(t)
-            active_powers = server_powers[active_indices]
-            active_phases = layout.phase_list[active_indices]
-
-            model_phase_power = np.zeros(3, dtype=float)
-            np.add.at(model_phase_power, active_phases, active_powers)
-            phase_power += model_phase_power
-
-            power_by_model[label] = float(np.sum(active_powers))
-            active_gpus = int(np.sum(layout.gpus_per_server_list[active_indices]))
-            active_replicas_by_model[label] = active_gpus // layout.gpus_per_replica
-
-        return AugmentedPower(
-            power_w=ThreePhase(
-                a=float(phase_power[0]),
-                b=float(phase_power[1]),
-                c=float(phase_power[2]),
-            ),
-            power_by_model_w=power_by_model,
-            active_replicas_by_model=active_replicas_by_model,
-        )
-
-    def reset(self) -> None:
-        """Re-seed the noise RNG to its initial state."""
-        self._rng = np.random.default_rng(self._seed)
