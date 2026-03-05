@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Literal, Protocol
+from typing import TYPE_CHECKING, Any, Literal
 
-from openg2g.clock import SimulationClock
+if TYPE_CHECKING:
+    from openg2g.clock import SimulationClock
+    from openg2g.coordinator import SimulationLog
 
 EventSource = Literal["coordinator", "controller", "datacenter", "grid", "custom"]
 
@@ -29,13 +31,6 @@ class SimEvent:
     data: dict[str, Any] = field(default_factory=dict)
 
 
-class EventSink(Protocol):
-    """Receives simulation events from components."""
-
-    def emit(self, event: SimEvent) -> None:
-        """Consume one event."""
-
-
 @dataclass
 class EventEmitter:
     """Source-bound event helper that stamps [`SimEvent`][..SimEvent]
@@ -43,18 +38,18 @@ class EventEmitter:
 
     Attributes:
         clock: Simulation clock for timestamping events.
-        sink: Destination that receives emitted events.
+        log: `SimulationLog` that receives emitted events.
         source: Component family label attached to all events.
     """
 
     clock: SimulationClock
-    sink: EventSink
+    log: SimulationLog
     source: EventSource
 
     def emit(self, topic: str, data: dict[str, Any] | None = None) -> None:
         """Emit one event with current clock metadata."""
         t_s = float(self.clock.time_s)
-        self.sink.emit(
+        self.log.emit(
             SimEvent(
                 tick=int(self.clock.step),
                 t_s=t_s,

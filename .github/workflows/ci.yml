@@ -7,7 +7,6 @@ on:
       - "openg2g/**"
       - "tests/**"
       - "examples/**"
-      - "data/**"
       - "scripts/lint.sh"
       - "pyproject.toml"
       - "uv.lock"
@@ -17,7 +16,6 @@ on:
       - "openg2g/**"
       - "tests/**"
       - "examples/**"
-      - "data/**"
       - "scripts/lint.sh"
       - "pyproject.toml"
       - "uv.lock"
@@ -38,7 +36,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ["3.10", "3.11", "3.12"]
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
     steps:
       - uses: actions/checkout@v6
       - uses: astral-sh/setup-uv@v7

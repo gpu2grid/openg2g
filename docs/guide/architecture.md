@@ -23,14 +23,14 @@ The core abstractions provided by OpenG2G are the multi-rate simulation loop ([`
 │  Backend      │         ┌────────────────┐         │                   │
 │               │         │  Grid Backend  │         │  Read DC & grid   │
 │  Produces:    │<─power─>│                │         │  state, compute   │
-│  power load   │         │  Power flow    │         │  ControlActions   │
+│  power load   │         │  Power flow    │         │  commands         │
 │  latency      │         │  solver        │<──cmds──│                   │
 │  throughput   │         └────────────────┘         │ e.g. SetBatchSize │
 │               │<────────────────cmds───────────────│      SetTaps      │
 └───────────────┘                                    └───────────────────┘
 ```
 
-Controllers produce [`ControlAction`][openg2g.types.ControlAction] objects, which are a list of [`GridCommand`][openg2g.types.GridCommand] (e.g., [`SetTaps`][openg2g.types.SetTaps]) and/or [`DatacenterCommand`][openg2g.types.DatacenterCommand] (e.g., [`SetBatchSize`][openg2g.types.SetBatchSize]) that the coordinator dispatches to the appropriate backend before the next tick.
+Controllers return a list of [`GridCommand`][openg2g.grid.command.GridCommand] (e.g., [`SetTaps`][openg2g.grid.command.SetTaps]) and/or [`DatacenterCommand`][openg2g.datacenter.command.DatacenterCommand] (e.g., [`SetBatchSize`][openg2g.datacenter.command.SetBatchSize]) that the coordinator dispatches to the appropriate backend before the next tick.
 Multiple controllers run in sequence each control step, so their actions compose naturally.
 
 ## Simulation Loop
@@ -40,8 +40,8 @@ It computes a base tick as the GCD of all component periods and advances a [`Sim
 
 ```
 for each tick:
-  1. if datacenter is due:    dc_state = datacenter.step(clock)
-  2. if grid is due:          grid_state = grid.step(clock, power_samples, ...)
+  1. if datacenter is due:    dc_state = datacenter.do_step(clock, events)
+  2. if grid is due:          grid_state = grid.do_step(clock, power_samples, events)
   3. for each controller:
        if controller is due:  action = controller.step(clock, datacenter, grid, events)
                               apply action to datacenter and/or grid
@@ -107,9 +107,9 @@ Each component type has an abstract base class in `openg2g`. For full typed code
 [`openg2g.datacenter.base.DatacenterBackend`][openg2g.datacenter.base.DatacenterBackend]. Key methods:
 
 - [`dt_s`][openg2g.datacenter.base.DatacenterBackend.dt_s]: The component's timestep
-- [`step(clock)`][openg2g.datacenter.base.DatacenterBackend.step]: Produce one power sample (returns a [`DatacenterState`][openg2g.datacenter.base.DatacenterState] containing three-phase power in watts)
-- [`apply_control(command)`][openg2g.datacenter.base.DatacenterBackend.apply_control]: Accept a command (e.g., [`SetBatchSize`][openg2g.types.SetBatchSize])
-- [`state`][openg2g.datacenter.base.DatacenterBackend.state] / [`history(n)`][openg2g.datacenter.base.DatacenterBackend.history]: Current and past states, readable by controllers
+- [`step(clock, events)`][openg2g.datacenter.base.DatacenterBackend.step]: Produce one power sample (returns a [`DatacenterState`][openg2g.datacenter.base.DatacenterState] containing three-phase power in watts)
+- [`apply_control(command, events)`][openg2g.datacenter.base.DatacenterBackend.apply_control]: Accept a command (e.g., [`SetBatchSize`][openg2g.datacenter.command.SetBatchSize])
+- [`state`][openg2g.datacenter.base.DatacenterBackend.state] / [`history(n)`][openg2g.datacenter.base.DatacenterBackend.history]: Current and past states (managed automatically by the base class), readable by controllers
 
 Built-in implementations: [`OfflineDatacenter`][openg2g.datacenter.offline.OfflineDatacenter], [`OnlineDatacenter`][openg2g.datacenter.online.OnlineDatacenter].
 
@@ -118,8 +118,8 @@ Built-in implementations: [`OfflineDatacenter`][openg2g.datacenter.offline.Offli
 [`openg2g.grid.base.GridBackend`][openg2g.grid.base.GridBackend]. Key methods:
 
 - [`dt_s`][openg2g.grid.base.GridBackend.dt_s]: The grid solver's timestep
-- [`step(clock, power_samples_w)`][openg2g.grid.base.GridBackend.step]: Run power flow on accumulated DC power samples, return per-bus per-phase voltages
-- [`apply_control(command)`][openg2g.grid.base.GridBackend.apply_control]: Accept a command (e.g., [`SetTaps`][openg2g.types.SetTaps])
+- [`step(clock, power_samples_w, events)`][openg2g.grid.base.GridBackend.step]: Run power flow on accumulated DC power samples, return per-bus per-phase voltages
+- [`apply_control(command, events)`][openg2g.grid.base.GridBackend.apply_control]: Accept a command (e.g., [`SetTaps`][openg2g.grid.command.SetTaps])
 
 Built-in implementation: [`OpenDSSGrid`][openg2g.grid.opendss.OpenDSSGrid].
 
@@ -128,7 +128,7 @@ Built-in implementation: [`OpenDSSGrid`][openg2g.grid.opendss.OpenDSSGrid].
 [`openg2g.controller.base.Controller`][openg2g.controller.base.Controller]. Key methods:
 
 - [`dt_s`][openg2g.controller.base.Controller.dt_s]: The control interval
-- [`step(clock, datacenter, grid, events)`][openg2g.controller.base.Controller.step]: Read [`datacenter.state`][openg2g.datacenter.base.DatacenterBackend.state] and [`grid.state`][openg2g.grid.base.GridBackend.state], and return a [`ControlAction`][openg2g.types.ControlAction] for to be applied to the datacenter and/or grid this tick
+- [`step(clock, datacenter, grid, events)`][openg2g.controller.base.Controller.step]: Read [`datacenter.state`][openg2g.datacenter.base.DatacenterBackend.state] and [`grid.state`][openg2g.grid.base.GridBackend.state], and return a list of commands to be applied to the datacenter and/or grid this tick
 
 Built-in implementations: [`OFOBatchSizeController`][openg2g.controller.ofo.OFOBatchSizeController], [`TapScheduleController`][openg2g.controller.tap_schedule.TapScheduleController], [`BatchSizeScheduleController`][openg2g.controller.batch_size_schedule.BatchSizeScheduleController], [`NoopController`][openg2g.controller.noop.NoopController].
 
@@ -136,15 +136,15 @@ Built-in implementations: [`OFOBatchSizeController`][openg2g.controller.ofo.OFOB
 
 All components implement the following lifecycle methods:
 
-- **`__init__`** (or any class method that instantiates the object): Store configuration and do expensive one-time setup that is reusable across runs (e.g., build power templates, parse config). Does *not* acquire per-run resources.
-- **`reset()`**: Bring the component back to the state right after `__init__` by clearing simulation state (history, counters, RNG seeds, cached values). Configuration is not affected.
+- **`__init__`** (or any class method that instantiates the object): Store configuration and do expensive one-time setup that is reusable across runs (e.g., build power templates, parse config). Does *not* acquire per-run resources. Backend subclasses must call `super().__init__()` to initialize the base class's state and history tracking.
+- **`reset()`**: Clear component-specific simulation state (counters, RNG seeds, cached values). Configuration is not affected. For backends, history is cleared automatically by the coordinator's `do_reset()` wrapper.
 - **`start()`**: Acquire per-run resources (compile DSS circuits, start threads). No-op by default.
 - **`stop()`**: Release per-run resources. State is preserved for post-run inspection. No-op by default.
 
-After the component is instantiated, the coordinator calls `reset()`, then `start()`, then enters the simulation loop where it calls `step()` and `apply_control()` as needed, and finally calls `stop()` at the end of the run.
+After the component is instantiated, the coordinator calls `do_reset()` (which clears history and calls `reset()`), then `start()`, then enters the simulation loop where it calls `do_step()` and `apply_control()` as needed, and finally calls `stop()` at the end of the run.
 
 ```
-__init__() ──> reset() ──> start() ──> step() / apply_control() ──> stop()
+__init__() ──> do_reset() ──> start() ──> do_step() / apply_control() ──> stop()
                  ^                                                     │
                  └─────────────── (repeat from reset) ─────────────────┘
 ```
@@ -206,5 +206,5 @@ class OFOBatchSizeController(Controller[LLMBatchSizeControlledDatacenter, OpenDS
 
 [`Coordinator.run()`][openg2g.coordinator.Coordinator.run] returns a [`SimulationLog`][openg2g.coordinator.SimulationLog] that collects all state history.
 Essentially, this object is a bill of materials for everything that happened during the simulation, and is the basis for all post-run analysis and plotting.
-You can use `log.dc_states`, `log.grid_states`, and time-series arrays like `log.time_s`, `log.kW_A`, `log.voltage_a_pu` for analysis.
+You can use `log.dc_states`, `log.grid_states`, and time-series arrays like `log.time_s`, `log.voltage_a_pu` for analysis. Per-phase power is available from `dc_states[i].power_w`.
 See [Building Simulators: Analyzing Results](building-simulators.md#analyzing-results) for usage examples.

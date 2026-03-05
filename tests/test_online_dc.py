@@ -1,6 +1,6 @@
 """Tests for OnlineDatacenter pure-logic components.
 
-Tests _RollingPowerBuffer, shared PowerAugmenter integration,
+Tests _RollingPowerBuffer, shared InferencePowerAugmenter integration,
 _LoadGenerator.get_observed_itl, _parse_prometheus_text, and health
 check functions without requiring real vLLM servers or zeusd instances.
 """
@@ -19,19 +19,21 @@ import pytest
 from zeus.monitor.power_streaming import PowerReadings, PowerStreamingClient
 
 from openg2g.clock import SimulationClock
-from openg2g.datacenter.config import DatacenterConfig, PowerAugmentationConfig
-from openg2g.datacenter.layout import PowerAugmenter, ServerLayout
+from openg2g.coordinator import SimulationLog
+from openg2g.datacenter.config import DatacenterConfig, InferenceModelSpec, PowerAugmentationConfig
+from openg2g.datacenter.layout import ServerLayout
 from openg2g.datacenter.online import (
     GPUEndpointMapping,
     LiveServerConfig,
     OnlineDatacenter,
     VLLMDeployment,
-    _LoadGenerationConfig,
     _parse_prometheus_text,
     _RollingPowerBuffer,
 )
-from openg2g.grid.base import Phase
-from openg2g.models.spec import LLMInferenceModelSpec
+from openg2g.datacenter.workloads.inference import InferencePowerAugmenter
+from openg2g.events import EventEmitter
+
+_EVENTS = EventEmitter(SimulationClock(Fraction(1, 10)), SimulationLog(), "custom")
 
 
 def _make_deployment(
@@ -41,9 +43,8 @@ def _make_deployment(
     host: str = "node1",
     port: int = 4938,
     gpu_indices: tuple[int, ...] = (0,),
-    phase: Phase = Phase.A,
 ) -> VLLMDeployment:
-    spec = LLMInferenceModelSpec(
+    spec = InferenceModelSpec(
         model_label=label,
         num_replicas=num_replicas,
         gpus_per_replica=gpus_per_replica,
@@ -53,8 +54,7 @@ def _make_deployment(
     return VLLMDeployment(
         spec=spec,
         vllm_base_url=f"http://{host}:8000",
-        model_name=f"org/{label}",
-        gpu_endpoints=(GPUEndpointMapping(host=host, port=port, gpu_indices=gpu_indices, phase=phase),),
+        gpu_endpoints=(GPUEndpointMapping(host=host, port=port, gpu_indices=gpu_indices),),
     )
 
 
@@ -78,7 +78,7 @@ def _make_itl_stub(model_label: str, itl_window_s: float = 1.0):
     from openg2g.datacenter.online import _LoadGenerator
 
     lg = _LoadGenerator.__new__(_LoadGenerator)
-    lg._config = _LoadGenerationConfig(LiveServerConfig(itl_window_s=itl_window_s))
+    lg._itl_window_s = itl_window_s
     lg._lock = threading.Lock()
     lg._itl_samples = {model_label: collections.deque(maxlen=100_000)}
     return lg
@@ -107,7 +107,6 @@ def _online_dc(
         dc = OnlineDatacenter(
             DatacenterConfig(gpus_per_server=8, base_kw_per_phase=0.0),
             deployments,
-            {d.model_label: [] for d in deployments},
             dt_s=Fraction(1, 10),
             seed=42,
             power_augmentation=PowerAugmentationConfig(
@@ -181,7 +180,7 @@ class TestRollingPowerBuffer:
 
 
 class TestOnlineAugmentationPipeline:
-    """Test the shared PowerAugmenter with ServerLayout built for online mode."""
+    """Test the shared InferencePowerAugmenter with ServerLayout built for online mode."""
 
     def _build_layout_and_augmenter(
         self,
@@ -191,31 +190,47 @@ class TestOnlineAugmentationPipeline:
         noise_fraction: float = 0.0,
         amplitude_scale_range: tuple[float, float] = (1.0, 1.0),
         seed: int = 42,
-    ) -> tuple[ServerLayout, PowerAugmenter]:
-        from openg2g.datacenter.config import ServerRampSchedule
-        from openg2g.datacenter.layout import RampActivationStrategy
+    ) -> tuple[ServerLayout, InferencePowerAugmenter]:
+        import math
 
-        spec = LLMInferenceModelSpec(
-            model_label="test-model",
-            num_replicas=num_replicas,
-            gpus_per_replica=gpus_per_replica,
-            initial_batch_size=128,
-            itl_deadline_s=0.1,
-        )
+        from openg2g.datacenter.config import InferenceRampSchedule
+        from openg2g.datacenter.layout import RampActivationPolicy
+        from openg2g.utils import split_integer_evenly
+
+        total_gpus = num_replicas * gpus_per_replica
+        num_servers = math.ceil(total_gpus / gpus_per_server)
         rng = np.random.default_rng(seed)
-        strategy = RampActivationStrategy(ServerRampSchedule(entries=()))
-        layout = ServerLayout.build(
-            spec,
-            gpus_per_server=gpus_per_server,
-            stagger_range=10.0,
-            activation_strategy=strategy,
-            amplitude_scale_range=amplitude_scale_range,
-            noise_fraction=noise_fraction,
-            rng=rng,
+
+        sA, sB, sC = split_integer_evenly(num_servers, 3)
+        phase_list = np.asarray(([0] * sA) + ([1] * sB) + ([2] * sC), dtype=int)
+        rng.shuffle(phase_list)
+
+        policy = RampActivationPolicy(InferenceRampSchedule(), num_servers, rng)
+
+        stagger_offsets = rng.uniform(0.0, 10.0, size=num_servers)
+        amplitude_scales = rng.uniform(
+            amplitude_scale_range[0],
+            amplitude_scale_range[1],
+            size=num_servers,
         )
-        augmenter = PowerAugmenter(
+
+        gpus_per_server_list = np.full(num_servers, gpus_per_server, dtype=int)
+        tail = total_gpus - (num_servers - 1) * gpus_per_server
+        gpus_per_server_list[-1] = int(tail) if tail > 0 else gpus_per_server
+
+        layout = ServerLayout(
+            num_servers=num_servers,
+            total_gpus=total_gpus,
+            gpus_per_replica=gpus_per_replica,
+            gpus_per_server_list=gpus_per_server_list,
+            phase_list=phase_list,
+            stagger_offsets=stagger_offsets,
+            amplitude_scales=amplitude_scales,
+            noise_fraction=noise_fraction,
+        )
+        augmenter = InferencePowerAugmenter(
             layouts={"test-model": layout},
-            base_w_per_phase=0.0,
+            policies={"test-model": policy},
             seed=seed + 12345,
         )
         return layout, augmenter
@@ -233,7 +248,7 @@ class TestOnlineAugmentationPipeline:
             amplitude_scale_range=(1.0, 1.0),
         )
         per_gpu = np.full(layout.num_servers, 300.0)
-        aug = augmenter.step({"test-model": per_gpu}, t=0.0)
+        aug = augmenter.augment({"test-model": per_gpu}, t=0.0)
         total = aug.power_w.a + aug.power_w.b + aug.power_w.c
         expected = 300.0 * 100
         assert total == pytest.approx(expected, rel=1e-3)
@@ -243,7 +258,7 @@ class TestOnlineAugmentationPipeline:
         per_gpu = np.full(layout.num_servers, 300.0)
         values = []
         for t in range(50):
-            aug = augmenter.step({"test-model": per_gpu}, t=float(t))
+            aug = augmenter.augment({"test-model": per_gpu}, t=float(t))
             values.append(aug.power_w.a + aug.power_w.b + aug.power_w.c)
         assert np.std(values) > 0
 
@@ -257,14 +272,14 @@ class TestOnlineAugmentationPipeline:
     def test_active_replicas_reported(self) -> None:
         layout, augmenter = self._build_layout_and_augmenter(num_replicas=100, gpus_per_replica=1, gpus_per_server=8)
         per_gpu = np.full(layout.num_servers, 100.0)
-        aug = augmenter.step({"test-model": per_gpu}, t=0.0)
+        aug = augmenter.augment({"test-model": per_gpu}, t=0.0)
         assert aug.active_replicas_by_model["test-model"] == 100
 
     def test_power_nonnegative(self) -> None:
         layout, augmenter = self._build_layout_and_augmenter(noise_fraction=0.5)
         per_gpu = np.full(layout.num_servers, 1.0)
         for t in range(100):
-            aug = augmenter.step({"test-model": per_gpu}, t=float(t))
+            aug = augmenter.augment({"test-model": per_gpu}, t=float(t))
             assert aug.power_w.a >= 0.0
             assert aug.power_w.b >= 0.0
             assert aug.power_w.c >= 0.0
@@ -349,8 +364,8 @@ class TestOnlineDatacenterStep:
     """Integration test for OnlineDatacenter.step() with a fake power client.
 
     Exercises the full path: power reading -> rolling buffer -> shared
-    PowerAugmenter -> three-phase power output, without requiring real
-    vLLM servers or zeusd.
+    InferencePowerAugmenter -> three-phase power output, without requiring
+    real vLLM servers or zeusd.
     """
 
     def test_step_produces_nonzero_power(self) -> None:
@@ -358,7 +373,7 @@ class TestOnlineDatacenterStep:
         with _online_dc([dep], per_gpu_w=300.0) as (dc, _):
             dc._started = True
             clock = SimulationClock(tick_s=Fraction(1, 10))
-            state = dc.step(clock)
+            state = dc.step(clock, _EVENTS)
 
             total_power = state.power_w.a + state.power_w.b + state.power_w.c
             assert total_power > 0
@@ -374,7 +389,7 @@ class TestOnlineDatacenterStep:
             with _online_dc([dep], per_gpu_w=300.0) as (dc, _):
                 dc._started = True
                 clock = SimulationClock(tick_s=Fraction(1, 10))
-                state = dc.step(clock)
+                state = dc.step(clock, _EVENTS)
                 powers.append(state.power_w.a + state.power_w.b + state.power_w.c)
 
         assert powers[1] > powers[0]

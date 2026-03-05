@@ -3,15 +3,15 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Sequence
 from fractions import Fraction
-from typing import Generic, TypeVar, Union, get_args, get_origin
+from typing import Generic, TypeVar, Union, final, get_args, get_origin
 
 from openg2g.clock import SimulationClock
 from openg2g.datacenter.base import DatacenterBackend
+from openg2g.datacenter.command import DatacenterCommand
 from openg2g.events import EventEmitter
 from openg2g.grid.base import GridBackend
-from openg2g.types import ControlAction
+from openg2g.grid.command import GridCommand
 
 DCBackendT = TypeVar("DCBackendT", bound=DatacenterBackend)
 GridBackendT = TypeVar("GridBackendT", bound=GridBackend)
@@ -92,14 +92,17 @@ class Controller(Generic[DCBackendT, GridBackendT], ABC):
         cls._dc_types = dc_types
         cls._grid_types = grid_types
 
+    @final
     @classmethod
     def compatible_datacenter_types(cls) -> tuple[type[DatacenterBackend], ...]:
         return cls._dc_types
 
+    @final
     @classmethod
     def compatible_grid_types(cls) -> tuple[type[GridBackend], ...]:
         return cls._grid_types
 
+    @final
     @classmethod
     def compatibility_signature(cls) -> str:
         dc = " | ".join(t.__name__ for t in cls.compatible_datacenter_types())
@@ -146,5 +149,5 @@ class Controller(Generic[DCBackendT, GridBackendT], ABC):
         datacenter: DCBackendT,
         grid: GridBackendT,
         events: EventEmitter,
-    ) -> ControlAction | Sequence[ControlAction]:
-        """Compute one or more control actions. Must complete synchronously."""
+    ) -> list[DatacenterCommand | GridCommand]:
+        """Compute control commands for this step. Return an empty list for no-op."""

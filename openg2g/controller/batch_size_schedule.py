@@ -9,9 +9,10 @@ from fractions import Fraction
 from openg2g.clock import SimulationClock
 from openg2g.controller.base import Controller
 from openg2g.datacenter.base import DatacenterBackend
+from openg2g.datacenter.command import DatacenterCommand, SetBatchSize
 from openg2g.events import EventEmitter
 from openg2g.grid.base import GridBackend
-from openg2g.types import ControlAction, SetBatchSize
+from openg2g.grid.command import GridCommand
 
 
 @dataclass(frozen=True)
@@ -46,11 +47,13 @@ class BatchSizeSchedule:
 
     Example:
 
-        schedule = (
-            BatchSizeChange(48).at(40)
-            | BatchSizeChange(32).at(60)
-            | BatchSizeChange(48, ramp_up_rate=4).at(280)
-        )
+    ```python
+    schedule = (
+        BatchSizeChange(48).at(40)
+        | BatchSizeChange(32).at(60)
+        | BatchSizeChange(48, ramp_up_rate=4).at(280)
+    )
+    ```
 
     Raises:
         ValueError: If two entries share the same timestamp.
@@ -90,7 +93,7 @@ class BatchSizeScheduleController(Controller[DatacenterBackend, GridBackend]):
     """Applies pre-defined batch size changes at scheduled times.
 
     Walks each model's schedule and emits
-    [`SetBatchSize`][openg2g.types.SetBatchSize] commands when the
+    [`SetBatchSize`][openg2g.datacenter.command.SetBatchSize] commands when the
     simulation clock reaches the scheduled time.
 
     Args:
@@ -121,7 +124,7 @@ class BatchSizeScheduleController(Controller[DatacenterBackend, GridBackend]):
         datacenter: DatacenterBackend,
         grid: GridBackend,
         events: EventEmitter,
-    ) -> ControlAction:
+    ) -> list[DatacenterCommand | GridCommand]:
         t_now = clock.time_s
         batch_changes: dict[str, int] = {}
         ramp_rates: dict[str, float] = {}
@@ -143,12 +146,14 @@ class BatchSizeScheduleController(Controller[DatacenterBackend, GridBackend]):
             self._indices[label] = idx
 
         if batch_changes:
-            return ControlAction(
-                commands=[
-                    SetBatchSize(
-                        batch_size_by_model=batch_changes,
-                        ramp_up_rate_by_model=ramp_rates,
-                    )
-                ]
+            events.emit(
+                "controller.batch_schedule.fired",
+                {"batch_size_by_model": batch_changes},
             )
-        return ControlAction(commands=[])
+            return [
+                SetBatchSize(
+                    batch_size_by_model=batch_changes,
+                    ramp_up_rate_by_model=ramp_rates,
+                )
+            ]
+        return []

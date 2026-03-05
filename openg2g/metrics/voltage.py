@@ -37,45 +37,29 @@ def compute_allbus_voltage_stats(
 ) -> VoltageStats:
     """Compute voltage violation statistics across all buses and phases.
 
-    Returns [`VoltageStats`][..VoltageStats].
-
     For each snapshot the integral violation sums
     `max(v_min - v, 0) + max(v - v_max, 0)` over every non-excluded
     bus-phase pair, then integrates over time.  A snapshot counts as
     "violated" when this sum is positive.
 
     Args:
-        grid_states: Sequence of
-            [`GridState`][openg2g.grid.base.GridState] objects from a
-            simulation run.
+        grid_states: Sequence of [`GridState`][openg2g.grid.base.GridState]
+            objects from a simulation run.
         v_min: Lower voltage bound (pu).
         v_max: Upper voltage bound (pu).
-        exclude_buses: Bus names to exclude from statistics
-            (case-insensitive).
-
-    Returns:
-        [`VoltageStats`][..VoltageStats] with worst-case min/max
-            voltages, violation time, and integral violation
-            magnitude.
+        exclude_buses: Bus names to exclude from statistics (case-insensitive).
     """
-    if not grid_states:
-        return VoltageStats(
-            worst_vmin=float("nan"),
-            worst_vmax=float("nan"),
-            violation_time_s=0.0,
-            integral_violation_pu_s=0.0,
+    if len(grid_states) < 2:
+        raise ValueError(
+            f"At least two grid states are required to compute voltage statistics (got {len(grid_states)})."
         )
 
-    exclude = {b.lower() for b in exclude_buses}
-
     times = np.array([gs.time_s for gs in grid_states], dtype=float)
-    if len(times) > 1:
-        dt = float(np.median(np.diff(times)))
-    else:
-        dt = 1.0
+    dt = float(np.median(np.diff(times)))
 
     # Collect bus-phase columns from the first snapshot (all snapshots
     # share the same set of buses for a given OpenDSS circuit).
+    exclude = {b.lower() for b in exclude_buses}
     bus_names = [b for b in grid_states[0].voltages.buses() if b.lower() not in exclude]
 
     # Build (T, N) voltage matrix where N = num_buses * 3.

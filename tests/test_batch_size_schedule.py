@@ -8,7 +8,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from openg2g.controller.batch_size_schedule import BatchSizeChange, BatchSizeSchedule, BatchSizeScheduleController
-from openg2g.types import SetBatchSize
+from openg2g.datacenter.command import SetBatchSize
 
 
 class TestBatchSizeChange:
@@ -97,24 +97,24 @@ class TestBatchSizeScheduleController:
 
         # Before first event
         action = ctrl.step(self._make_clock(5.0), dc, grid, events)
-        assert len(action.commands) == 0
+        assert len(action) == 0
 
         # At first event
         action = ctrl.step(self._make_clock(10.0), dc, grid, events)
-        assert len(action.commands) == 1
-        cmd = action.commands[0]
+        assert len(action) == 1
+        cmd = action[0]
         assert isinstance(cmd, SetBatchSize)
         assert cmd.batch_size_by_model["model-a"] == 48
 
         # Between events
         action = ctrl.step(self._make_clock(15.0), dc, grid, events)
-        assert len(action.commands) == 0
+        assert len(action) == 0
 
         # At second event
         action = ctrl.step(self._make_clock(20.0), dc, grid, events)
-        assert len(action.commands) == 1
-        assert isinstance(action.commands[0], SetBatchSize)
-        assert action.commands[0].batch_size_by_model["model-a"] == 32
+        assert len(action) == 1
+        assert isinstance(action[0], SetBatchSize)
+        assert action[0].batch_size_by_model["model-a"] == 32
 
     def test_multiple_models(self) -> None:
         schedules = {
@@ -127,8 +127,8 @@ class TestBatchSizeScheduleController:
         events = MagicMock()
 
         action = ctrl.step(self._make_clock(10.0), dc, grid, events)
-        assert len(action.commands) == 1
-        cmd = action.commands[0]
+        assert len(action) == 1
+        cmd = action[0]
         assert isinstance(cmd, SetBatchSize)
         assert cmd.batch_size_by_model["model-a"] == 48
         assert cmd.batch_size_by_model["model-b"] == 64
@@ -144,7 +144,7 @@ class TestBatchSizeScheduleController:
         events = MagicMock()
 
         action = ctrl.step(self._make_clock(10.0), dc, grid, events)
-        cmd = action.commands[0]
+        cmd = action[0]
         assert isinstance(cmd, SetBatchSize)
         assert cmd.ramp_up_rate_by_model == {"model-a": 4.0}
 
@@ -159,7 +159,7 @@ class TestBatchSizeScheduleController:
         events = MagicMock()
 
         action = ctrl.step(self._make_clock(10.0), dc, grid, events)
-        cmd = action.commands[0]
+        cmd = action[0]
         assert isinstance(cmd, SetBatchSize)
         assert cmd.ramp_up_rate_by_model == {}
 
@@ -175,7 +175,7 @@ class TestBatchSizeScheduleController:
         events = MagicMock()
 
         action = ctrl.step(self._make_clock(10.0), dc, grid, events)
-        cmd = action.commands[0]
+        cmd = action[0]
         assert isinstance(cmd, SetBatchSize)
         assert cmd.ramp_up_rate_by_model == {"model-a": 4.0, "model-b": 8.0}
         assert "model-c" not in cmd.ramp_up_rate_by_model
@@ -191,4 +191,4 @@ class TestBatchSizeScheduleController:
         events = MagicMock()
 
         action = ctrl.step(self._make_clock(100.0), dc, grid, events)
-        assert len(action.commands) == 0
+        assert len(action) == 0

@@ -46,7 +46,11 @@ class SimulationClock:
         return self._step
 
     def advance(self) -> float:
-        """Advance one tick. Returns new simulation time in seconds."""
+        """Advance one tick.
+
+        Returns:
+            New simulation time in seconds.
+        """
         self._step += 1
         if self.live:
             if self._wall_t0 is None:
@@ -71,6 +75,9 @@ class SimulationClock:
 
     def is_due(self, period_s: Fraction) -> bool:
         """Check if an event with the given period should fire on this tick.
+
+        Returns:
+            `True` if this tick is a multiple of the period.
 
         Raises:
             ValueError: If *period_s* is not an exact multiple of *tick_s*.

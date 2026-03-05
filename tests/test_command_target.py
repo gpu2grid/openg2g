@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-from openg2g.types import DatacenterCommand, GridCommand, SetBatchSize, SetTaps, TapPosition
+import pytest
+
+from openg2g.datacenter.command import DatacenterCommand, SetBatchSize
+from openg2g.grid.command import GridCommand, SetTaps
+from openg2g.grid.config import TapPosition
 
 
 def test_set_batch_size_is_datacenter_command() -> None:
@@ -27,3 +31,10 @@ def test_command_types_are_disjoint() -> None:
     grid_cmd = SetTaps(tap_position=TapPosition(a=1.0))
     assert not isinstance(dc_cmd, GridCommand)
     assert not isinstance(grid_cmd, DatacenterCommand)
+
+
+def test_base_command_classes_not_instantiable() -> None:
+    with pytest.raises(TypeError, match="DatacenterCommand cannot be instantiated directly"):
+        DatacenterCommand()
+    with pytest.raises(TypeError, match="GridCommand cannot be instantiated directly"):
+        GridCommand()

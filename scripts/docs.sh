@@ -11,7 +11,7 @@ case "${1:-}" in
     zensical build --clean --strict
     ;;
   serve)
-    zensical serve --strict
+    zensical serve --strict -a 0.0.0.0:7778
     ;;
   *)
     echo "Usage: uv run bash scripts/docs.sh {build|serve}" >&2

@@ -7,9 +7,10 @@ from fractions import Fraction
 from openg2g.clock import SimulationClock
 from openg2g.controller.base import Controller
 from openg2g.datacenter.base import DatacenterBackend
+from openg2g.datacenter.command import DatacenterCommand
 from openg2g.events import EventEmitter
 from openg2g.grid.base import GridBackend
-from openg2g.types import ControlAction
+from openg2g.grid.command import GridCommand
 
 
 class NoopController(Controller[DatacenterBackend, GridBackend]):
@@ -31,5 +32,5 @@ class NoopController(Controller[DatacenterBackend, GridBackend]):
         datacenter: DatacenterBackend,
         grid: GridBackend,
         events: EventEmitter,
-    ) -> ControlAction:
-        return ControlAction(commands=[])
+    ) -> list[DatacenterCommand | GridCommand]:
+        return []

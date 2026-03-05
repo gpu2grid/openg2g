@@ -6,45 +6,33 @@ import numpy as np
 from mlenergy_data.modeling import LogisticModel
 
 from openg2g.clock import SimulationClock
+from openg2g.common import ThreePhase
 from openg2g.controller.ofo import LogisticModelStore, OFOBatchSizeController, OFOConfig
+from openg2g.coordinator import SimulationLog
 from openg2g.datacenter.base import LLMBatchSizeControlledDatacenter, LLMDatacenterState
-from openg2g.events import EventEmitter, SimEvent
-from openg2g.grid.base import BusVoltages, GridState, PhaseVoltages
+from openg2g.datacenter.command import DatacenterCommand
+from openg2g.datacenter.config import InferenceModelSpec
+from openg2g.events import EventEmitter
+from openg2g.grid.base import BusVoltages, GridBackend, GridState, PhaseVoltages
+from openg2g.grid.command import GridCommand
 from openg2g.grid.opendss import OpenDSSGrid
-from openg2g.models.spec import LLMInferenceModelSpec, LLMInferenceWorkload
-from openg2g.types import DatacenterCommand, GridCommand, ThreePhase
 
 
 class _GridStub(OpenDSSGrid):
     def __init__(self):
-        self._v_index = [("671", 0), ("671", 1), ("671", 2)]
-        self._state: GridState | None = None
-        self._history: list[GridState] = []
+        GridBackend.__init__(self)
+        self._v_index_list = [("671", 0), ("671", 1), ("671", 2)]
 
     def reset(self) -> None:
-        self._state = None
-        self._history = []
+        pass
 
     @property
     def dt_s(self) -> Fraction:
         return Fraction(1)
 
     @property
-    def state(self) -> GridState:
-        if self._state is None:
-            raise RuntimeError("No state yet")
-        return self._state
-
-    def history(self, n: int | None = None) -> list[GridState]:
-        if n is None:
-            return list(self._history)
-        if n <= 0:
-            return []
-        return list(self._history[-int(n) :])
-
-    @property
     def v_index(self) -> list[tuple[str, int]]:
-        return self._v_index
+        return self._v_index_list
 
     def voltages_vector(self) -> np.ndarray:
         return np.array([0.94, 0.96, 1.01], dtype=float)
@@ -58,44 +46,32 @@ class _GridStub(OpenDSSGrid):
         self,
         clock: SimulationClock,
         power_samples_w: list[ThreePhase],
+        events: EventEmitter,
     ) -> GridState:
-        self._state = GridState(
+        return GridState(
             time_s=clock.time_s,
             voltages=BusVoltages({"671": PhaseVoltages(a=0.94, b=0.96, c=1.01)}),
         )
-        self._history.append(self._state)
-        return self._state
 
     def set_state(self, state: GridState) -> None:
         self._state = state
 
-    def apply_control(self, command: GridCommand) -> None:
+    def apply_control(self, command: GridCommand, events: EventEmitter) -> None:
         pass
 
 
 class _DCStub(LLMBatchSizeControlledDatacenter):
     def __init__(self):
-        self._state: LLMDatacenterState | None = None
+        super().__init__()
 
     def reset(self) -> None:
-        self._state = None
+        pass
 
     @property
     def dt_s(self) -> Fraction:
         return Fraction(1)
 
-    @property
-    def state(self) -> LLMDatacenterState:
-        if self._state is None:
-            raise RuntimeError("No state yet")
-        return self._state
-
-    def history(self, n: int | None = None) -> list[LLMDatacenterState]:
-
-        return [] if self._state is None else [self._state]
-
-    def step(self, clock: SimulationClock) -> LLMDatacenterState:
-
+    def step(self, clock: SimulationClock, events: EventEmitter) -> LLMDatacenterState:
         if self._state is None:
             self._state = LLMDatacenterState(
                 time_s=0.0,
@@ -109,16 +85,8 @@ class _DCStub(LLMBatchSizeControlledDatacenter):
     def set_state(self, state: LLMDatacenterState) -> None:
         self._state = state
 
-    def apply_control(self, command: DatacenterCommand) -> None:
+    def apply_control(self, command: DatacenterCommand, events: EventEmitter) -> None:
         pass
-
-
-class _EventSink:
-    def __init__(self) -> None:
-        self.events: list[SimEvent] = []
-
-    def emit(self, event: SimEvent) -> None:
-        self.events.append(event)
 
 
 def _make_model_store() -> LogisticModelStore:
@@ -130,7 +98,7 @@ def _make_model_store() -> LogisticModelStore:
 
 
 def _build_controller() -> OFOBatchSizeController:
-    model = LLMInferenceModelSpec(
+    model = InferenceModelSpec(
         model_label="M1",
         num_replicas=10,
         gpus_per_replica=1,
@@ -138,12 +106,11 @@ def _build_controller() -> OFOBatchSizeController:
         itl_deadline_s=0.1,
         feasible_batch_sizes=(8, 16, 32, 64, 128),
     )
-    workload = LLMInferenceWorkload(models=(model,))
     return OFOBatchSizeController(
-        workload,
+        (model,),
         models=_make_model_store(),
         config=OFOConfig(
-            descent_step_size=0.05,
+            primal_step_size=0.05,
             w_throughput=0.0,
             w_switch=0.0,
             v_min=0.95,
@@ -173,12 +140,12 @@ def test_ofo_uses_observed_latency_for_dual_update():
     )
     dc.set_state(dc_state)
     grid.set_state(grid_state)
-    sink = _EventSink()
-    events = EventEmitter(SimulationClock(Fraction(1)), sink, "controller")
+    log = SimulationLog()
+    events = EventEmitter(SimulationClock(Fraction(1)), log, "controller")
 
     action = ctrl.step(SimulationClock(Fraction(1)), dc, grid, events)
-    assert len(action.commands) == 1
-    assert ctrl.latency_dual_by_model["M1"] > 0.0
+    assert len(action) == 1
+    assert ctrl._latency_dual_by_model["M1"] > 0.0
 
 
 def test_ofo_requires_observed_latency_map():
@@ -194,8 +161,8 @@ def test_ofo_requires_observed_latency_map():
         observed_itl_s_by_model={},
     )
     dc.set_state(dc_state)
-    sink = _EventSink()
-    events = EventEmitter(SimulationClock(Fraction(1)), sink, "controller")
+    log = SimulationLog()
+    events = EventEmitter(SimulationClock(Fraction(1)), log, "controller")
 
     try:
         ctrl.step(SimulationClock(Fraction(1)), dc, grid, events)

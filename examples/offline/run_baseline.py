@@ -5,34 +5,40 @@ Components: OfflineDatacenter + OpenDSSGrid + TapScheduleController + Coordinato
 Two modes correspond to two baselines in the G2G paper:
   no-tap       "No control, no tap": tap positions are fixed throughout.
   tap-change   "Tap change only": regulator taps change at t=1500s and t=3300s.
+
+Usage:
+    python examples/offline/run_baseline.py --config examples/offline/config.json
+    python examples/offline/run_baseline.py --config examples/offline/config.json --mode tap-change
 """
 
 from __future__ import annotations
 
-import argparse
+import hashlib
+import json
 import logging
 from fractions import Fraction
 from pathlib import Path
 
 import numpy as np
+from pydantic import BaseModel
 
 from openg2g.controller.tap_schedule import TapScheduleController
 from openg2g.coordinator import Coordinator
-from openg2g.datacenter.config import DatacenterConfig, PowerAugmentationConfig, ServerRamp, TrainingRun
-from openg2g.datacenter.offline import (
-    ITLFitStore,
-    OfflineDatacenter,
-    OfflineInferenceData,
-    OfflineWorkload,
-    PowerTraceStore,
+from openg2g.datacenter.config import (
+    DatacenterConfig,
+    InferenceModelSpec,
+    InferenceRamp,
+    PowerAugmentationConfig,
+    TrainingRun,
 )
-from openg2g.datacenter.training_overlay import TrainingTrace
+from openg2g.datacenter.offline import OfflineDatacenter, OfflineWorkload
+from openg2g.datacenter.workloads.inference import InferenceData, MLEnergySource
+from openg2g.datacenter.workloads.training import TrainingTrace, TrainingTraceParams
+from openg2g.grid.config import TapPosition, TapSchedule
 from openg2g.grid.opendss import OpenDSSGrid
 from openg2g.metrics.voltage import compute_allbus_voltage_stats
-from openg2g.models.spec import LLMInferenceModelSpec, LLMInferenceWorkload
-from openg2g.types import TapPosition, TapSchedule
 
-from .plotting import (
+from plotting import (
     extract_per_model_timeseries,
     plot_allbus_voltages_per_phase,
     plot_power_3ph,
@@ -50,71 +56,72 @@ TAP_CHANGE_SCHEDULE = (
 )
 # fmt: on
 
-MODELS = (
-    LLMInferenceModelSpec(
-        "Llama-3.1-8B", num_replicas=720, gpus_per_replica=1, initial_batch_size=128, itl_deadline_s=0.08
-    ),
-    LLMInferenceModelSpec(
-        "Llama-3.1-70B", num_replicas=180, gpus_per_replica=4, initial_batch_size=128, itl_deadline_s=0.10
-    ),
-    LLMInferenceModelSpec(
-        "Llama-3.1-405B", num_replicas=90, gpus_per_replica=8, initial_batch_size=128, itl_deadline_s=0.12
-    ),
-    LLMInferenceModelSpec(
-        "Qwen3-30B-A3B", num_replicas=480, gpus_per_replica=2, initial_batch_size=128, itl_deadline_s=0.06
-    ),
-    LLMInferenceModelSpec(
-        "Qwen3-235B-A22B", num_replicas=210, gpus_per_replica=8, initial_batch_size=128, itl_deadline_s=0.14
-    ),
-)
+V_MIN = 0.95
+V_MAX = 1.05
+DC_BUS = "671"
+DT_DC = Fraction(1, 10)
+DT_CTRL = Fraction(1)
+T_TOTAL_S = 3600
 
 
-def main(*, mode: str, data_dir: Path, training_trace_path: Path, ieee_case_dir: Path) -> None:
-    save_dir = Path("outputs") / f"baseline_{mode}"
+class OfflineConfig(BaseModel):
+    models: list[InferenceModelSpec]
+    data_sources: list[MLEnergySource]
+    training_trace_params: TrainingTraceParams = TrainingTraceParams()
+    data_dir: Path | None = None
+    ieee_case_dir: Path
+    mlenergy_data_dir: Path | None = None
+
+    @property
+    def data_hash(self) -> str:
+        blob = json.dumps(
+            (
+                sorted([s.model_dump(mode="json") for s in self.data_sources], key=lambda s: s["model_label"]),
+                self.training_trace_params.model_dump(mode="json"),
+            ),
+            sort_keys=True,
+        ).encode()
+        return hashlib.sha256(blob).hexdigest()[:16]
+
+
+def main(*, config_path: Path, mode: str = "no-tap") -> None:
+    config = OfflineConfig.model_validate_json(config_path.read_bytes())
+
+    models = tuple(config.models)
+    data_sources = {s.model_label: s for s in config.data_sources}
+    data_dir = config.data_dir or Path("data/offline") / config.data_hash
+
+    save_dir = (Path("outputs") / f"baseline_{mode}").resolve()
     save_dir.mkdir(parents=True, exist_ok=True)
 
     file_handler = logging.FileHandler(save_dir / "console_output.txt", mode="w")
     file_handler.setFormatter(logging.Formatter("%(asctime)s %(name)s %(levelname)s %(message)s", datefmt="%H:%M:%S"))
     logging.getLogger().addHandler(file_handler)
 
-    training_trace = TrainingTrace.load(training_trace_path)
+    inference_data = InferenceData.ensure(
+        data_dir,
+        models,
+        data_sources,
+        mlenergy_data_dir=config.mlenergy_data_dir,
+        plot=False,
+        dt_s=float(DT_DC),
+    )
+    training_trace = TrainingTrace.ensure(data_dir / "training_trace.csv", config.training_trace_params)
 
-    v_min = 0.95
-    v_max = 1.05
-    dc_bus = "671"
-    gpus_per_server = 8
-    dt_dc = Fraction(1, 10)
-    t_total_s = 3600
-
-    logger.info("Loading power traces...")
-    store = PowerTraceStore.load(data_dir / "traces_summary.csv")
-    templates = store.build_templates(duration_s=600.0, dt_s=dt_dc)
-
-    logger.info("Loading latency fits...")
-    itl_fits = ITLFitStore.load(data_dir / "latency_fits.csv")
-
-    dc_config = DatacenterConfig(gpus_per_server=gpus_per_server, base_kw_per_phase=500.0)
+    dc_config = DatacenterConfig(gpus_per_server=8, base_kw_per_phase=500.0)
     workload = OfflineWorkload(
-        inference_data=OfflineInferenceData(
-            LLMInferenceWorkload(models=MODELS),
-            power_templates=templates,
-            itl_fits=itl_fits,
+        inference_data=inference_data,
+        training=TrainingRun(n_gpus=300 * 8, trace=training_trace, target_peak_W_per_gpu=400.0).at(
+            t_start=1000.0, t_end=2000.0
         ),
-        training=TrainingRun(
-            t_start=1000.0,
-            t_end=2000.0,
-            n_gpus=300 * gpus_per_server,
-            trace=training_trace,
-            target_peak_W_per_gpu=400.0,
-        ),
-        server_ramps=ServerRamp(t_start=2500.0, t_end=3000.0, target=0.2),
+        inference_ramps=InferenceRamp(target=0.2).at(t_start=2500.0, t_end=3000.0),
     )
 
     logger.info("Initializing OfflineDatacenter...")
     dc = OfflineDatacenter(
         dc_config,
         workload,
-        dt_s=dt_dc,
+        dt_s=DT_DC,
         seed=0,
         power_augmentation=PowerAugmentationConfig(
             amplitude_scale_range=(0.98, 1.02),
@@ -124,30 +131,30 @@ def main(*, mode: str, data_dir: Path, training_trace_path: Path, ieee_case_dir:
 
     logger.info("Initializing OpenDSSGrid...")
     grid = OpenDSSGrid(
-        dss_case_dir=str(ieee_case_dir),
+        dss_case_dir=config.ieee_case_dir,
         dss_master_file="IEEE13Nodeckt.dss",
-        dc_bus=dc_bus,
+        dc_bus=DC_BUS,
         dc_bus_kv=4.16,
-        power_factor=0.95,
+        power_factor=dc_config.power_factor,
         dt_s=Fraction(1, 10),
         connection_type="wye",
         initial_tap_position=INITIAL_TAPS,
     )
 
     tap_ctrl_schedule = TAP_CHANGE_SCHEDULE if mode == "tap-change" else TapSchedule(())
-    ctrl = TapScheduleController(schedule=tap_ctrl_schedule, dt_s=Fraction(1))
+    ctrl = TapScheduleController(schedule=tap_ctrl_schedule, dt_s=DT_CTRL)
 
     logger.info("Running simulation (mode=%s)...", mode)
     coord = Coordinator(
         datacenter=dc,
         grid=grid,
         controllers=[ctrl],
-        total_duration_s=t_total_s,
-        dc_bus=dc_bus,
+        total_duration_s=T_TOTAL_S,
+        dc_bus=DC_BUS,
     )
     log = coord.run()
 
-    stats = compute_allbus_voltage_stats(log.grid_states, v_min=v_min, v_max=v_max)
+    stats = compute_allbus_voltage_stats(log.grid_states, v_min=V_MIN, v_max=V_MAX)
     logger.info("=== Voltage Statistics (all-bus) ===")
     logger.info("  voltage_violation_time = %.1f s", stats.violation_time_s)
     logger.info("  worst_vmin             = %.6f", stats.worst_vmin)
@@ -155,15 +162,15 @@ def main(*, mode: str, data_dir: Path, training_trace_path: Path, ieee_case_dir:
     logger.info("  integral_violation     = %.4f pu·s", stats.integral_violation_pu_s)
 
     time_s = np.array(log.time_s)
-    kW_A = np.array(log.kW_A)
-    kW_B = np.array(log.kW_B)
-    kW_C = np.array(log.kW_C)
+    dc_time_s = np.array([s.time_s for s in log.dc_states])
+    kW_A = np.array([s.power_w.a / 1e3 for s in log.dc_states])
+    kW_B = np.array([s.power_w.b / 1e3 for s in log.dc_states])
+    kW_C = np.array([s.power_w.c / 1e3 for s in log.dc_states])
 
     per_model = extract_per_model_timeseries(log.dc_states)
 
-    # Fig. 5: 2-panel power + ITL
     plot_power_and_itl_2panel(
-        time_s,
+        dc_time_s,
         kW_A,
         kW_B,
         kW_C,
@@ -172,18 +179,17 @@ def main(*, mode: str, data_dir: Path, training_trace_path: Path, ieee_case_dir:
         save_path=save_dir / "power_latency_subfigs.png",
     )
 
-    # Fig. 6: All-bus voltages with bus colormap
     plot_allbus_voltages_per_phase(
         log.grid_states,
         time_s,
         save_dir=save_dir,
-        v_min=v_min,
-        v_max=v_max,
+        v_min=V_MIN,
+        v_max=V_MAX,
         title_template="Voltage trajectories without GPU flexibility (Phase {label})",
     )
 
     plot_power_3ph(
-        time_s,
+        dc_time_s,
         kW_A,
         kW_B,
         kW_C,
@@ -195,45 +201,26 @@ def main(*, mode: str, data_dir: Path, training_trace_path: Path, ieee_case_dir:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Baseline simulation (no OFO control)")
-    parser.add_argument(
-        "--mode",
-        choices=["no-tap", "tap-change"],
-        default="no-tap",
-        help="Baseline variant: 'no-tap' (fixed taps) or 'tap-change' (scheduled tap changes)",
-    )
-    parser.add_argument(
-        "--data-dir",
-        required=True,
-        help="Toolkit-generated data directory (contains traces/, traces_summary.csv, latency_fits.csv).",
-    )
-    parser.add_argument(
-        "--training-trace",
-        required=True,
-        help="Path to synthetic training trace CSV.",
-    )
-    parser.add_argument(
-        "--ieee-case-dir",
-        required=True,
-        help="OpenDSS case directory (e.g. examples/ieee13).",
-    )
-    parser.add_argument(
-        "--log-level",
-        default="INFO",
-        choices=["DEBUG", "INFO", "WARNING"],
-        help="Logging verbosity (default: INFO).",
-    )
-    args = parser.parse_args()
+    from dataclasses import dataclass
+
+    import tyro
+
+    @dataclass
+    class Args:
+        config: str
+        """Path to the offline config JSON file."""
+        mode: str = "no-tap"
+        """Baseline variant: 'no-tap' (fixed taps) or 'tap-change' (scheduled tap changes)."""
+        log_level: str = "INFO"
+        """Logging verbosity (DEBUG, INFO, WARNING)."""
+
+    args = tyro.cli(Args)
 
     logging.basicConfig(
         level=getattr(logging, args.log_level),
         format="%(levelname)s %(asctime)s [%(name)s:%(lineno)d] %(message)s",
         datefmt="%H:%M:%S",
     )
+    logging.getLogger("httpx").setLevel(logging.WARNING)
 
-    main(
-        mode=args.mode,
-        data_dir=Path(args.data_dir),
-        training_trace_path=Path(args.training_trace),
-        ieee_case_dir=Path(args.ieee_case_dir),
-    )
+    main(config_path=Path(args.config), mode=args.mode)

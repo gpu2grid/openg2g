@@ -50,27 +50,33 @@ For a full walkthrough including data setup, see the [Getting Started guide](htt
 
 ```python
 from fractions import Fraction
+from pathlib import Path
 
 from openg2g.coordinator import Coordinator
-from openg2g.datacenter.config import DatacenterConfig
-from openg2g.datacenter.offline import (
-    OfflineDatacenter, OfflineInferenceData, OfflineWorkload, PowerTraceStore,
-)
+from openg2g.datacenter.config import DatacenterConfig, InferenceModelSpec
+from openg2g.datacenter.offline import OfflineDatacenter, OfflineWorkload
+from openg2g.datacenter.workloads.inference import InferenceData
 from openg2g.grid.opendss import OpenDSSGrid
 from openg2g.controller.noop import NoopController
-from openg2g.models.spec import LLMInferenceModelSpec, LLMInferenceWorkload
-from openg2g.types import TapPosition
+from openg2g.grid.config import TapPosition
 
 # 1. Set up a trace-based datacenter
-models = LLMInferenceWorkload(models=(
-    LLMInferenceModelSpec("Llama-3.1-8B", num_replicas=720, gpus_per_replica=1, initial_batch_size=128),
-    LLMInferenceModelSpec("Llama-3.1-70B", num_replicas=180, gpus_per_replica=4, initial_batch_size=128),
-))
-store = PowerTraceStore.load("data/generated/traces_summary.csv")
-templates = store.build_templates(duration_s=3600, dt_s=Fraction(1, 10))
+models = (
+    InferenceModelSpec(
+        model_label="Llama-3.1-8B", num_replicas=720, gpus_per_replica=1,
+        initial_batch_size=128, itl_deadline_s=0.08,
+    ),
+    InferenceModelSpec(
+        model_label="Llama-3.1-70B", num_replicas=180, gpus_per_replica=4,
+        initial_batch_size=128, itl_deadline_s=0.10,
+    ),
+)
+data_dir = Path("data/offline")
+inference_data = InferenceData.load(data_dir, models, duration_s=3600, dt_s=0.1)
+dc_config = DatacenterConfig()
 dc = OfflineDatacenter(
-    DatacenterConfig(),
-    OfflineWorkload(inference_data=OfflineInferenceData(models, power_templates=templates)),
+    dc_config,
+    OfflineWorkload(inference_data=inference_data),
     dt_s=Fraction(1, 10),
 )
 
@@ -81,7 +87,7 @@ grid = OpenDSSGrid(
     dss_master_file="IEEE13Nodeckt.dss",
     dc_bus="671",
     dc_bus_kv=4.16,
-    power_factor=0.95,
+    power_factor=dc_config.power_factor,
     dt_s=Fraction(1, 10),
     initial_tap_position=TapPosition(a=1.0 + 14 * TAP_STEP, b=1.0 + 6 * TAP_STEP, c=1.0 + 15 * TAP_STEP),
     connection_type="wye",
@@ -102,48 +108,22 @@ See [`examples/`](examples/) for complete simulation scripts (offline trace-repl
 
 ## Running Example Simulations
 
-### 1. Build simulation data from benchmarks
-
-The build script uses the [`mlenergy-data`](https://ml.energy/data) toolkit to download and process GPU benchmark data from the [ML.ENERGY Benchmark v3 dataset](https://huggingface.co/datasets/ml-energy/benchmark-v3) (gated -- [request access](https://huggingface.co/datasets/ml-energy/benchmark-v3) first). It produces the trace CSVs, latency fit parameters, and logistic fit parameters that the simulation consumes. Model selection is controlled by a JSON config file ([`data/offline/models.json`](data/offline/models.json)).
-
-Generated artifacts go into `data/generated/` (gitignored). Source files (`data/offline/*.py`, `data/offline/models.json`) are versioned.
+A single `--config` flag drives both data generation and simulation. The first run downloads benchmark data from the [ML.ENERGY Benchmark v3 dataset](https://huggingface.co/datasets/ml-energy/benchmark-v3) (gated -- [request access](https://huggingface.co/datasets/ml-energy/benchmark-v3) first) and generates simulation artifacts. Subsequent runs load from cache.
 
 ```bash
-python data/offline/build_mlenergy_data.py \
-  --config data/offline/models.json \
-  --out-dir data/generated
-```
+export HF_TOKEN=hf_xxxxxxxxxxx  # needed for first run only
 
-### 2. Generate a synthetic training power trace
-
-```bash
-python data/offline/generate_training_trace.py \
-  --out-csv data/generated/synthetic_training_trace.csv --seed 2
-```
-
-### 3. Run simulations
-
-```bash
 # Baseline: fixed taps
-python examples/offline/run_baseline.py --mode no-tap \
-  --data-dir data/generated \
-  --training-trace data/generated/synthetic_training_trace.csv \
-  --ieee-case-dir examples/ieee13
+python examples/offline/run_baseline.py --config examples/offline/config.json --mode no-tap
 
 # Baseline: scheduled tap changes
-python examples/offline/run_baseline.py --mode tap-change \
-  --data-dir data/generated \
-  --training-trace data/generated/synthetic_training_trace.csv \
-  --ieee-case-dir examples/ieee13
+python examples/offline/run_baseline.py --config examples/offline/config.json --mode tap-change
 
 # OFO closed-loop control
-python examples/offline/run_ofo.py \
-  --data-dir data/generated \
-  --training-trace data/generated/synthetic_training_trace.csv \
-  --ieee-case-dir examples/ieee13
+python examples/offline/run_ofo.py --config examples/offline/config.json
 ```
 
-`--data-dir`, `--training-trace`, and `--ieee-case-dir` are required for all offline simulation drivers.
+`--config` is the only required argument. Model specs, data sources, and paths are all in the config file. Generated data is cached in `data/offline/{hash}/`.
 
 ## Documentation
 

@@ -9,13 +9,15 @@ from fractions import Fraction
 import numpy as np
 
 from openg2g.clock import SimulationClock
+from openg2g.common import ThreePhase
 from openg2g.controller.base import Controller
 from openg2g.coordinator import Coordinator, _gcd_fraction
 from openg2g.datacenter.base import DatacenterBackend, DatacenterState
+from openg2g.datacenter.command import DatacenterCommand, SetBatchSize
 from openg2g.events import EventEmitter
 from openg2g.grid.base import BusVoltages, GridBackend, GridState, PhaseVoltages
+from openg2g.grid.command import GridCommand
 from openg2g.grid.opendss import OpenDSSGrid
-from openg2g.types import ControlAction, DatacenterCommand, GridCommand, SetBatchSize, ThreePhase
 
 
 def test_gcd_fraction():
@@ -28,9 +30,8 @@ class _StubDC(DatacenterBackend[DatacenterState]):
     """Minimal datacenter for coordinator tests."""
 
     def __init__(self, dt_s: Fraction = Fraction(1, 10)) -> None:
+        super().__init__()
         self._dt_s = dt_s
-        self._state: DatacenterState | None = None
-        self._history: list[DatacenterState] = []
         self.step_count = 0
         self.apply_control_calls: list[DatacenterCommand] = []
 
@@ -38,36 +39,18 @@ class _StubDC(DatacenterBackend[DatacenterState]):
     def dt_s(self) -> Fraction:
         return self._dt_s
 
-    @property
-    def state(self) -> DatacenterState:
-        if self._state is None:
-            raise RuntimeError("No state yet")
-        return self._state
-
-    def history(self, n: int | None = None) -> list[DatacenterState]:
-        if n is None:
-            return list(self._history)
-        if n <= 0:
-            return []
-        return list(self._history[-int(n) :])
-
     def reset(self) -> None:
-        self._state = None
-        self._history = []
         self.step_count = 0
         self.apply_control_calls = []
 
-    def step(self, clock: SimulationClock) -> DatacenterState:
+    def step(self, clock: SimulationClock, events: EventEmitter) -> DatacenterState:
         self.step_count += 1
-        state = DatacenterState(
+        return DatacenterState(
             time_s=clock.time_s,
             power_w=ThreePhase(a=100.0, b=100.0, c=100.0),
         )
-        self._state = state
-        self._history.append(state)
-        return state
 
-    def apply_control(self, command: DatacenterCommand) -> None:
+    def apply_control(self, command: DatacenterCommand, events: EventEmitter) -> None:
         self.apply_control_calls.append(command)
 
 
@@ -75,9 +58,8 @@ class _StubGrid(GridBackend[GridState]):
     """Minimal grid for coordinator tests."""
 
     def __init__(self, dt_s: Fraction = Fraction(1)) -> None:
+        super().__init__()
         self._dt_s = dt_s
-        self._state: GridState | None = None
-        self._history: list[GridState] = []
         self.step_count = 0
         self.step_calls: list[tuple[SimulationClock, list[ThreePhase]]] = []
 
@@ -85,22 +67,7 @@ class _StubGrid(GridBackend[GridState]):
     def dt_s(self) -> Fraction:
         return self._dt_s
 
-    @property
-    def state(self) -> GridState:
-        if self._state is None:
-            raise RuntimeError("No state yet")
-        return self._state
-
-    def history(self, n: int | None = None) -> list[GridState]:
-        if n is None:
-            return list(self._history)
-        if n <= 0:
-            return []
-        return list(self._history[-int(n) :])
-
     def reset(self) -> None:
-        self._state = None
-        self._history = []
         self.step_count = 0
         self.step_calls = []
 
@@ -108,17 +75,14 @@ class _StubGrid(GridBackend[GridState]):
         self,
         clock: SimulationClock,
         power_samples_w: list[ThreePhase],
-        **kwargs: object,
+        events: EventEmitter,
     ) -> GridState:
         self.step_count += 1
         self.step_calls.append((clock, list(power_samples_w)))
-        state = GridState(
+        return GridState(
             time_s=clock.time_s,
             voltages=BusVoltages({"671": PhaseVoltages(a=1.0, b=1.0, c=1.0)}),
         )
-        self._state = state
-        self._history.append(state)
-        return state
 
     @property
     def v_index(self) -> list[tuple[str, int]]:
@@ -130,7 +94,7 @@ class _StubGrid(GridBackend[GridState]):
     def estimate_sensitivity(self, perturbation_kw: float = 100.0) -> tuple[np.ndarray, np.ndarray]:
         return np.zeros((3, 3)), np.ones(3)
 
-    def apply_control(self, command: GridCommand) -> None:
+    def apply_control(self, command: GridCommand, events: EventEmitter) -> None:
         pass
 
 
@@ -140,15 +104,15 @@ class _StubController(Controller[DatacenterBackend, GridBackend]):
     def __init__(
         self,
         dt_s: Fraction = Fraction(1),
-        action: ControlAction | None = None,
+        commands: list[DatacenterCommand | GridCommand] | None = None,
         on_step: Callable[
             [SimulationClock, DatacenterBackend, GridBackend, EventEmitter],
-            ControlAction,
+            list[DatacenterCommand | GridCommand],
         ]
         | None = None,
     ):
         self._dt_s = dt_s
-        self._action = action or ControlAction(commands=[])
+        self._commands = commands if commands is not None else []
         self._on_step = on_step
         self.call_count = 0
 
@@ -165,11 +129,11 @@ class _StubController(Controller[DatacenterBackend, GridBackend]):
         datacenter: DatacenterBackend,
         grid: GridBackend,
         events: EventEmitter,
-    ) -> ControlAction:
+    ) -> list[DatacenterCommand | GridCommand]:
         self.call_count += 1
         if self._on_step is not None:
             return self._on_step(clock, datacenter, grid, events)
-        return self._action
+        return self._commands
 
 
 def test_coordinator_dc_fires_every_tick():
@@ -209,19 +173,19 @@ def test_coordinator_controller_order():
     call_order: list[str] = []
 
     class _OrderDC(_StubDC):
-        def step(self, clock: SimulationClock) -> DatacenterState:
+        def step(self, clock: SimulationClock, events: EventEmitter) -> DatacenterState:
             call_order.append("dc")
-            return super().step(clock)
+            return super().step(clock, events)
 
     class _OrderGrid(_StubGrid):
         def step(
             self,
             clock: SimulationClock,
             power_samples_w: list[ThreePhase],
-            **kwargs: object,
+            events: EventEmitter,
         ) -> GridState:
             call_order.append("grid")
-            return super().step(clock, power_samples_w, **kwargs)
+            return super().step(clock, power_samples_w, events)
 
     dc = _OrderDC(dt_s=Fraction(1))
     grid = _OrderGrid(dt_s=Fraction(1))
@@ -230,7 +194,7 @@ def test_coordinator_controller_order():
         dt_s=Fraction(1),
         on_step=lambda clock, dc, g, ev: (
             call_order.append("ctrl1"),
-            ControlAction(commands=[]),
+            [],
         )[-1],
     )
 
@@ -238,7 +202,7 @@ def test_coordinator_controller_order():
         dt_s=Fraction(1),
         on_step=lambda clock, dc, g, ev: (
             call_order.append("ctrl2"),
-            ControlAction(commands=[]),
+            [],
         )[-1],
     )
 
@@ -257,13 +221,13 @@ def test_coordinator_batch_action_applied():
     dc = _StubDC(dt_s=Fraction(1))
     grid = _StubGrid(dt_s=Fraction(1))
 
-    action_with_batch = ControlAction(commands=[SetBatchSize(batch_size_by_model={"model_a": 64})])
-    ctrl = _StubController(dt_s=Fraction(1), action=action_with_batch)
+    batch_cmd = SetBatchSize(batch_size_by_model={"model_a": 64})
+    ctrl = _StubController(dt_s=Fraction(1), commands=[batch_cmd])
 
     coord = Coordinator(dc, grid, [ctrl], total_duration_s=1, dc_bus="671")
     coord.run()
 
-    assert dc.apply_control_calls == [action_with_batch.commands[0]]
+    assert dc.apply_control_calls == [batch_cmd]
 
 
 def test_coordinator_exposes_clock_stamped_controller_events():
@@ -275,10 +239,10 @@ def test_coordinator_exposes_clock_stamped_controller_events():
         datacenter: DatacenterBackend,
         grid: GridBackend,
         events: EventEmitter,
-    ) -> ControlAction:
+    ) -> list[DatacenterCommand | GridCommand]:
 
         events.emit("controller.test", {"value": 1})
-        return ControlAction(commands=[])
+        return []
 
     ctrl = _StubController(dt_s=Fraction(1), on_step=_on_step)
     coord = Coordinator(dc, grid, [ctrl], total_duration_s=1, dc_bus="671")
@@ -295,44 +259,21 @@ def test_coordinator_exposes_clock_stamped_controller_events():
 def test_datacenter_events_are_recorded():
     class _EventedDC(DatacenterBackend[DatacenterState]):
         def __init__(self) -> None:
-            self._events: EventEmitter | None = None
+            super().__init__()
             self._dt_s = Fraction(1)
-            self._state: DatacenterState | None = None
-            self._history: list[DatacenterState] = []
 
         @property
         def dt_s(self) -> Fraction:
             return self._dt_s
 
-        @property
-        def state(self) -> DatacenterState:
-            if self._state is None:
-                raise RuntimeError("No state yet")
-            return self._state
-
-        def history(self, n: int | None = None) -> list[DatacenterState]:
-            if n is None:
-                return list(self._history)
-            if n <= 0:
-                return []
-            return list(self._history[-int(n) :])
-
         def reset(self) -> None:
-            self._state = None
-            self._history = []
+            pass
 
-        def bind_event_emitter(self, emitter: EventEmitter) -> None:
-            self._events = emitter
+        def step(self, clock: SimulationClock, events: EventEmitter) -> DatacenterState:
+            return DatacenterState(time_s=clock.time_s, power_w=ThreePhase(a=1.0, b=1.0, c=1.0))
 
-        def step(self, clock: SimulationClock) -> DatacenterState:
-            state = DatacenterState(time_s=clock.time_s, power_w=ThreePhase(a=1.0, b=1.0, c=1.0))
-            self._state = state
-            self._history.append(state)
-            return state
-
-        def apply_control(self, command: DatacenterCommand) -> None:
-            assert self._events is not None
-            self._events.emit(
+        def apply_control(self, command: DatacenterCommand, events: EventEmitter) -> None:
+            events.emit(
                 "datacenter.batch_size.updated",
                 {"batch_size_by_model": {"model_a": 64}},
             )
@@ -341,7 +282,7 @@ def test_datacenter_events_are_recorded():
     grid = _StubGrid(dt_s=Fraction(1))
     ctrl = _StubController(
         dt_s=Fraction(1),
-        action=ControlAction(commands=[SetBatchSize(batch_size_by_model={"model_a": 64})]),
+        commands=[SetBatchSize(batch_size_by_model={"model_a": 64})],
     )
 
     coord = Coordinator(dc, grid, [ctrl], total_duration_s=1, dc_bus="671")
@@ -366,9 +307,9 @@ def test_controller_generic_types_auto_extracted():
             datacenter: DatacenterBackend,
             grid: OpenDSSGrid,
             events: EventEmitter,
-        ) -> ControlAction:
+        ) -> list[DatacenterCommand | GridCommand]:
 
-            return ControlAction(commands=[])
+            return []
 
     assert _TypedController.compatible_datacenter_types() == (DatacenterBackend,)
     assert _TypedController.compatible_grid_types() == (OpenDSSGrid,)
@@ -377,58 +318,36 @@ def test_controller_generic_types_auto_extracted():
 def test_controller_datacenter_mismatch_error_has_underlined_generic_snippet():
     class _ExpectedDC(DatacenterBackend[DatacenterState]):
         def __init__(self) -> None:
-            self._state: DatacenterState | None = None
+            super().__init__()
 
         @property
         def dt_s(self) -> Fraction:
             return Fraction(1)
 
-        @property
-        def state(self) -> DatacenterState:
-            if self._state is None:
-                raise RuntimeError("No state yet")
-            return self._state
-
-        def history(self, n: int | None = None) -> list[DatacenterState]:
-            return []
-
         def reset(self) -> None:
             pass
 
-        def step(self, clock: SimulationClock) -> DatacenterState:
-            state = DatacenterState(time_s=clock.time_s, power_w=ThreePhase(a=1.0, b=1.0, c=1.0))
-            self._state = state
-            return state
+        def step(self, clock: SimulationClock, events: EventEmitter) -> DatacenterState:
+            return DatacenterState(time_s=clock.time_s, power_w=ThreePhase(a=1.0, b=1.0, c=1.0))
 
-        def apply_control(self, command: DatacenterCommand) -> None:
+        def apply_control(self, command: DatacenterCommand, events: EventEmitter) -> None:
             pass
 
     class _OtherDC(DatacenterBackend[DatacenterState]):
         def __init__(self) -> None:
-            self._state: DatacenterState | None = None
+            super().__init__()
 
         @property
         def dt_s(self) -> Fraction:
             return Fraction(1)
 
-        @property
-        def state(self) -> DatacenterState:
-            if self._state is None:
-                raise RuntimeError("No state yet")
-            return self._state
-
-        def history(self, n: int | None = None) -> list[DatacenterState]:
-            return []
-
         def reset(self) -> None:
             pass
 
-        def step(self, clock: SimulationClock) -> DatacenterState:
-            state = DatacenterState(time_s=clock.time_s, power_w=ThreePhase(a=1.0, b=1.0, c=1.0))
-            self._state = state
-            return state
+        def step(self, clock: SimulationClock, events: EventEmitter) -> DatacenterState:
+            return DatacenterState(time_s=clock.time_s, power_w=ThreePhase(a=1.0, b=1.0, c=1.0))
 
-        def apply_control(self, command: DatacenterCommand) -> None:
+        def apply_control(self, command: DatacenterCommand, events: EventEmitter) -> None:
             pass
 
     class _NeedsExpectedDC(Controller[_ExpectedDC, OpenDSSGrid]):
@@ -445,9 +364,9 @@ def test_controller_datacenter_mismatch_error_has_underlined_generic_snippet():
             datacenter: _ExpectedDC,
             grid: OpenDSSGrid,
             events: EventEmitter,
-        ) -> ControlAction:
+        ) -> list[DatacenterCommand | GridCommand]:
 
-            return ControlAction(commands=[])
+            return []
 
     dc = _OtherDC()
     grid = _StubGrid(dt_s=Fraction(1))

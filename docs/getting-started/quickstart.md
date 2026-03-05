@@ -4,9 +4,7 @@ Let's get you from zero to up and running with an end-to-end simulation example.
 
 ## Power Trace Data
 
-The data build step uses the [`mlenergy-data`](https://ml.energy/data) toolkit to download and process GPU benchmark data from the [ML.ENERGY Benchmark v3 dataset](https://huggingface.co/datasets/ml-energy/benchmark-v3).
-
-See the [Data Pipeline](../guide/data-pipeline.md) page for more details on how the data is used and processed, but in brief:
+The example scripts automatically download and process GPU benchmark data from the [ML.ENERGY Benchmark v3 dataset](https://huggingface.co/datasets/ml-energy/benchmark-v3) on the first run.
 
 1. Go to the [dataset page](https://huggingface.co/datasets/ml-energy/benchmark-v3) and request access. Approval should typically be immediate.
 2. Create a [Hugging Face access token](https://huggingface.co/settings/tokens) and set it as an environment variable.
@@ -16,7 +14,7 @@ See the [Data Pipeline](../guide/data-pipeline.md) page for more details on how 
 
 ## Clone the Repository
 
-This is to get the example scripts and data build utilities.
+This is to get the example scripts and config files.
 
 ```bash
 git clone https://github.com/gpu2grid/openg2g.git
@@ -24,20 +22,9 @@ cd openg2g
 uv sync && source .venv/bin/activate  # or: pip install -e . --group dev
 ```
 
-## Build Simulation Data
-
-```bash
-# Inference power trace from the ML.ENERGY Benchmark v3 dataset
-python data/offline/build_mlenergy_data.py \
-  --config data/offline/models.json \
-  --out-dir data/generated
-
-# Synthetic power trace
-python data/offline/generate_training_trace.py \
-  --out-csv data/generated/synthetic_training_trace.csv
-```
-
 ## Run Simulations
+
+A single command builds all data (power traces, latency fits, training trace) and runs the simulation. Data is cached on disk so subsequent runs skip generation.
 
 These three runs correspond to the evaluation cases in the [GPU-to-Grid paper](https://arxiv.org/abs/2602.05116):
 
@@ -46,21 +33,14 @@ These three runs correspond to the evaluation cases in the [GPU-to-Grid paper](h
 - **`run_ofo.py`**: OFO closed-loop batch size optimization
 
 ```bash
-python examples/offline/run_baseline.py --mode no-tap \
-  --data-dir data/generated \
-  --training-trace data/generated/synthetic_training_trace.csv \
-  --ieee-case-dir examples/ieee13
+python examples/offline/run_baseline.py --config examples/offline/config.json --mode no-tap
 
-python examples/offline/run_baseline.py --mode tap-change \
-  --data-dir data/generated \
-  --training-trace data/generated/synthetic_training_trace.csv \
-  --ieee-case-dir examples/ieee13
+python examples/offline/run_baseline.py --config examples/offline/config.json --mode tap-change
 
-python examples/offline/run_ofo.py \
-  --data-dir data/generated \
-  --training-trace data/generated/synthetic_training_trace.csv \
-  --ieee-case-dir examples/ieee13
+python examples/offline/run_ofo.py --config examples/offline/config.json
 ```
+
+The first run will download benchmark data and generate simulation artifacts (this takes a few minutes). Subsequent runs load from the cache directory (`data/offline/{hash}/`).
 
 Outputs (plots and logs) are saved to `outputs/baseline_no-tap/`, `outputs/baseline_tap-change/`, and `outputs/ofo/`.
 
@@ -82,7 +62,9 @@ The OFO simulation additionally prints a per-model batch schedule summary:
 21:00:11 run_ofo INFO === Batch Schedule Summary ===
 21:00:11 run_ofo INFO   Llama-3.1-405B: avg_batch=60.7, changes=6
 21:00:11 run_ofo INFO   Llama-3.1-70B: avg_batch=110.9, changes=10
-21:00:11 run_ofo INFO   Llama-3.1-8B: avg_batch=371.4, changes=30
+21:00:11 run_ofo INFO   Llama-3.1-8B: avg_batch=371.3, changes=28
+21:00:11 run_ofo INFO   Qwen3-235B-A22B: avg_batch=80.9, changes=13
+21:00:11 run_ofo INFO   Qwen3-30B-A3B: avg_batch=187.0, changes=21
 ```
 
 - **violation_time**: Total time any bus-phase voltage is outside [0.95, 1.05] pu

@@ -9,34 +9,37 @@ from __future__ import annotations
 import bisect
 import logging
 import math
-from dataclasses import dataclass
 from fractions import Fraction
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pandas as pd
 from mlenergy_data.modeling import LogisticModel
+from mlenergy_data.records import LLMRuns
+from pydantic import BaseModel, ConfigDict
 
 from openg2g.clock import SimulationClock
 from openg2g.controller.base import Controller
 from openg2g.datacenter.base import LLMBatchSizeControlledDatacenter, LLMDatacenterState
+from openg2g.datacenter.command import DatacenterCommand, SetBatchSize
+from openg2g.datacenter.config import InferenceModelSpec
 from openg2g.events import EventEmitter
+from openg2g.grid.command import GridCommand
 from openg2g.grid.opendss import OpenDSSGrid
-from openg2g.models.spec import LLMInferenceModelSpec, LLMInferenceWorkload
-from openg2g.types import ControlAction, SetBatchSize
 
 logger = logging.getLogger(__name__)
 
 
-@dataclass(frozen=True)
-class OFOConfig:
+class OFOConfig(BaseModel):
     """Online Feedback Optimization tuning parameters.
 
     Attributes:
-        descent_step_size: Primal step size ρ_x (Eq. 8).
+        primal_step_size: Primal descent step size ρ_x (Eq. 8).
         w_throughput: Throughput weight in primal gradient.
         w_switch: Switching cost regularizer weight γ (Eq. 4a).
-        voltage_gradient_scale: Scaling factor k_v for voltage dual term.
+        voltage_gradient_scale: Scaling factor k_v for voltage dual term
+            in the primal gradient.
         v_min: Lower voltage bound (pu).
         v_max: Upper voltage bound (pu).
         voltage_dual_step_size: Voltage dual ascent step size ρ_v (Eqs. 5-6).
@@ -47,14 +50,21 @@ class OFOConfig:
             finite-difference sensitivity estimation.
     """
 
-    descent_step_size: float = 0.05
+    model_config = ConfigDict(frozen=True)
+
+    # Primal
+    primal_step_size: float = 0.05
     w_throughput: float = 0.1
     w_switch: float = 0.0
     voltage_gradient_scale: float = 1e6
+
+    # Dual
     v_min: float = 0.95
     v_max: float = 1.05
     voltage_dual_step_size: float = 0.5
     latency_dual_step_size: float = 1.0
+
+    # Sensitivity
     sensitivity_update_interval: int = 0
     sensitivity_perturbation_kw: float = 100.0
 
@@ -83,6 +93,7 @@ class LogisticModelStore:
         self._power = dict(power)
         self._latency = dict(latency)
         self._throughput = dict(throughput)
+        self._by_batch: dict[str, dict[int, list[tuple[float, float, float]]]] | None = None
 
     def power(self, model: str) -> LogisticModel:
         """Return the power logistic model for a model label."""
@@ -107,6 +118,131 @@ class LogisticModelStore:
     @property
     def throughput_fits(self) -> dict[str, LogisticModel]:
         return dict(self._throughput)
+
+    @classmethod
+    def generate(
+        cls,
+        models: tuple[InferenceModelSpec, ...],
+        data_sources: dict[str, Any],
+        *,
+        runs: Any = None,
+        mlenergy_data_dir: Path | None = None,
+    ) -> LogisticModelStore:
+        """Generate logistic fits from ML.ENERGY benchmark data.
+
+        Args:
+            models: Model specifications.
+            data_sources: Per-model `MLEnergySource` instances, keyed by
+                `model_label`.
+            runs: Pre-loaded `LLMRuns` object. If `None`, loads from
+                `mlenergy_data_dir` or the HuggingFace Hub.
+            mlenergy_data_dir: Path to compiled mlenergy-data directory.
+                Ignored if `runs` is provided.
+
+        Returns:
+            A new `LogisticModelStore` with fitted logistic models.
+        """
+        if runs is None:
+            unique_tasks = {src.task for src in data_sources.values()}
+            if mlenergy_data_dir:
+                runs = LLMRuns.from_directory(str(mlenergy_data_dir), stable_only=False).task(*unique_tasks)
+            else:
+                runs = LLMRuns.from_hf(stable_only=False).task(*unique_tasks)
+        if not runs:
+            raise ValueError("No runs found for the specified tasks")
+
+        subsets_by_label: dict[str, Any] = {}
+        for ms in models:
+            src = data_sources.get(ms.model_label)
+            if src is None:
+                raise ValueError(f"No data source for model {ms.model_label!r}")
+            model_id = ms.model_id
+            if not model_id:
+                raise ValueError(f"model_id is required for data generation (model={ms.model_label!r})")
+
+            subset = (
+                runs.model_id(model_id).gpu_model(src.gpu).num_gpus(ms.gpus_per_replica).max_num_seqs(*src.batch_sizes)
+            )
+            if not subset:
+                raise ValueError(
+                    f"Config matched zero runs for logistic fits: model_id={model_id!r}, "
+                    f"gpu={src.gpu!r}, num_gpus={ms.gpus_per_replica}, "
+                    f"batch_sizes={src.batch_sizes}"
+                )
+            subsets_by_label[ms.model_label] = subset
+
+        all_by_batch: dict[str, dict[int, list[tuple[float, float, float]]]] = {}
+        power: dict[str, LogisticModel] = {}
+        latency: dict[str, LogisticModel] = {}
+        throughput: dict[str, LogisticModel] = {}
+        for model_label, group in subsets_by_label.items():
+            exclude = set(data_sources[model_label].fit_exclude_batch_sizes)
+            by_batch: dict[int, list[tuple[float, float, float]]] = {}
+            for r in group:
+                if r.max_num_seqs in exclude:
+                    continue
+                by_batch.setdefault(r.max_num_seqs, []).append(
+                    (r.avg_power_watts, r.mean_itl_ms / 1000.0, r.output_throughput_tokens_per_sec)
+                )
+            all_by_batch[model_label] = by_batch
+
+            batches = sorted(by_batch.keys())
+            if not batches:
+                continue
+
+            x = np.log2(np.array(batches, dtype=float).clip(min=1))
+            for _metric_name, idx, target in [
+                ("power", 0, power),
+                ("latency", 1, latency),
+                ("throughput", 2, throughput),
+            ]:
+                y = np.array([float(np.median([t[idx] for t in by_batch[b]])) for b in batches])
+                fit = LogisticModel.fit(x, y)
+                target[model_label] = fit
+
+        if not power and not latency and not throughput:
+            raise ValueError("No logistic fit rows produced")
+        store = cls(power=power, latency=latency, throughput=throughput)
+        store._by_batch = all_by_batch
+        return store
+
+    def save(self, csv_path: Path, *, plot: bool = False) -> None:
+        """Save logistic fits to a CSV.
+
+        Args:
+            csv_path: Output CSV path.
+            plot: If `True`, also write a logistic fits plot to the
+                same directory.
+        """
+        csv_path = Path(csv_path)
+        csv_path.parent.mkdir(parents=True, exist_ok=True)
+        rows: list[dict[str, Any]] = []
+        for metric_name, fits in [("power", self._power), ("latency", self._latency), ("throughput", self._throughput)]:
+            for label in sorted(fits):
+                model = fits[label]
+                rows.append(
+                    {
+                        self.COL_MODEL_LABEL: label,
+                        self.COL_METRIC: metric_name,
+                        "L": model.L,
+                        "x0": model.x0,
+                        "k": model.k,
+                        "b0": model.b0,
+                    }
+                )
+        pd.DataFrame(rows).to_csv(csv_path, index=False)
+
+        by_batch = getattr(self, "_by_batch", None)
+        if plot and by_batch is not None:
+            model_labels = sorted(self._power.keys())
+            _plot_logistic_fits(
+                by_batch,
+                self._power,
+                self._latency,
+                self._throughput,
+                model_labels,
+                csv_path.parent,
+            )
 
     @classmethod
     def load(cls, csv_path: Path | str) -> LogisticModelStore:
@@ -142,24 +278,33 @@ class LogisticModelStore:
             raise ValueError(f"No logistic model rows loaded from {csv_path}")
         return cls(power=power, latency=latency, throughput=throughput)
 
+    @classmethod
+    def ensure(
+        cls,
+        csv_path: Path,
+        models: tuple[InferenceModelSpec, ...] | None = None,
+        data_sources: dict[str, Any] | None = None,
+        *,
+        mlenergy_data_dir: Path | None = None,
+        plot: bool = False,
+    ) -> LogisticModelStore:
+        """Load from `csv_path`, generating first if needed.
 
-@dataclass
-class _VoltageDualConfig:
-    """Internal voltage dual configuration derived from OFOConfig."""
-
-    v_min: float = 0.95
-    v_max: float = 1.05
-    ascent_step_size: float = 0.5
-
-
-@dataclass
-class _PrimalConfig:
-    """Internal primal optimizer configuration derived from OFOConfig."""
-
-    descent_step_size: float = 0.05
-    w_throughput: float = 0.1
-    w_switch: float = 0.0
-    voltage_gradient_scale: float = 1e6
+        Args:
+            csv_path: Path to the logistic fits CSV.
+            models: Model specifications. Required when no cached file exists.
+            data_sources: Per-model `MLEnergySource` instances, keyed by
+                `model_label`. Required when no cached file exists.
+            mlenergy_data_dir: Path to compiled mlenergy-data directory.
+            plot: If `True`, generate a logistic fits plot on generation.
+        """
+        csv_path = Path(csv_path)
+        if not csv_path.exists():
+            if models is None or data_sources is None:
+                raise ValueError("models and data_sources required for LogisticModelStore generation (no cached data)")
+            logger.info("Generating logistic fits to %s ...", csv_path)
+            cls.generate(models, data_sources, mlenergy_data_dir=mlenergy_data_dir).save(csv_path, plot=plot)
+        return cls.load(csv_path)
 
 
 class VoltageDualVariables:
@@ -173,10 +318,10 @@ class VoltageDualVariables:
 
     Args:
         n_bus_phases: Number of bus-phase pairs in the voltage vector (3M).
-        config: Voltage dual configuration (bounds and step size).
+        config: OFO configuration (voltage bounds and dual step size).
     """
 
-    def __init__(self, n_bus_phases: int, config: _VoltageDualConfig) -> None:
+    def __init__(self, n_bus_phases: int, config: OFOConfig) -> None:
         self.config = config
         self.dual_undervoltage = np.zeros(int(n_bus_phases), dtype=float)  # λ in G2G paper Eq. 5
         self.dual_overvoltage = np.zeros(int(n_bus_phases), dtype=float)  # λ̄ in G2G paper Eq. 6
@@ -200,7 +345,7 @@ class VoltageDualVariables:
             )
         vmin = float(self.config.v_min)
         vmax = float(self.config.v_max)
-        rho = float(self.config.ascent_step_size)
+        rho = float(self.config.voltage_dual_step_size)
         self.dual_undervoltage = np.maximum(self.dual_undervoltage + rho * (vmin - observed_voltages), 0.0)
         self.dual_overvoltage = np.maximum(self.dual_overvoltage + rho * (observed_voltages - vmax), 0.0)
 
@@ -223,18 +368,19 @@ class PrimalBatchOptimizer:
         latency_fits: Per-model logistic fit for latency vs log2(batch_size).
         throughput_fits: Per-model logistic fit for throughput vs
             log2(batch_size).
-        config: Primal optimizer configuration.
+        config: OFO configuration (step size, throughput/switch weights,
+            voltage gradient scale).
     """
 
     def __init__(
         self,
         *,
-        models: list[LLMInferenceModelSpec],
+        models: list[InferenceModelSpec],
         feasible_batch_sizes: list[int],
         power_fits: dict[str, LogisticModel],
         latency_fits: dict[str, LogisticModel],
         throughput_fits: dict[str, LogisticModel],
-        config: _PrimalConfig,
+        config: OFOConfig,
     ) -> None:
         self.models = list(models)
         self.feasible_batch_sizes = sorted({int(b) for b in feasible_batch_sizes})
@@ -319,7 +465,7 @@ class PrimalBatchOptimizer:
         latency_dual_by_model = {} if latency_dual_by_model is None else dict(latency_dual_by_model)
         replica_count_by_model = {} if replica_count_by_model is None else dict(replica_count_by_model)
 
-        step_size = float(self.config.descent_step_size)  # ρ_x
+        step_size = float(self.config.primal_step_size)  # ρ_x
         w_throughput = float(self.config.w_throughput)
         w_switch = float(self.config.w_switch)
         voltage_gradient_scale = float(self.config.voltage_gradient_scale)
@@ -378,8 +524,7 @@ class PrimalBatchOptimizer:
             grad -= w_throughput * dThdx
             grad += voltage_gradient_scale * voltage_gradient * dPdx
             grad += latency_dual * dLdx
-            if w_switch > 0.0:
-                grad += w_switch * (log_batch_size - prev_log_batch_size)
+            grad += w_switch * (log_batch_size - prev_log_batch_size)
 
             new_log_batch_size = self._clamp_log_batch_size(log_batch_size - step_size * grad)
             self.prev_log_batch_size_by_model[label] = log_batch_size
@@ -398,8 +543,7 @@ class OFOBatchSizeController(Controller[LLMBatchSizeControlledDatacenter[LLMData
     ][openg2g.datacenter.base.LLMDatacenterState.observed_itl_s_by_model].
 
     Args:
-        workload: LLM workload specification. Derives model list,
-            feasible batch sizes, and ITL deadlines.
+        inference_models: Model specifications served in the datacenter.
         models: Per-model logistic models for power, latency, and
             throughput used in gradient computation.
         config: Unified OFO tuning parameters.
@@ -408,7 +552,7 @@ class OFOBatchSizeController(Controller[LLMBatchSizeControlledDatacenter[LLMData
 
     def __init__(
         self,
-        workload: LLMInferenceWorkload,
+        inference_models: tuple[InferenceModelSpec, ...],
         *,
         models: LogisticModelStore,
         config: OFOConfig | None = None,
@@ -417,7 +561,13 @@ class OFOBatchSizeController(Controller[LLMBatchSizeControlledDatacenter[LLMData
         if config is None:
             config = OFOConfig()
 
-        model_specs = list(workload.models)
+        if not inference_models:
+            raise ValueError("inference_models must not be empty.")
+        labels = [ms.model_label for ms in inference_models]
+        if len(labels) != len(set(labels)):
+            raise ValueError(f"Duplicate model labels: {labels}")
+
+        model_specs = list(inference_models)
 
         for ms in model_specs:
             label = ms.model_label
@@ -434,33 +584,23 @@ class OFOBatchSizeController(Controller[LLMBatchSizeControlledDatacenter[LLMData
         self._dt_s = dt_s
         self._models = model_specs
         self._config = config
-        self._itl_deadline_by_model = dict(workload.itl_deadline_by_model)
-        self._latency_dual_step_size = float(config.latency_dual_step_size)
-        self._sensitivity_update_interval = int(config.sensitivity_update_interval)
-        self._sensitivity_perturbation_kw = float(config.sensitivity_perturbation_kw)
+        self._itl_deadline_by_model = {ms.model_label: ms.itl_deadline_s for ms in model_specs}
 
         self._voltage_dual: VoltageDualVariables | None = None
-        self._voltage_dual_config = _VoltageDualConfig(
-            v_min=config.v_min,
-            v_max=config.v_max,
-            ascent_step_size=config.voltage_dual_step_size,
-        )
-
         self._latency_dual_by_model: dict[str, float] = {ms.model_label: 0.0 for ms in model_specs}
 
-        primal_config = _PrimalConfig(
-            descent_step_size=config.descent_step_size,
-            w_throughput=config.w_throughput,
-            w_switch=config.w_switch,
-            voltage_gradient_scale=config.voltage_gradient_scale,
-        )
+        all_bs: set[int] = set()
+        for ms in model_specs:
+            all_bs.update(ms.feasible_batch_sizes)
+        feasible_batch_sizes = sorted(all_bs)
+
         self._optimizer = PrimalBatchOptimizer(
             models=model_specs,
-            feasible_batch_sizes=workload.feasible_batch_sizes_union,
+            feasible_batch_sizes=feasible_batch_sizes,
             power_fits=models.power_fits,
             latency_fits=models.latency_fits,
             throughput_fits=models.throughput_fits,
-            config=primal_config,
+            config=config,
         )
         self._optimizer.init_from_batches({ms.model_label: ms.initial_batch_size for ms in model_specs})
 
@@ -471,7 +611,7 @@ class OFOBatchSizeController(Controller[LLMBatchSizeControlledDatacenter[LLMData
             "OFOBatchSizeController: %d models, dt=%s s, feasible_batches=%s",
             len(model_specs),
             dt_s,
-            workload.feasible_batch_sizes_union,
+            feasible_batch_sizes,
         )
 
     def reset(self) -> None:
@@ -485,32 +625,23 @@ class OFOBatchSizeController(Controller[LLMBatchSizeControlledDatacenter[LLMData
     def dt_s(self) -> Fraction:
         return self._dt_s
 
-    @property
-    def voltage_dual(self) -> VoltageDualVariables:
-        if self._voltage_dual is None:
-            raise RuntimeError("Voltage dual not initialized yet.")
-        return self._voltage_dual
-
-    @property
-    def latency_dual_by_model(self) -> dict[str, float]:
-        return dict(self._latency_dual_by_model)
-
     def step(
         self,
         clock: SimulationClock,
         datacenter: LLMBatchSizeControlledDatacenter[LLMDatacenterState],
         grid: OpenDSSGrid,
         events: EventEmitter,
-    ) -> ControlAction:
+    ) -> list[DatacenterCommand | GridCommand]:
 
         if self._voltage_dual is None:
-            self._voltage_dual = VoltageDualVariables(len(grid.v_index), self._voltage_dual_config)
+            self._voltage_dual = VoltageDualVariables(len(grid.v_index), self._config)
 
         # 1. Re-estimate sensitivity if needed
         if self._sensitivity_matrix is None or (
-            self._sensitivity_update_interval > 0 and self._control_step_count % self._sensitivity_update_interval == 0
+            self._config.sensitivity_update_interval > 0
+            and self._control_step_count % self._config.sensitivity_update_interval == 0
         ):
-            self._sensitivity_matrix, _ = grid.estimate_sensitivity(self._sensitivity_perturbation_kw)
+            self._sensitivity_matrix, _ = grid.estimate_sensitivity(self._config.sensitivity_perturbation_kw)
 
         # 2. Update voltage duals from grid state
         observed_voltages = grid.voltages_vector()
@@ -545,7 +676,8 @@ class OFOBatchSizeController(Controller[LLMBatchSizeControlledDatacenter[LLMData
             deadline = float(self._itl_deadline_by_model[label])
             if np.isfinite(observed_itl):
                 self._latency_dual_by_model[label] = max(
-                    self._latency_dual_by_model[label] + self._latency_dual_step_size * (observed_itl - deadline),
+                    self._latency_dual_by_model[label]
+                    + self._config.latency_dual_step_size * (observed_itl - deadline),
                     0.0,
                 )
             else:
@@ -573,4 +705,89 @@ class OFOBatchSizeController(Controller[LLMBatchSizeControlledDatacenter[LLMData
             clock.time_s,
             batch_next,
         )
-        return ControlAction(commands=[SetBatchSize(batch_size_by_model=batch_next)])
+        events.emit(
+            "controller.ofo.step",
+            {
+                "batch_size_by_model": batch_next,
+                "latency_dual_by_model": dict(self._latency_dual_by_model),
+            },
+        )
+        return [SetBatchSize(batch_size_by_model=batch_next)]
+
+
+def _plot_logistic_fits(
+    by_batch: dict[str, dict[int, list[tuple[float, float, float]]]],
+    power: dict[str, LogisticModel],
+    latency_fits: dict[str, LogisticModel],
+    throughput_fits: dict[str, LogisticModel],
+    model_labels: list[str],
+    out_dir: Path,
+) -> None:
+    """Plot 3x1 stacked logistic fits: power, latency, throughput.
+
+    Scatter dots for measured medians, smooth fitted curves from
+    LogisticModel parameters. Saves to `out_dir / "logistic_fits.png"`.
+    """
+    import matplotlib.pyplot as plt
+
+    metric_specs: list[tuple[str, int, dict[str, LogisticModel], str, str]] = [
+        ("power", 0, power, "W", "(a) Average GPU power consumption vs batch size"),
+        ("latency", 1, latency_fits, "s/token", "(b) Average inter-token latency vs batch size"),
+        ("throughput", 2, throughput_fits, "tokens/s", "(c) Average token throughput vs batch size"),
+    ]
+
+    fig, axes = plt.subplots(3, 1, figsize=(6.45, 5.2), dpi=300, sharex=True)
+
+    for ax_idx, (ax, (_metric_name, val_idx, fits, ylabel, title)) in enumerate(zip(axes, metric_specs, strict=True)):
+        xmins: list[float] = []
+        xmaxs: list[float] = []
+
+        for label in model_labels:
+            model_by_batch = by_batch.get(label, {})
+            batches = sorted(model_by_batch.keys())
+            if not batches:
+                continue
+            x = np.log2(np.array(batches, dtype=float).clip(min=1))
+            if len(x) > 0:
+                xmins.append(float(np.min(x)))
+                xmaxs.append(float(np.max(x)))
+
+        if not xmins:
+            ax.set_title(title, fontsize=12, loc="center")
+            ax.set_ylabel(ylabel, fontsize=10)
+            ax.grid(True, alpha=0.25)
+            continue
+
+        xs = np.linspace(min(xmins), max(xmaxs), 400)
+
+        for label in model_labels:
+            model_by_batch = by_batch.get(label, {})
+            batches = sorted(model_by_batch.keys())
+            if not batches or label not in fits:
+                continue
+
+            x = np.log2(np.array(batches, dtype=float).clip(min=1))
+            y = np.array([float(np.median([t[val_idx] for t in model_by_batch[b]])) for b in batches])
+
+            fit = fits[label]
+            ys_fit = np.array([fit.eval_x(float(xi)) for xi in xs])
+
+            (line,) = ax.plot(xs, ys_fit, lw=1.8, label=label, zorder=2)
+            ax.scatter(x, y, s=16.0, color=line.get_color(), zorder=3)
+
+        ax.set_title(title, fontsize=12, loc="center")
+        ax.set_ylabel(ylabel, fontsize=10)
+        ax.grid(True, alpha=0.25)
+        ax.tick_params(axis="both", labelsize=10)
+
+        if ax_idx == 2:
+            ax.legend(frameon=True, fontsize=9, loc="best")
+
+    axes[-1].set_xlabel(r"$\log_2(\mathrm{batch\ size})$", fontsize=10)
+    fig.tight_layout(pad=0.35, h_pad=0.6)
+
+    save_path = out_dir / "logistic_fits.png"
+    save_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(save_path, bbox_inches="tight", pad_inches=0.02)
+    plt.close(fig)
+    logger.info("Saved logistic fits plot to %s", save_path)

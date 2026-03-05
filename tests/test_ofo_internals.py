@@ -12,12 +12,11 @@ import pytest
 from mlenergy_data.modeling import LogisticModel
 
 from openg2g.controller.ofo import (
+    OFOConfig,
     PrimalBatchOptimizer,
     VoltageDualVariables,
-    _PrimalConfig,
-    _VoltageDualConfig,
 )
-from openg2g.models.spec import LLMInferenceModelSpec
+from openg2g.datacenter.config import InferenceModelSpec
 
 
 def _trivial_logistic(L: float = 100.0, x0: float = 5.0, k: float = 1.0, b0: float = 0.0):
@@ -28,14 +27,16 @@ def _trivial_logistic(L: float = 100.0, x0: float = 5.0, k: float = 1.0, b0: flo
 def _make_primal(
     *,
     feasible_batch_sizes: list[int] | None = None,
-    config: _PrimalConfig | None = None,
+    config: OFOConfig | None = None,
 ) -> PrimalBatchOptimizer:
     """Build a PrimalBatchOptimizer with a single model and trivial fits."""
     if feasible_batch_sizes is None:
         feasible_batch_sizes = [8, 16, 32, 64, 128]
     if config is None:
-        config = _PrimalConfig()
-    model = LLMInferenceModelSpec("M", num_replicas=10, gpus_per_replica=1, initial_batch_size=128, itl_deadline_s=0.1)
+        config = OFOConfig()
+    model = InferenceModelSpec(
+        model_label="M", num_replicas=10, gpus_per_replica=1, initial_batch_size=128, itl_deadline_s=0.1
+    )
     fit = _trivial_logistic()
     return PrimalBatchOptimizer(
         models=[model],
@@ -93,7 +94,7 @@ class TestInitFromBatches:
 class TestVoltageDualUpdate:
     def test_no_violation_stays_zero(self) -> None:
         """Voltages within bounds should leave both duals at zero."""
-        vd = VoltageDualVariables(3, _VoltageDualConfig(v_min=0.95, v_max=1.05, ascent_step_size=1.0))
+        vd = VoltageDualVariables(3, OFOConfig(v_min=0.95, v_max=1.05, voltage_dual_step_size=1.0))
         vd.update(np.array([1.0, 1.0, 1.0]))
         np.testing.assert_array_equal(vd.dual_undervoltage, np.zeros(3))
         np.testing.assert_array_equal(vd.dual_overvoltage, np.zeros(3))
@@ -101,7 +102,7 @@ class TestVoltageDualUpdate:
     def test_dual_projects_to_nonneg(self) -> None:
         """After a violation clears, the dual should be clamped to zero
         (not go negative), preserving the [.]+ projection."""
-        vd = VoltageDualVariables(1, _VoltageDualConfig(v_min=0.95, v_max=1.05, ascent_step_size=1.0))
+        vd = VoltageDualVariables(1, OFOConfig(v_min=0.95, v_max=1.05, voltage_dual_step_size=1.0))
         vd.update(np.array([0.93]))
         vd.update(np.array([1.0]))
         assert vd.dual_undervoltage[0] == 0.0
@@ -109,7 +110,7 @@ class TestVoltageDualUpdate:
     def test_eta_sign_convention(self) -> None:
         """eta = dual_overvoltage - dual_undervoltage should be negative for undervoltage
         (drives power down) and positive for overvoltage."""
-        vd = VoltageDualVariables(2, _VoltageDualConfig(v_min=0.95, v_max=1.05, ascent_step_size=1.0))
+        vd = VoltageDualVariables(2, OFOConfig(v_min=0.95, v_max=1.05, voltage_dual_step_size=1.0))
         vd.update(np.array([0.93, 1.07]))
         eta = vd.dual_difference()
         assert eta[0] < 0
@@ -117,7 +118,7 @@ class TestVoltageDualUpdate:
 
     def test_shape_mismatch_raises(self) -> None:
         """Passing a v_hat with wrong length should raise ValueError."""
-        vd = VoltageDualVariables(3, _VoltageDualConfig())
+        vd = VoltageDualVariables(3, OFOConfig())
         with pytest.raises(ValueError, match="len 2 but duals have len 3"):
             vd.update(np.array([1.0, 1.0]))
 
@@ -128,8 +129,8 @@ class TestPrimalStep:
         should remain unchanged after a step."""
         p = _make_primal(
             feasible_batch_sizes=[8, 16, 32, 64, 128],
-            config=_PrimalConfig(
-                descent_step_size=0.1,
+            config=OFOConfig(
+                primal_step_size=0.1,
                 w_throughput=0.0,
                 w_switch=0.0,
                 voltage_gradient_scale=0.0,
@@ -144,8 +145,8 @@ class TestPrimalStep:
         logistic latency fit has dL/dx > 0 (latency increases with batch)."""
         p = _make_primal(
             feasible_batch_sizes=[8, 16, 32, 64, 128],
-            config=_PrimalConfig(
-                descent_step_size=0.5,
+            config=OFOConfig(
+                primal_step_size=0.5,
                 w_throughput=0.0,
                 w_switch=0.0,
                 voltage_gradient_scale=0.0,
@@ -167,8 +168,8 @@ class TestPrimalStep:
         producing no latency gradient contribution."""
         p = _make_primal(
             feasible_batch_sizes=[8, 16, 32, 64, 128],
-            config=_PrimalConfig(
-                descent_step_size=0.1,
+            config=OFOConfig(
+                primal_step_size=0.1,
                 w_throughput=0.0,
                 w_switch=0.0,
                 voltage_gradient_scale=0.0,
@@ -189,8 +190,8 @@ class TestPrimalStep:
         [log2(min_batch), log2(max_batch)] after projection."""
         p = _make_primal(
             feasible_batch_sizes=[8, 128],
-            config=_PrimalConfig(
-                descent_step_size=100.0,
+            config=OFOConfig(
+                primal_step_size=100.0,
                 w_throughput=0.0,
                 w_switch=0.0,
                 voltage_gradient_scale=1e9,

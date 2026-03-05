@@ -10,27 +10,15 @@ from fractions import Fraction
 from typing import Any, Generic
 
 from openg2g.clock import SimulationClock
+from openg2g.common import ThreePhase
 from openg2g.controller.base import Controller
 from openg2g.datacenter.base import DatacenterBackend, DCStateT
+from openg2g.datacenter.command import DatacenterCommand
 from openg2g.events import EventEmitter, SimEvent
 from openg2g.grid.base import GridBackend, GridStateT, PhaseVoltages
-from openg2g.types import (
-    Command,
-    ControlAction,
-    DatacenterCommand,
-    GridCommand,
-    ThreePhase,
-)
+from openg2g.grid.command import GridCommand
 
 logger = logging.getLogger(__name__)
-
-
-def _gcd_fraction(a: Fraction, b: Fraction) -> Fraction:
-    """GCD of two positive Fractions using Euclidean algorithm."""
-    a, b = abs(a), abs(b)
-    while b:
-        a, b = b, a % b
-    return a
 
 
 @dataclass
@@ -45,38 +33,31 @@ class SimulationLog(Generic[DCStateT, GridStateT]):
     Attributes:
         dc_states: Every datacenter state produced by the datacenter.
         grid_states: Every grid state produced by the grid.
-        actions: Every [`ControlAction`][openg2g.types.ControlAction]
-            emitted by controllers.
-        commands: Flattened list of all commands from all actions.
+        commands: All commands emitted by controllers.
         time_s: Simulation time at each grid step (seconds).
         voltage_a_pu: DC-bus voltage phase A at each grid step (pu).
         voltage_b_pu: DC-bus voltage phase B at each grid step (pu).
         voltage_c_pu: DC-bus voltage phase C at each grid step (pu).
-        kW_A: DC load power phase A at each grid step (kW).
-        kW_B: DC load power phase B at each grid step (kW).
-        kW_C: DC load power phase C at each grid step (kW).
         events: Clock-stamped simulation events from all components.
     """
 
     dc_states: list[DCStateT] = field(default_factory=list)
     grid_states: list[GridStateT] = field(default_factory=list)
-    actions: list[ControlAction] = field(default_factory=list)
-    commands: list[Command] = field(default_factory=list)
+    commands: list[DatacenterCommand | GridCommand] = field(default_factory=list)
 
     time_s: list[float] = field(default_factory=list)
     voltage_a_pu: list[float] = field(default_factory=list)
     voltage_b_pu: list[float] = field(default_factory=list)
     voltage_c_pu: list[float] = field(default_factory=list)
-    kW_A: list[float] = field(default_factory=list)
-    kW_B: list[float] = field(default_factory=list)
-    kW_C: list[float] = field(default_factory=list)
 
     events: list[SimEvent] = field(default_factory=list)
 
-    def record_dc(self, state: DCStateT) -> None:
+    def record_datacenter(self, state: DCStateT) -> None:
+        """Append a datacenter state snapshot."""
         self.dc_states.append(state)
 
     def record_grid(self, state: GridStateT, *, dc_bus: str) -> None:
+        """Append a grid state snapshot and extract DC bus voltages."""
         self.grid_states.append(state)
         self.time_s.append(state.time_s)
 
@@ -89,18 +70,21 @@ class SimulationLog(Generic[DCStateT, GridStateT]):
         self.voltage_b_pu.append(v_dc.b)
         self.voltage_c_pu.append(v_dc.c)
 
-    def record_action(self, action: ControlAction) -> None:
-        self.actions.append(action)
-        self.commands.extend(action.commands)
-
-    def record_power(self, power_w: ThreePhase) -> None:
-        self.kW_A.append(power_w.a / 1e3)
-        self.kW_B.append(power_w.b / 1e3)
-        self.kW_C.append(power_w.c / 1e3)
+    def record_commands(self, commands: list[DatacenterCommand | GridCommand]) -> None:
+        """Append control commands issued during a tick."""
+        self.commands.extend(commands)
 
     def emit(self, event: SimEvent) -> None:
         """Event sink entrypoint for component-originated events."""
         self.events.append(event)
+
+
+def _gcd_fraction(a: Fraction, b: Fraction) -> Fraction:
+    """GCD of two positive Fractions using Euclidean algorithm."""
+    a, b = abs(a), abs(b)
+    while b:
+        a, b = b, a % b
+    return a
 
 
 class Coordinator(Generic[DCStateT, GridStateT]):
@@ -143,6 +127,7 @@ class Coordinator(Generic[DCStateT, GridStateT]):
         tick = periods[0]
         for p in periods[1:]:
             tick = _gcd_fraction(tick, p)
+        logger.info("Coordinator will run with tick %f s", float(tick))
 
         # Warn about potentially problematic dt configurations
         if grid.dt_s < datacenter.dt_s:
@@ -170,8 +155,8 @@ class Coordinator(Generic[DCStateT, GridStateT]):
     def reset(self) -> None:
         """Reset coordinator and all sub-components for a fresh run."""
         self.clock.reset()
-        self.datacenter.reset()
-        self.grid.reset()
+        self.datacenter.do_reset()
+        self.grid.do_reset()
         for ctrl in self.controllers:
             ctrl.reset()
 
@@ -216,10 +201,9 @@ class Coordinator(Generic[DCStateT, GridStateT]):
     def run(self) -> SimulationLog[DCStateT, GridStateT]:
         """Run the full simulation and return the log."""
         log: SimulationLog[DCStateT, GridStateT] = SimulationLog()
+        dc_events = EventEmitter(self.clock, log, "datacenter")
+        grid_events = EventEmitter(self.clock, log, "grid")
         controller_events = EventEmitter(self.clock, log, "controller")
-
-        self.datacenter.bind_event_emitter(EventEmitter(self.clock, log, "datacenter"))
-        self.grid.bind_event_emitter(EventEmitter(self.clock, log, "grid"))
 
         self._validate_controller_compatibility()
 
@@ -249,41 +233,37 @@ class Coordinator(Generic[DCStateT, GridStateT]):
             for _ in range(n_ticks):
                 # 1. Datacenter step (if due)
                 if self.clock.is_due(self.datacenter.dt_s):
-                    dc_state = self.datacenter.step(self.clock)
+                    dc_state = self.datacenter.do_step(self.clock, dc_events)
                     dc_buffer.append(dc_state.power_w)
-                    log.record_dc(dc_state)
+                    log.record_datacenter(dc_state)
 
                 # 2. Grid step (if due). Pass full sub-trace since last grid step.
                 if self.clock.is_due(self.grid.dt_s):
-                    grid_state = self.grid.step(self.clock, list(dc_buffer))
-                    if dc_buffer:
-                        log.record_power(dc_buffer[-1])
+                    grid_state = self.grid.do_step(self.clock, list(dc_buffer), grid_events)
                     dc_buffer.clear()
                     log.record_grid(grid_state, dc_bus=self.dc_bus)
 
                 # 3. Controllers (if due). In order, actions applied immediately.
                 for ctrl in self.controllers:
                     if self.clock.is_due(ctrl.dt_s):
-                        result = ctrl.step(self.clock, self.datacenter, self.grid, controller_events)
-                        actions = (result,) if isinstance(result, ControlAction) else result
-                        for action in actions:
-                            for command in action.commands:
-                                if isinstance(command, DatacenterCommand):
-                                    self.datacenter.apply_control(command)
-                                elif isinstance(command, GridCommand):
-                                    self.grid.apply_control(command)
-                                else:
-                                    raise ValueError(f"Unsupported command type: {type(command).__name__}")
-                            log.record_action(action)
+                        commands = ctrl.step(self.clock, self.datacenter, self.grid, controller_events)
+                        for command in commands:
+                            if isinstance(command, DatacenterCommand):
+                                self.datacenter.apply_control(command, dc_events)
+                            elif isinstance(command, GridCommand):
+                                self.grid.apply_control(command, grid_events)
+                            else:
+                                raise ValueError(f"Unsupported command type: {type(command).__name__}")
+                        log.record_commands(commands)
 
                 self.clock.advance()
         finally:
             self.stop()
 
         logger.info(
-            "Simulation complete: %d grid steps, %d DC steps, %d control actions",
+            "Simulation complete: %d grid steps, %d DC steps, %d commands",
             len(log.grid_states),
             len(log.dc_states),
-            len(log.actions),
+            len(log.commands),
         )
         return log
