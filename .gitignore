@@ -13,3 +13,5 @@ docs/api/
 
 data/offline/
 data/online/
+.claude/
+.examples\offline\data\offline/

@@ -35,7 +35,7 @@ OpenG2G is a modular library that provides abstractions for simulating and devel
 ### Datacenter
 
 The datacenter backend generates three-phase power load over time.
-In **offline mode**, it replays prerecorded GPU power traces with configurable noise, server ramp-down schedules, and training load overlays.
+In **offline mode**, it replays prerecorded GPU power traces with configurable noise, server ramp schedules (ramp-down and scale-up, optionally per-model), and training load overlays.
 In **online mode**, it reads live GPU power from live vLLM servers via [Zeus](https://ml.energy/zeus).
 
 ### Grid
@@ -56,9 +56,21 @@ OpenG2G ships with several built-in controllers including an [Online Feedback Op
 
 OpenG2G is designed for researchers studying questions like:
 
+<<<<<<< HEAD
 - **Voltage regulation strategies**: How do different control algorithms (OFO, rule-based, MPC) compare in maintaining grid stability metrics?
 - **Latency-voltage tradeoffs**: What is the Pareto frontier between inference latency and voltage violation severity?
 - **Datacenter sizing**: How large can an AI datacenter be on a given feeder before voltage violations become unmanageable?
 - **Grid topology effects**: How does the choice of feeder (IEEE 13-bus, 123-bus, etc.) affect datacenter impact and controllability?
 - **Multi-workload coordination**: How do inference and training workloads and their workload parameters change their grid impact and controllability?
 - **Hardware-in-the-loop validation**: Do controllers work on real GPUs with a simulated grid?
+=======
+- **[GPU flexibility for voltage regulation](../examples/1-gpu-flexibility.md)**: How effective can GPU workload flexibility contribute to mitigating voltage violations caused by different sources — internal load changes (e.g., training task overlay, inference task fluctuations) and external load changes (e.g., time-varying load, renewable generation)?
+- **[Voltage regulation strategies](../examples/2-voltage-regulation-strategies.md)**: How does datacenter-side batch-size control compare with grid-side regulator tap changes for voltage regulation? How do different batch-size control algorithms (e.g., OFO, rule-based) compare in maintaining grid stability metrics?
+- **[Controller parameter sensitivity](../examples/3-controller-parameter-sensitivity.md)**: How do OFO tuning parameters (step sizes, dual weights, throughput/switching costs) affect voltage regulation performance, and what are the optimal operating points?
+- **[Grid topology effects](../examples/4-grid-topology-effects.md)**: How does the choice of feeder (IEEE 13-bus, 34-bus, 123-bus, etc.), and the locations and capacities of loads and distributed energy resources (DERs), affect datacenter impact and controllability?
+- **[Datacenter sizing and hosting capacity](../examples/5-hosting-capacity.md)**: How large can an AI datacenter be on a given feeder before voltage violations become unmanageable? What is the maximum GPU count each bus can host?
+- **[Datacenter location planning](../examples/6-dc-location-planning.md)**: Which buses on a feeder are best suited for datacenter placement, how does location affect controllability, and how to find the best locations in a zonal system if multiple datacenters need to be built?
+- **[Multi-datacenter coordination](../examples/7-multi-dc-coordination.md)**: How do multiple datacenters at different grid locations interact, how should their controllers coordinate, and can shifting LLM replicas between sites further reduce voltage violations when batch-size control is exhausted?
+- **[Joint PV + DC siting and sizing](../examples/8-pv-dc-siting.md)**: How does co-located solar PV interact with datacenter loads? Where should PV systems be placed and sized to maximize economic return while minimizing voltage violations? Can PV and datacenter locations be co-optimized?
+- **[Hardware-in-the-loop validation](../examples/9-hardware-in-the-loop.md)**: Do controllers work on real GPUs with a simulated grid?
+>>>>>>> f03cf6c (Add multi-datacenter architecture: Coordinator accepts multiple DCs. Add functions to sweep ofo parameters, sweep DC locations, find DC hosting capacity, and optimize PV locations and capacities. Add IEEE 13, 34, 123 test feeders and example scripts. Include simulation outputs for IEEE 13, 34, 123 under multiple scenarios.)

@@ -410,6 +410,134 @@ def plot_allbus_voltages_per_phase(
 
 
 # ══════════════════════════════════════════════════════════════════════
+# Zone-envelope voltage plot (min/max per zone per phase)
+# ══════════════════════════════════════════════════════════════════════
+
+
+ZONE_COLORS_DEFAULT = {
+    "z1_sw": "#2196F3",
+    "z2_nw": "#4CAF50",
+    "z3_se": "#FF9800",
+    "z4_ne": "#E91E63",
+}
+
+
+def plot_zone_voltage_envelope(
+    grid_states: list[GridState],
+    time_s: np.ndarray,
+    *,
+    zones: dict[str, list[str]],
+    save_dir: Path | str,
+    v_min: float = 0.95,
+    v_max: float = 1.05,
+    zone_colors: dict[str, str] | None = None,
+    drop_buses: tuple[str, ...] = ("sourcebus",),
+    title_template: str = "Voltage Envelope (Phase {label})",
+    filename_template: str = "zone_voltage_envelope_phase_{label}.png",
+    figsize: tuple[float, float] = (14, 5),
+    dpi: int = 150,
+    fill_alpha: float = 0.25,
+    y_limits: tuple[float, float] | None = None,
+) -> None:
+    """Per-phase voltage envelope plot showing min/max per zone.
+
+    For each zone and phase, plots the instantaneous minimum and maximum
+    voltage across all buses in the zone, with a shaded fill between them.
+
+    Args:
+        grid_states: List of ``GridState`` from ``SimulationLog``.
+        time_s: Time array (seconds) aligned with *grid_states*.
+        zones: Mapping of zone_id -> list of bus names.
+        save_dir: Directory to write PNG files into.
+        zone_colors: Optional {zone_id: color} mapping.
+    """
+    if zone_colors is None:
+        zone_colors = ZONE_COLORS_DEFAULT
+
+    save_dir = Path(save_dir)
+    save_dir.mkdir(parents=True, exist_ok=True)
+    t_min = np.asarray(time_s) / 60.0
+    drop_set = {str(b).strip().lower() for b in drop_buses}
+
+    # Build zone bus sets (lowered)
+    zone_bus_sets: dict[str, set[str]] = {}
+    for zid, buses in zones.items():
+        zone_bus_sets[zid] = {b.lower() for b in buses} - drop_set
+
+    # Discover which buses have which phases
+    all_buses_with_phase: dict[str, set[str]] = {"a": set(), "b": set(), "c": set()}
+    for snap in grid_states[: min(10, len(grid_states))]:
+        for bus in snap.voltages.buses():
+            b_lc = bus.lower()
+            if b_lc in drop_set:
+                continue
+            v = snap.voltages[bus]
+            if not np.isnan(v.a):
+                all_buses_with_phase["a"].add(b_lc)
+            if not np.isnan(v.b):
+                all_buses_with_phase["b"].add(b_lc)
+            if not np.isnan(v.c):
+                all_buses_with_phase["c"].add(b_lc)
+
+    n_steps = len(grid_states)
+
+    for phase_letter in ("A", "B", "C"):
+        ph_lc = phase_letter.lower()
+        phase_buses = all_buses_with_phase.get(ph_lc, set())
+
+        fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
+
+        for zid in zones:
+            color = zone_colors.get(zid, "gray")
+            zone_buses = zone_bus_sets[zid] & phase_buses
+            if not zone_buses:
+                continue
+
+            # Collect voltage timeseries for zone buses
+            zone_buses_list = sorted(zone_buses)
+            V = np.full((len(zone_buses_list), n_steps), np.nan)
+            for k, snap in enumerate(grid_states):
+                for i, b in enumerate(zone_buses_list):
+                    for bus_name in snap.voltages.buses():
+                        if bus_name.lower() == b:
+                            V[i, k] = getattr(snap.voltages[bus_name], ph_lc)
+                            break
+
+            v_max_arr = np.nanmax(V, axis=0)
+            v_min_arr = np.nanmin(V, axis=0)
+
+            ax.plot(t_min, v_max_arr, color=color, linewidth=1.5, label=f"{zid} max")
+            ax.plot(t_min, v_min_arr, color=color, linewidth=1.5, linestyle="--",
+                    label=f"{zid} min")
+            ax.fill_between(t_min, v_min_arr, v_max_arr, color=color, alpha=fill_alpha)
+
+        ax.axhline(v_min, color="red", linestyle=":", linewidth=2.0, alpha=0.8, label="V limits")
+        ax.axhline(v_max, color="red", linestyle=":", linewidth=2.0, alpha=0.8)
+
+        if y_limits is not None:
+            ax.set_ylim(*y_limits)
+        else:
+            all_vals = []
+            for zid in zones:
+                zone_buses = zone_bus_sets[zid] & phase_buses
+                if zone_buses:
+                    all_vals.extend([v_min, v_max])
+            ax.set_ylim(min(0.93, v_min - 0.02), max(1.07, v_max + 0.02))
+
+        ax.set_xlabel("Time (minutes)", fontsize=13)
+        ax.set_ylabel("Voltage (pu)", fontsize=13)
+        ax.set_title(title_template.format(label=phase_letter), fontsize=14)
+        ax.legend(loc="best", fontsize=9, ncol=3, framealpha=0.9)
+        ax.grid(True, alpha=0.3)
+        ax.tick_params(labelsize=11)
+
+        fig.tight_layout()
+        fig.savefig(save_dir / filename_template.format(label=phase_letter),
+                    bbox_inches="tight")
+        plt.close(fig)
+
+
+# ══════════════════════════════════════════════════════════════════════
 # Paper Fig. 8: 4-panel, batch, power/replica, ITL, throughput (OFO)
 # ══════════════════════════════════════════════════════════════════════
 

@@ -1,0 +1,155 @@
+{
+  "models": [
+    {
+      "model_label": "Llama-3.1-8B",
+      "model_id": "meta-llama/Llama-3.1-8B-Instruct",
+      "gpus_per_replica": 1,
+      "initial_num_replicas": 720,
+      "initial_batch_size": 128,
+      "itl_deadline_s": 0.08,
+      "feasible_batch_sizes": [8, 16, 32, 64, 128, 256, 512]
+    },
+    {
+      "model_label": "Llama-3.1-70B",
+      "model_id": "meta-llama/Llama-3.1-70B-Instruct",
+      "gpus_per_replica": 4,
+      "initial_num_replicas": 180,
+      "initial_batch_size": 128,
+      "itl_deadline_s": 0.10,
+      "feasible_batch_sizes": [8, 16, 32, 64, 128, 256, 512]
+    },
+    {
+      "model_label": "Llama-3.1-405B",
+      "model_id": "meta-llama/Llama-3.1-405B-Instruct-FP8",
+      "gpus_per_replica": 8,
+      "initial_num_replicas": 90,
+      "initial_batch_size": 128,
+      "itl_deadline_s": 0.12,
+      "feasible_batch_sizes": [8, 16, 32, 64, 128, 256, 512]
+    },
+    {
+      "model_label": "Qwen3-30B-A3B",
+      "model_id": "Qwen/Qwen3-30B-A3B-Thinking-2507",
+      "gpus_per_replica": 2,
+      "initial_num_replicas": 480,
+      "initial_batch_size": 128,
+      "itl_deadline_s": 0.06,
+      "feasible_batch_sizes": [8, 16, 32, 64, 128, 256, 512]
+    },
+    {
+      "model_label": "Qwen3-235B-A22B",
+      "model_id": "Qwen/Qwen3-235B-A22B-Thinking-2507",
+      "gpus_per_replica": 8,
+      "initial_num_replicas": 210,
+      "initial_batch_size": 128,
+      "itl_deadline_s": 0.14,
+      "feasible_batch_sizes": [8, 16, 32, 64, 128, 256, 512]
+    }
+  ],
+  "data_sources": [
+    {"model_label": "Llama-3.1-8B", "task": "lm-arena-chat", "gpu": "H100", "batch_sizes": [8, 16, 32, 64, 96, 128, 192, 256, 384, 512, 768, 1024]},
+    {"model_label": "Llama-3.1-70B", "task": "lm-arena-chat", "gpu": "H100", "batch_sizes": [8, 16, 32, 64, 96, 128, 192, 256, 384, 512, 768, 1024, 1536, 2048]},
+    {"model_label": "Llama-3.1-405B", "task": "lm-arena-chat", "gpu": "H100", "batch_sizes": [8, 16, 32, 64, 96, 128, 192, 256, 384, 512]},
+    {"model_label": "Qwen3-30B-A3B", "task": "gpqa", "gpu": "H100", "batch_sizes": [8, 16, 32, 64, 96, 128, 192, 256, 384, 512]},
+    {"model_label": "Qwen3-235B-A22B", "task": "gpqa", "gpu": "H100", "batch_sizes": [8, 16, 32, 64, 96, 128, 192, 256, 384, 512]}
+  ],
+  "training_trace_params": {},
+  "data_dir": null,
+  "ieee_case_dir": "../../data/grid/ieee34",
+  "dss_master_file": "ieee34Mod1_halfline.dss",
+  "mlenergy_data_dir": null,
+
+  "source_pu": 1.09,
+
+  "dc_sites": {
+    "upstream": {
+      "bus": "850",
+      "bus_kv": 24.9,
+      "base_kw_per_phase": 120.0,
+      "models": ["Llama-3.1-8B", "Llama-3.1-70B", "Llama-3.1-405B"],
+      "connection_type": "wye",
+      "seed": 0,
+      "total_gpu_capacity": 520,
+      "inference_ramps": []
+    },
+    "downstream": {
+      "bus": "834",
+      "bus_kv": 24.9,
+      "base_kw_per_phase": 80.0,
+      "models": ["Qwen3-30B-A3B", "Qwen3-235B-A22B"],
+      "connection_type": "wye",
+      "seed": 42,
+      "total_gpu_capacity": 600,
+      "inference_ramps": []
+    }
+  },
+
+  "pv_systems": [
+    {
+      "bus": "848",
+      "bus_kv": 24.9,
+      "peak_kw": 130.0,
+      "csv_path": null,
+      "power_factor": 1.0
+    },
+    {
+      "bus": "830",
+      "bus_kv": 24.9,
+      "peak_kw": 65.0,
+      "csv_path": null,
+      "power_factor": 1.0
+    }
+  ],
+
+  "time_varying_loads": [
+    {"bus": "860", "bus_kv": 24.9, "peak_kw": 80.0, "csv_path": null, "power_factor": 0.96},
+    {"bus": "844", "bus_kv": 24.9, "peak_kw": 120.0, "csv_path": null, "power_factor": 0.96},
+    {"bus": "840", "bus_kv": 24.9, "peak_kw": 60.0, "csv_path": null, "power_factor": 0.96},
+    {"bus": "858", "bus_kv": 24.9, "peak_kw": 50.0, "csv_path": null, "power_factor": 0.96},
+    {"bus": "854", "bus_kv": 24.9, "peak_kw": 40.0, "csv_path": null, "power_factor": 0.96}
+  ],
+
+  "initial_taps": {
+    "creg1a": "+12",
+    "creg1b": "+8",
+    "creg1c": "+10",
+    "creg2a": "+0",
+    "creg2b": "+0",
+    "creg2c": "+0"
+  },
+
+  "exclude_buses": [
+    "sourcebus", "800", "802", "806", "808", "810", "812", "814",
+    "888", "890"
+  ],
+
+  "regulator_zones": {
+    "creg1": ["814r", "850", "816", "824", "828", "830", "854"],
+    "creg2": ["852r", "832", "858", "834", "860", "836", "840", "862", "842", "844", "846", "848"]
+  },
+
+  "ofo": {
+    "primal_step_size": 0.05,
+    "w_throughput": 0.001,
+    "w_switch": 1.0,
+    "voltage_gradient_scale": 1e6,
+    "voltage_dual_step_size": 20.0,
+    "latency_dual_step_size": 1.0,
+    "sensitivity_update_interval": 3600,
+    "sensitivity_perturbation_kw": 10.0
+  },
+
+  "simulation": {
+    "total_duration_s": 3600,
+    "dt_dc": "1/10",
+    "dt_grid": "1/10",
+    "dt_ctrl": "1",
+    "v_min": 0.95,
+    "v_max": 1.05
+  },
+
+  "power_augmentation": {
+    "amplitude_scale_range": [0.98, 1.02],
+    "noise_fraction": 0.005
+  }
+}

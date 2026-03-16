@@ -121,7 +121,7 @@ class VLLMDeployment(BaseModel):
 
     Pairs a reusable
     [`InferenceModelSpec`][openg2g.datacenter.config.InferenceModelSpec]
-    with physical deployment details. `spec.num_replicas` is the
+    with physical deployment details. `spec.initial_num_replicas` is the
     simulated (augmented) count for grid simulation. The real replica
     count is derived from `gpu_endpoints` and `spec.gpus_per_replica`.
 
@@ -165,7 +165,7 @@ class VLLMDeployment(BaseModel):
     @property
     def augmentation_factor(self) -> float:
         """Ratio of simulated replicas to real replicas."""
-        return self.spec.num_replicas / max(self.num_real_replicas, 1)
+        return self.spec.initial_num_replicas / max(self.num_real_replicas, 1)
 
     def set_batch_size(self, batch_size: int, ramp_up_rate: float = 0.0) -> None:
         """Update batch size on the vLLM server and track it locally.
@@ -788,7 +788,7 @@ class OnlineDatacenter(LLMBatchSizeControlledDatacenter[OnlineDatacenterState]):
                 "  %s: %d real GPUs, %d simulated replicas (%.0fx augmentation), %d virtual servers, vllm=%s",
                 d.model_label,
                 d.num_real_gpus,
-                d.spec.num_replicas,
+                d.spec.initial_num_replicas,
                 d.augmentation_factor,
                 n_servers,
                 d.vllm_base_url,
@@ -811,8 +811,8 @@ class OnlineDatacenter(LLMBatchSizeControlledDatacenter[OnlineDatacenterState]):
 
         for d in self._deployments:
             spec = d.spec
-            if spec.num_replicas > 0:
-                num_servers = math.ceil(spec.num_replicas * spec.gpus_per_replica / gpus_per_server)
+            if spec.initial_num_replicas > 0:
+                num_servers = math.ceil(spec.initial_num_replicas * spec.gpus_per_replica / gpus_per_server)
 
                 # Phase shuffle (consumes RNG)
                 sA, sB, sC = split_integer_evenly(num_servers, 3)
@@ -832,7 +832,7 @@ class OnlineDatacenter(LLMBatchSizeControlledDatacenter[OnlineDatacenterState]):
                 # Amplitude scales (consumes RNG)
                 amplitude_scales = rng.uniform(amp_lo, amp_hi, size=num_servers)
 
-                total_gpus = spec.num_replicas * spec.gpus_per_replica
+                total_gpus = spec.initial_num_replicas * spec.gpus_per_replica
                 gpus_per_server_list = np.full(num_servers, gpus_per_server, dtype=int)
                 tail = total_gpus - (num_servers - 1) * gpus_per_server
                 gpus_per_server_list[-1] = int(tail) if tail > 0 else gpus_per_server

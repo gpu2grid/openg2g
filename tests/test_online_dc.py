@@ -46,7 +46,7 @@ def _make_deployment(
 ) -> VLLMDeployment:
     spec = InferenceModelSpec(
         model_label=label,
-        num_replicas=num_replicas,
+        initial_num_replicas=num_replicas,
         gpus_per_replica=gpus_per_replica,
         initial_batch_size=128,
         itl_deadline_s=0.1,

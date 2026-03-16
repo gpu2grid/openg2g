@@ -29,3 +29,22 @@ class SetBatchSize(DatacenterCommand):
 
     batch_size_by_model: dict[str, int]
     ramp_up_rate_by_model: dict[str, float] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ShiftReplicas(DatacenterCommand):
+    """Shift replicas for a model at this datacenter.
+
+    Positive ``replica_delta`` adds replicas (receiving site);
+    negative removes them (sending site).
+
+    Attributes:
+        model_label: Which model to shift.
+        replica_delta: Number of replicas to add (>0) or remove (<0).
+        target_site_id: Site this command targets.  The coordinator uses
+            this to route the command to the correct datacenter.
+    """
+
+    model_label: str
+    replica_delta: int
+    target_site_id: str | None = None

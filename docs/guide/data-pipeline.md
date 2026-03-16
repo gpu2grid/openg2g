@@ -38,7 +38,7 @@ A single JSON config file drives both data generation and simulation. Example (`
       "model_label": "Llama-3.1-8B",
       "model_id": "meta-llama/Llama-3.1-8B-Instruct",
       "gpus_per_replica": 1,
-      "num_replicas": 720,
+      "initial_num_replicas": 720,
       "initial_batch_size": 128,
       "itl_deadline_s": 0.08,
       "feasible_batch_sizes": [8, 16, 32, 64, 128, 256, 512]
@@ -59,12 +59,92 @@ A single JSON config file drives both data generation and simulation. Example (`
 }
 ```
 
-- `models[]` entries are parsed directly as [`InferenceModelSpec`][openg2g.datacenter.config.InferenceModelSpec].
+- `models[]` entries are parsed directly as [`InferenceModelSpec`][openg2g.datacenter.config.InferenceModelSpec]. `initial_num_replicas` is the starting replica count; inference ramps with `target > 1.0` can scale beyond this.
 - `data_sources[]` entries are parsed as [`MLEnergySource`][openg2g.datacenter.workloads.inference.MLEnergySource], linked to models by `model_label`.
 - `training_trace_params` is parsed as [`TrainingTraceParams`][openg2g.datacenter.workloads.training.TrainingTraceParams]. Empty `{}` uses all defaults.
 - `data_dir`: `null` means auto-generate a hash-based path (`data/offline/{hash}`). An explicit path skips hashing.
 - `mlenergy_data_dir`: `null` loads benchmark data from the HuggingFace Hub.
 
+<<<<<<< HEAD
+=======
+### Extended Config for Multi-DC and Scenario Simulations
+
+The example scripts in `examples/offline/` use an extended config format (see `config_ieee34.json`) with additional fields for grid scenarios:
+
+```json
+{
+  "models": [ ... ],
+  "data_sources": [ ... ],
+
+  "ieee_case_dir": "../../data/grid/ieee34",
+  "dss_master_file": "ieee34Mod1_halfline.dss",
+  "source_pu": 1.09,
+
+  "dc_sites": {
+    "upstream": {
+      "bus": "850", "bus_kv": 24.9, "base_kw_per_phase": 120.0,
+      "models": ["Llama-3.1-8B", "Llama-3.1-70B"],
+      "connection_type": "wye", "seed": 0,
+      "total_gpu_capacity": 520,
+      "inference_ramps": [
+        {"target": 0.5, "t_start": 1000, "t_end": 1500},
+        {"target": 1.2, "t_start": 2500, "t_end": 3000, "model": "Llama-3.1-8B"}
+      ]
+    },
+    "downstream": {
+      "bus": "834", "bus_kv": 24.9, "base_kw_per_phase": 80.0,
+      "models": ["Qwen3-30B-A3B"],
+      "connection_type": "wye", "seed": 42,
+      "total_gpu_capacity": 600
+    }
+  },
+
+  "pv_systems": [
+    {"bus": "848", "bus_kv": 24.9, "peak_kw": 130.0, "power_factor": 1.0}
+  ],
+  "time_varying_loads": [
+    {"bus": "860", "bus_kv": 24.9, "peak_kw": 80.0, "power_factor": 0.96}
+  ],
+
+  "initial_taps": {
+    "creg1a": "+12", "creg1b": "+8", "creg1c": "+10",
+    "creg2a": "+0", "creg2b": "+0", "creg2c": "+0"
+  },
+  "regulator_zones": {
+    "creg1": ["814r", "850", "816", "824", "828", "830", "854"],
+    "creg2": ["852r", "832", "858", "834", "860", "836", "840", "862", "842", "844", "846", "848"]
+  },
+
+  "ofo": {
+    "primal_step_size": 0.05, "w_throughput": 0.001, "w_switch": 1.0,
+    "voltage_gradient_scale": 1e6, "voltage_dual_step_size": 20.0,
+    "latency_dual_step_size": 1.0
+  },
+  "simulation": {
+    "total_duration_s": 3600, "dt_dc": "1/10", "dt_grid": "1/10", "dt_ctrl": "1",
+    "v_min": 0.95, "v_max": 1.05
+  }
+}
+```
+
+Key additional fields:
+
+- `source_pu`: Substation source voltage in per-unit (default 1.0).
+- `dc_sites`: Multi-datacenter sites, keyed by site ID. Each specifies the bus, voltage, base power, model assignment, connection type, and optional inference ramps. Maps to [`DCLoadSpec`][openg2g.grid.config.DCLoadSpec] for the grid and a separate [`OfflineDatacenter`][openg2g.datacenter.offline.OfflineDatacenter] per site.
+    - `inference_ramps`: Optional list of inference server ramp events. Each entry has `target` (fraction of initial replicas; >1.0 for scale-up), `t_start`/`t_end` (ramp window in seconds), and optional `model` (apply to a specific model only). See [Building Simulators: Inference Ramps](building-simulators.md#inference-ramps).
+    - `total_gpu_capacity`: Maximum number of GPUs the datacenter can physically host. If omitted, auto-computed from initial model allocation. Used to enforce capacity constraints during load shifting and for power estimation in PV expansion planning.
+- `pv_systems`: Solar PV injections modeled as time-varying negative loads.
+- `time_varying_loads`: Additional time-varying loads at arbitrary buses.
+- `initial_taps`: Initial regulator tap positions, keyed by RegControl name. Supports integer step notation (`"+12"` = 1.0 + 12 × 0.00625) or direct per-unit values.
+- `tap_schedule`: Optional dynamic tap changes during simulation. Each entry specifies a time `t` (seconds) and one or more regulator tap positions (e.g., `{"t": 1800, "creg4a": "+15"}`).
+- `zones`: Optional per-zone bus lists for zone-constrained analysis (e.g., PV placement, DC location sweeps).
+- `load_shift`: Optional cross-site load shifting configuration. When `enabled: true`, the [`LoadShiftController`][openg2g.controller.load_shift.LoadShiftController] shifts LLM replicas between datacenters to resolve voltage violations after batch-size control is exhausted. Fields: `gpus_per_shift` (GPUs moved per step), `headroom` (fraction of extra server capacity to pre-allocate).
+- `regulator_zones`: Maps each regulator bank prefix to the list of downstream buses in its zone. Used for zone-aware tap optimization in the hosting capacity analysis.
+- `training`: Optional training workload overlay. Fields: `dc_site` (site ID the training job runs on; `null` = first site), `n_gpus`, `target_peak_W_per_gpu`, `t_start`/`t_end` (seconds).
+- `ofo`: OFO controller parameters.
+- `simulation`: Simulation timing and voltage limits.
+
+>>>>>>> f03cf6c (Add multi-datacenter architecture: Coordinator accepts multiple DCs. Add functions to sweep ofo parameters, sweep DC locations, find DC hosting capacity, and optimize PV locations and capacities. Add IEEE 13, 34, 123 test feeders and example scripts. Include simulation outputs for IEEE 13, 34, 123 under multiple scenarios.)
 ## Lazy Generation and Caching
 
 Each data class provides an `ensure()` classmethod that combines generate-if-missing and load into a single call:
@@ -184,9 +264,30 @@ At simulation time, the generated artifacts are consumed by two components:
 ### Running Simulations
 
 ```bash
+<<<<<<< HEAD
 python examples/offline/run_baseline.py --config examples/offline/config.json --mode no-tap
 
 python examples/offline/run_ofo.py --config examples/offline/config.json
 ```
 
 `--config` is the only required argument. The config file specifies all paths and data sources.
+=======
+# Baseline and OFO simulations (works with any IEEE system)
+python examples/offline/run_baseline.py --config examples/offline/config_ieee13.json --system ieee13
+python examples/offline/run_ofo.py --config examples/offline/config_ieee13.json --system ieee13
+python examples/offline/run_ofo.py --config examples/offline/config_ieee13.json --system ieee13 --mode all   # both no-tap and tap-change
+
+python examples/offline/run_ofo.py --config examples/offline/config_ieee34.json --system ieee34
+python examples/offline/run_ofo.py --config examples/offline/config_ieee123.json --system ieee123
+
+# Analysis scripts
+python examples/offline/sweep_hosting_capacities.py --config examples/offline/config_ieee34.json --system ieee34
+python examples/offline/sweep_dc_locations.py --config examples/offline/config_ieee13.json --system ieee13   # 1-D (single DC)
+python examples/offline/sweep_dc_locations.py --config examples/offline/config_ieee34.json --system ieee34   # 2-D (multi DC)
+python examples/offline/sweep_dc_locations.py --config examples/offline/config_ieee123.json --system ieee123 --dt-screening 60 --top-k 4   # zone-constrained
+python examples/offline/analyze_different_controllers.py --config examples/offline/config_ieee13.json --system ieee13
+python examples/offline/optimize_pv_and_dc_locations.py --config examples/offline/config_ieee123.json --system ieee123 --n-pv 3
+```
+
+`--config` is the only required argument. The config file specifies all paths and data sources. The OFO and baseline scripts support `--mode no-tap` (default), `--mode tap-change`, or `--mode all` to control whether tap schedule changes are applied. For detailed usage guides and examples across all IEEE test systems, see the [Examples](../examples/) documentation.
+>>>>>>> f03cf6c (Add multi-datacenter architecture: Coordinator accepts multiple DCs. Add functions to sweep ofo parameters, sweep DC locations, find DC hosting capacity, and optimize PV locations and capacities. Add IEEE 13, 34, 123 test feeders and example scripts. Include simulation outputs for IEEE 13, 34, 123 under multiple scenarios.)

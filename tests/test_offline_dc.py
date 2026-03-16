@@ -24,7 +24,7 @@ from openg2g.datacenter.workloads.inference import (
 from openg2g.events import EventEmitter
 
 MODEL = InferenceModelSpec(
-    model_label="TestModel", num_replicas=10, gpus_per_replica=1, initial_batch_size=128, itl_deadline_s=0.1
+    model_label="TestModel", initial_num_replicas=10, gpus_per_replica=1, initial_batch_size=128, itl_deadline_s=0.1
 )
 DC_CFG = DatacenterConfig(gpus_per_server=8)
 _EVENTS = EventEmitter(SimulationClock(Fraction(1, 10)), SimulationLog(), "custom")

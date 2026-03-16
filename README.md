@@ -64,11 +64,11 @@ from openg2g.grid.config import TapPosition
 # 1. Set up a trace-based datacenter
 models = (
     InferenceModelSpec(
-        model_label="Llama-3.1-8B", num_replicas=720, gpus_per_replica=1,
+        model_label="Llama-3.1-8B", initial_num_replicas=720, gpus_per_replica=1,
         initial_batch_size=128, itl_deadline_s=0.08,
     ),
     InferenceModelSpec(
-        model_label="Llama-3.1-70B", num_replicas=180, gpus_per_replica=4,
+        model_label="Llama-3.1-70B", initial_num_replicas=180, gpus_per_replica=4,
         initial_batch_size=128, itl_deadline_s=0.10,
     ),
 )

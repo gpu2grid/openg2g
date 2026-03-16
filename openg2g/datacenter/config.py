@@ -18,7 +18,8 @@ class InferenceModelSpec(BaseModel):
         model_label: Human-readable model identifier (e.g. `"Llama-3.1-70B"`).
         model_id: HuggingFace model ID (e.g. `"meta-llama/Llama-3.1-70B-Instruct"`).
             Used for benchmark data lookups and online API model fields.
-        num_replicas: Total number of replicas of this model across the datacenter.
+        initial_num_replicas: Initial number of replicas of this model in the datacenter.
+            Inference ramps with target > 1.0 can scale beyond this count.
         gpus_per_replica: GPUs allocated to each replica (determines model
             parallelism and per-replica power draw).
         initial_batch_size: Initial batch size for this model.
@@ -34,7 +35,7 @@ class InferenceModelSpec(BaseModel):
 
     model_label: str
     model_id: str = ""
-    num_replicas: int
+    initial_num_replicas: int
     gpus_per_replica: int
     initial_batch_size: int
     itl_deadline_s: float
@@ -49,8 +50,8 @@ class InferenceModelSpec(BaseModel):
                 f"initial_batch_size ({self.initial_batch_size}) must be in "
                 f"feasible_batch_sizes ({self.feasible_batch_sizes})."
             )
-        if self.num_replicas < 0:
-            raise ValueError(f"num_replicas must be >= 0, got {self.num_replicas}.")
+        if self.initial_num_replicas < 0:
+            raise ValueError(f"initial_num_replicas must be >= 0, got {self.initial_num_replicas}.")
         if self.gpus_per_replica < 1:
             raise ValueError(f"gpus_per_replica must be >= 1, got {self.gpus_per_replica}.")
         if self.initial_batch_size <= 0:
@@ -189,19 +190,25 @@ class InferenceRamp:
     ```python
     ramps = (
         InferenceRamp(target=0.2).at(t_start=2500, t_end=3000)
-        | InferenceRamp(target=1.0).at(t_start=3200, t_end=3400)
+        | InferenceRamp(target=1.2, model="Llama-3.1-8B").at(t_start=3200, t_end=3400)
     )
     ```
 
     Attributes:
-        target: Target active-server fraction after the ramp (0.0--1.0).
+        target: Target active-server fraction after the ramp.
+            Values below 1.0 reduce active servers (ramp down),
+            values above 1.0 increase active servers beyond the
+            initial count (ramp up / scale out).
+        model: Model label this ramp applies to. ``None`` applies to all
+            models in the datacenter.
     """
 
     target: float
+    model: str | None = None
 
     def __post_init__(self) -> None:
-        if not (0.0 <= self.target <= 1.0):
-            raise ValueError(f"InferenceRamp target must be in [0.0, 1.0], got {self.target}.")
+        if self.target < 0.0:
+            raise ValueError(f"InferenceRamp target must be >= 0.0, got {self.target}.")
 
     def at(self, t_start: float, t_end: float) -> InferenceRampSchedule:
         """Schedule this ramp over `[t_start, t_end]`.
@@ -261,8 +268,29 @@ class InferenceRampSchedule:
     def __bool__(self) -> bool:
         return bool(self._entries)
 
+    def for_model(self, model_label: str) -> InferenceRampSchedule:
+        """Return a schedule containing only entries that apply to *model_label*.
+
+        An entry applies if its ``model`` is ``None`` (all models) or matches
+        *model_label* exactly.
+        """
+        filtered = tuple(
+            e for e in self._entries
+            if e[0].model is None or e[0].model == model_label
+        )
+        return InferenceRampSchedule(filtered)
+
+    def max_target(self) -> float:
+        """Return the maximum target across all entries, or 1.0 if empty."""
+        if not self._entries:
+            return 1.0
+        return max(r.target for r, _, _ in self._entries)
+
     def __repr__(self) -> str:
-        parts = [f"InferenceRamp(target={r.target}).at(t_start={s}, t_end={e})" for r, s, e in self._entries]
+        parts = []
+        for r, s, e in self._entries:
+            model_part = f", model={r.model!r}" if r.model else ""
+            parts.append(f"InferenceRamp(target={r.target}{model_part}).at(t_start={s}, t_end={e})")
         return " | ".join(parts)
 
     def fraction_at(self, t: float | np.ndarray) -> float | np.ndarray:

@@ -52,35 +52,45 @@ class RampActivationPolicy(ActivationPolicy):
     [`InferenceRampSchedule`][openg2g.datacenter.config.InferenceRampSchedule].
 
     At time *t*, the top-*k* servers (by random priority) are active,
-    where `k = round(schedule.fraction_at(t) * num_servers)`.
+    where `k = round(schedule.fraction_at(t) * base_servers)`, capped at
+    ``num_servers``.
+
+    When the schedule has targets > 1.0 (scale-up), ``num_servers`` should
+    be larger than ``base_servers`` to accommodate the extra capacity.
 
     This is the default policy used by
     [`OfflineDatacenter`][openg2g.datacenter.offline.OfflineDatacenter].
 
     Args:
         schedule: Temporal ramp schedule mapping time to active-server fraction.
-        num_servers: Number of physical servers for this model.
+        num_servers: Total allocated servers (may exceed ``base_servers``
+            when schedule targets exceed 1.0).
         rng: RNG for randomizing priority ordering. Consumed once at
             construction time.
+        base_servers: Baseline server count corresponding to fraction 1.0.
+            Defaults to ``num_servers`` (no scale-up).
     """
 
-    __slots__ = ("_n", "_priority", "_schedule")
+    __slots__ = ("_base", "_n", "_priority", "_schedule")
 
     def __init__(
         self,
         schedule: InferenceRampSchedule,
         num_servers: int,
         rng: np.random.Generator,
+        *,
+        base_servers: int | None = None,
     ) -> None:
         self._schedule = schedule
         self._n = num_servers
+        self._base = base_servers if base_servers is not None else num_servers
         priority = np.arange(num_servers, dtype=int)
         rng.shuffle(priority)
         self._priority = priority
 
     def active_mask(self, t: float) -> np.ndarray:
         frac = self._schedule.fraction_at(t)
-        k = max(0, min(self._n, int(round(float(frac) * self._n))))
+        k = max(0, min(self._n, int(round(float(frac) * self._base))))
         mask = np.zeros(self._n, dtype=bool)
         mask[self._priority[:k]] = True
         return mask
@@ -88,7 +98,7 @@ class RampActivationPolicy(ActivationPolicy):
     def active_indices(self, t: float) -> np.ndarray:
         """Return active server indices in priority order."""
         frac = self._schedule.fraction_at(t)
-        k = max(0, min(self._n, int(round(float(frac) * self._n))))
+        k = max(0, min(self._n, int(round(float(frac) * self._base))))
         return self._priority[:k].copy()
 
 

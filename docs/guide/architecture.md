@@ -30,8 +30,16 @@ The core abstractions provided by OpenG2G are the multi-rate simulation loop ([`
 └───────────────┘                                    └───────────────────┘
 ```
 
+<<<<<<< HEAD
 Controllers return a list of [`GridCommand`][openg2g.grid.command.GridCommand] (e.g., [`SetTaps`][openg2g.grid.command.SetTaps]) and/or [`DatacenterCommand`][openg2g.datacenter.command.DatacenterCommand] (e.g., [`SetBatchSize`][openg2g.datacenter.command.SetBatchSize]) that the coordinator dispatches to the appropriate backend before the next tick.
+=======
+The coordinator supports **multiple datacenter sites**, each connected to a different bus on the grid. Controllers are bound to a specific site via their `site_id` property. A single-DC setup works the same as before (the datacenter is assigned site ID `"default"`).
+
+Controllers return a list of [`GridCommand`][openg2g.grid.command.GridCommand] (e.g., [`SetTaps`][openg2g.grid.command.SetTaps]) and/or [`DatacenterCommand`][openg2g.datacenter.command.DatacenterCommand] (e.g., [`SetBatchSize`][openg2g.datacenter.command.SetBatchSize], [`ShiftReplicas`][openg2g.datacenter.command.ShiftReplicas]) that the coordinator dispatches to the appropriate backend before the next tick.
+>>>>>>> f03cf6c (Add multi-datacenter architecture: Coordinator accepts multiple DCs. Add functions to sweep ofo parameters, sweep DC locations, find DC hosting capacity, and optimize PV locations and capacities. Add IEEE 13, 34, 123 test feeders and example scripts. Include simulation outputs for IEEE 13, 34, 123 under multiple scenarios.)
 Multiple controllers run in sequence each control step, so their actions compose naturally.
+
+Commands with a `target_site_id` attribute are routed to the specified datacenter site, enabling cross-site controllers (like [`LoadShiftController`][openg2g.controller.load_shift.LoadShiftController]) to send commands to multiple datacenters in a single step.
 
 ## Simulation Loop
 
@@ -108,7 +116,7 @@ Each component type has an abstract base class in `openg2g`. For full typed code
 
 - [`dt_s`][openg2g.datacenter.base.DatacenterBackend.dt_s]: The component's timestep
 - [`step(clock, events)`][openg2g.datacenter.base.DatacenterBackend.step]: Produce one power sample (returns a [`DatacenterState`][openg2g.datacenter.base.DatacenterState] containing three-phase power in watts)
-- [`apply_control(command, events)`][openg2g.datacenter.base.DatacenterBackend.apply_control]: Accept a command (e.g., [`SetBatchSize`][openg2g.datacenter.command.SetBatchSize])
+- [`apply_control(command, events)`][openg2g.datacenter.base.DatacenterBackend.apply_control]: Accept a command (e.g., [`SetBatchSize`][openg2g.datacenter.command.SetBatchSize], [`ShiftReplicas`][openg2g.datacenter.command.ShiftReplicas])
 - [`state`][openg2g.datacenter.base.DatacenterBackend.state] / [`history(n)`][openg2g.datacenter.base.DatacenterBackend.history]: Current and past states (managed automatically by the base class), readable by controllers
 
 Built-in implementations: [`OfflineDatacenter`][openg2g.datacenter.offline.OfflineDatacenter], [`OnlineDatacenter`][openg2g.datacenter.online.OnlineDatacenter].
@@ -130,7 +138,7 @@ Built-in implementation: [`OpenDSSGrid`][openg2g.grid.opendss.OpenDSSGrid].
 - [`dt_s`][openg2g.controller.base.Controller.dt_s]: The control interval
 - [`step(clock, datacenter, grid, events)`][openg2g.controller.base.Controller.step]: Read [`datacenter.state`][openg2g.datacenter.base.DatacenterBackend.state] and [`grid.state`][openg2g.grid.base.GridBackend.state], and return a list of commands to be applied to the datacenter and/or grid this tick
 
-Built-in implementations: [`OFOBatchSizeController`][openg2g.controller.ofo.OFOBatchSizeController], [`TapScheduleController`][openg2g.controller.tap_schedule.TapScheduleController], [`BatchSizeScheduleController`][openg2g.controller.batch_size_schedule.BatchSizeScheduleController], [`NoopController`][openg2g.controller.noop.NoopController].
+Built-in implementations: [`OFOBatchSizeController`][openg2g.controller.ofo.OFOBatchSizeController], [`RuleBasedBatchSizeController`][openg2g.controller.rule_based.RuleBasedBatchSizeController], [`TapScheduleController`][openg2g.controller.tap_schedule.TapScheduleController], [`LoadShiftController`][openg2g.controller.load_shift.LoadShiftController], [`BatchSizeScheduleController`][openg2g.controller.batch_size_schedule.BatchSizeScheduleController], [`NoopController`][openg2g.controller.noop.NoopController].
 
 ## Component Lifecycle
 

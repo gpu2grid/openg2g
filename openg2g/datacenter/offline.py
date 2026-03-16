@@ -13,7 +13,7 @@ import numpy as np
 from openg2g.clock import SimulationClock
 from openg2g.common import ThreePhase
 from openg2g.datacenter.base import LLMBatchSizeControlledDatacenter, LLMDatacenterState
-from openg2g.datacenter.command import DatacenterCommand, SetBatchSize
+from openg2g.datacenter.command import DatacenterCommand, SetBatchSize, ShiftReplicas
 from openg2g.datacenter.config import (
     DatacenterConfig,
     InferenceRampSchedule,
@@ -97,6 +97,8 @@ class OfflineDatacenter(LLMBatchSizeControlledDatacenter[OfflineDatacenterState]
         dt_s: Fraction,
         seed: int = 0,
         power_augmentation: PowerAugmentationConfig | None = None,
+        load_shift_headroom: float = 0.0,
+        total_gpu_capacity: int | None = None,
     ) -> None:
         super().__init__()
         if power_augmentation is None:
@@ -105,6 +107,15 @@ class OfflineDatacenter(LLMBatchSizeControlledDatacenter[OfflineDatacenterState]
         self._datacenter = datacenter
         self._workload = workload
         self._power_augmentation = power_augmentation
+        self._load_shift_headroom = load_shift_headroom
+
+        # Total GPU capacity: if not specified, compute from initial model allocation
+        models = list(workload.inference_data.models)
+        if total_gpu_capacity is None:
+            total_gpu_capacity = sum(
+                ms.initial_num_replicas * ms.gpus_per_replica for ms in models
+            )
+        self._total_gpu_capacity = total_gpu_capacity
         self._dt_s = dt_s
         self._seed = int(seed)
         self._models = list(workload.inference_data.models)
@@ -124,6 +135,7 @@ class OfflineDatacenter(LLMBatchSizeControlledDatacenter[OfflineDatacenterState]
 
         self._global_step: int = 0
         self._latency_rng = np.random.default_rng(self._seed + 54321)
+        self._replica_offset_by_model: dict[str, int] = {ms.model_label: 0 for ms in self._models}
 
         logger.info(
             "OfflineDatacenter: %d models, dt=%s s, seed=%d",
@@ -135,10 +147,27 @@ class OfflineDatacenter(LLMBatchSizeControlledDatacenter[OfflineDatacenterState]
             logger.info(
                 "  %s: %d replicas, %d GPUs/replica, batch=%d",
                 ms.model_label,
-                ms.num_replicas,
+                ms.initial_num_replicas,
                 ms.gpus_per_replica,
                 ms.initial_batch_size,
             )
+
+    @property
+    def total_gpu_capacity(self) -> int:
+        """Maximum number of GPUs this datacenter can host."""
+        return self._total_gpu_capacity
+
+    def current_gpu_usage(self) -> int:
+        """Current total GPU usage across all models (initial + offsets)."""
+        total = 0
+        for ms in self._models:
+            effective = max(0, ms.initial_num_replicas + self._replica_offset_by_model.get(ms.model_label, 0))
+            total += effective * ms.gpus_per_replica
+        return total
+
+    def available_gpu_capacity(self) -> int:
+        """Remaining GPU slots available for incoming replicas."""
+        return max(0, self._total_gpu_capacity - self.current_gpu_usage())
 
     @property
     def dt_s(self) -> Fraction:
@@ -152,7 +181,7 @@ class OfflineDatacenter(LLMBatchSizeControlledDatacenter[OfflineDatacenterState]
         per_gpu_by_model: dict[str, np.ndarray] = {}
         for ms in self._models:
             label = ms.model_label
-            if ms.num_replicas <= 0:
+            if ms.initial_num_replicas <= 0:
                 continue
             batch = int(self._batch_by_model[label])
 
@@ -241,9 +270,75 @@ class OfflineDatacenter(LLMBatchSizeControlledDatacenter[OfflineDatacenterState]
             {"batch_size_by_model": dict(self._batch_by_model)},
         )
 
+    @apply_control.register
+    def apply_control_shift_replicas(self, command: ShiftReplicas, events: EventEmitter) -> None:
+        """Shift replicas for a model by adjusting the activation policy base count."""
+        label = command.model_label
+        delta = command.replica_delta
+        if label not in self._replica_offset_by_model:
+            logger.warning("ShiftReplicas: unknown model %s, ignoring", label)
+            return
+
+        old_offset = self._replica_offset_by_model[label]
+        new_offset = old_offset + delta
+
+        # Find the model spec to compute server delta
+        ms = next((m for m in self._models if m.model_label == label), None)
+        if ms is None or ms.initial_num_replicas <= 0:
+            return
+        gpus_per_server = self._datacenter.gpus_per_server
+
+        # Compute new effective replica count (clamped to >= 0)
+        effective_replicas = max(0, ms.initial_num_replicas + new_offset)
+
+        # Enforce total GPU capacity when adding replicas
+        if delta > 0:
+            gpus_needed = delta * ms.gpus_per_replica
+            available = self.available_gpu_capacity()
+            if gpus_needed > available:
+                # Clamp to available capacity
+                max_replicas = available // ms.gpus_per_replica
+                if max_replicas <= 0:
+                    logger.warning(
+                        "ShiftReplicas %s: rejected, no GPU capacity (need %d, have %d)",
+                        label, gpus_needed, available,
+                    )
+                    return
+                effective_replicas = ms.initial_num_replicas + old_offset + max_replicas
+                logger.info(
+                    "ShiftReplicas %s: clamped from %+d to %+d replicas (GPU cap %d, used %d)",
+                    label, delta, max_replicas, self._total_gpu_capacity, self.current_gpu_usage(),
+                )
+
+        base_servers = math.ceil(ms.initial_num_replicas * ms.gpus_per_replica / gpus_per_server)
+        new_base = math.ceil(effective_replicas * ms.gpus_per_replica / gpus_per_server)
+
+        # Clamp to allocated server capacity
+        policy = self._policies.get(label)
+        if policy is None:
+            return
+        new_base = max(0, min(new_base, policy._n))
+
+        old_base = policy._base
+        policy._base = new_base
+        self._replica_offset_by_model[label] = effective_replicas - ms.initial_num_replicas
+
+        if old_base != new_base:
+            logger.info(
+                "ShiftReplicas %s: offset %+d -> %+d, base_servers %d -> %d (cap %d)",
+                label, old_offset, self._replica_offset_by_model[label],
+                old_base, new_base, policy._n,
+            )
+
+        events.emit(
+            "datacenter.replicas.shifted",
+            {"model_label": label, "replica_delta": delta, "new_base_servers": new_base},
+        )
+
     def reset(self) -> None:
         self._global_step = 0
         self._batch_by_model = {ms.model_label: ms.initial_batch_size for ms in self._models}
+        self._replica_offset_by_model = {ms.model_label: 0 for ms in self._models}
         self._layout_rng = np.random.default_rng(self._seed)
         self._layouts = {}
         self._policies = {}
@@ -265,11 +360,18 @@ class OfflineDatacenter(LLMBatchSizeControlledDatacenter[OfflineDatacenterState]
         template_store = self._workload.inference_data.power_templates
 
         for ms in self._models:
-            if ms.num_replicas > 0:
+            if ms.initial_num_replicas > 0:
                 any_batch = template_store.batch_sizes(ms.model_label)[0]
                 tpl_len = len(template_store.template(ms.model_label, any_batch))
 
-                num_servers = math.ceil(ms.num_replicas * ms.gpus_per_replica / gpus_per_server)
+                # Per-model ramp schedule (filters by model label).
+                model_schedule = schedule.for_model(ms.model_label)
+                max_target = model_schedule.max_target()
+
+                base_servers = math.ceil(ms.initial_num_replicas * ms.gpus_per_replica / gpus_per_server)
+                # Allocate extra servers when ramps scale beyond 1.0 or load-shift headroom is set.
+                effective_max = max(max_target, 1.0 + self._load_shift_headroom)
+                num_servers = math.ceil(base_servers * effective_max) if effective_max > 1.0 else base_servers
 
                 # Phase shuffle
                 sA, sB, sC = split_integer_evenly(num_servers, 3)
@@ -277,7 +379,10 @@ class OfflineDatacenter(LLMBatchSizeControlledDatacenter[OfflineDatacenterState]
                 rng.shuffle(phase_list)
 
                 # Policy dictates which servers are active at a given time.
-                self._policies[ms.model_label] = RampActivationPolicy(schedule, num_servers, rng)
+                self._policies[ms.model_label] = RampActivationPolicy(
+                    model_schedule, num_servers, rng,
+                    base_servers=base_servers if effective_max > 1.0 else None,
+                )
 
                 # This offset determines for each server, how much to stagger its power template indexing.
                 stagger_offsets = rng.integers(low=0, high=max(tpl_len, 1), size=num_servers)
@@ -285,10 +390,13 @@ class OfflineDatacenter(LLMBatchSizeControlledDatacenter[OfflineDatacenterState]
                 # Amplitude scales
                 amplitude_scales = rng.uniform(amp_lo, amp_hi, size=num_servers)
 
-                total_gpus = ms.num_replicas * ms.gpus_per_replica
+                total_gpus = num_servers * gpus_per_server
                 gpus_per_server_list = np.full(num_servers, gpus_per_server, dtype=int)
-                tail = total_gpus - (num_servers - 1) * gpus_per_server
-                gpus_per_server_list[-1] = int(tail) if tail > 0 else gpus_per_server
+                # Adjust last server for the actual GPU count at peak.
+                peak_gpus = int(math.ceil(ms.initial_num_replicas * ms.gpus_per_replica * effective_max))
+                tail = peak_gpus - (num_servers - 1) * gpus_per_server
+                gpus_per_server_list[-1] = max(1, int(tail)) if tail > 0 else gpus_per_server
+                total_gpus = int(gpus_per_server_list.sum())
 
                 self._layouts[ms.model_label] = ServerLayout(
                     num_servers=num_servers,

@@ -249,7 +249,14 @@ class Coordinator(Generic[DCStateT, GridStateT]):
                         commands = ctrl.step(self.clock, self.datacenter, self.grid, controller_events)
                         for command in commands:
                             if isinstance(command, DatacenterCommand):
+<<<<<<< HEAD
                                 self.datacenter.apply_control(command, dc_events)
+=======
+                                # Route to target site if specified, else controller's default DC
+                                target_site = getattr(command, "target_site_id", None)
+                                target_dc = self._datacenters[target_site] if target_site else dc
+                                target_dc.apply_control(command, dc_events)
+>>>>>>> f03cf6c (Add multi-datacenter architecture: Coordinator accepts multiple DCs. Add functions to sweep ofo parameters, sweep DC locations, find DC hosting capacity, and optimize PV locations and capacities. Add IEEE 13, 34, 123 test feeders and example scripts. Include simulation outputs for IEEE 13, 34, 123 under multiple scenarios.)
                             elif isinstance(command, GridCommand):
                                 self.grid.apply_control(command, grid_events)
                             else:
