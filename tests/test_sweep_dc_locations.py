@@ -365,7 +365,17 @@ GRID_DIR = Path(__file__).resolve().parent.parent / "data" / "grid"
 IEEE13_DIR = GRID_DIR / "ieee13"
 IEEE34_DIR = GRID_DIR / "ieee34"
 
+try:
+    import opendssdirect  # noqa: F401
 
+    HAS_OPENDSS = True
+except Exception:
+    HAS_OPENDSS = False
+
+_requires_opendss = pytest.mark.skipif(not HAS_OPENDSS, reason="OpenDSS not available")
+
+
+@_requires_opendss
 class TestDiscoverCandidateBusesIEEE13:
     def test_discovers_buses(self):
         if not IEEE13_DIR.exists():
@@ -392,6 +402,7 @@ class TestDiscoverCandidateBusesIEEE13:
         assert "650" not in [b.lower() for b in buses]
 
 
+@_requires_opendss
 class TestDiscoverCandidateBusesIEEE34:
     def test_discovers_buses(self):
         if not IEEE34_DIR.exists():
