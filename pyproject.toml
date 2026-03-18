@@ -71,5 +71,17 @@ ignore = [
 known-first-party = ["openg2g"]
 known-local-folder = ["plotting"]
 
+[tool.ty.environment]
+python-version = "3.10"
+
+[tool.ty.rules]
+unresolved-import = "ignore"
+invalid-argument-type = "ignore"
+unresolved-attribute = "ignore"
+invalid-method-override = "ignore"
+not-subscriptable = "ignore"
+invalid-return-type = "ignore"
+invalid-type-form = "ignore"
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
