@@ -1,2 +1,0 @@
-bus_z1_sw,bus_z2_nw,bus_z3_se,bus_z4_ne,violation_time_s,integral_violation_pu_s,worst_vmin,worst_vmax,wall_time_s
-7,30,57,108,288.89999999973725,1.721074803109353,0.9464175988666769,1.0516792555034353,20.99974939999811

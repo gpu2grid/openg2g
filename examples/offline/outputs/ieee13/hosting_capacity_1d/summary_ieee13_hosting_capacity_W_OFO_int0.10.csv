@@ -1,8 +1,0 @@
-dc_bus,hosting_capacity_kw,hosting_capacity_MW,limiting_model,limiting_max_gpus
-632,9856.0,9.856,Llama-3.1-8B,7040
-633,7303.8,7.3038,Llama-3.1-8B,5217
-670,7758.8,7.7588,Llama-3.1-8B,5542
-671,5104.4,5.1044,Llama-3.1-8B,3646
-675,4627.0,4.627,Llama-3.1-8B,3305
-680,4397.4,4.397399999999999,Llama-3.1-8B,3141
-692,5104.4,5.1044,Llama-3.1-8B,3646
