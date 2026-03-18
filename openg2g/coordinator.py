@@ -215,7 +215,9 @@ class Coordinator(Generic[DCStateT, GridStateT]):
                 if not dc_ok:
                     expected = " | ".join(t.__name__ for t in dc_types)
                     got = type(dc).__name__
-                    raise TypeError(f"{ctrl.__class__.__name__} ({sig}) requires datacenter type {expected}, got {got}.")
+                    raise TypeError(
+                        f"{ctrl.__class__.__name__} ({sig}) requires datacenter type {expected}, got {got}."
+                    )
 
             grid_types = ctrl.compatible_grid_types()
             try:
@@ -286,7 +288,9 @@ class Coordinator(Generic[DCStateT, GridStateT]):
                     if self.clock.is_due(ctrl.dt_s):
                         # Route to the correct datacenter if the controller has a site_id
                         ctrl_site_id = getattr(ctrl, "_site_id", None)
-                        ctrl_dc = self._datacenters.get(ctrl_site_id, self.datacenter) if ctrl_site_id else self.datacenter
+                        ctrl_dc = (
+                            self._datacenters.get(ctrl_site_id, self.datacenter) if ctrl_site_id else self.datacenter
+                        )
                         commands = ctrl.step(self.clock, ctrl_dc, self.grid, controller_events)
                         for command in commands:
                             if isinstance(command, DatacenterCommand):

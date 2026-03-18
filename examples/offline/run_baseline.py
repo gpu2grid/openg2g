@@ -35,21 +35,17 @@ Usage:
 from __future__ import annotations
 
 import logging
-from fractions import Fraction
 from pathlib import Path
 
-import numpy as np
-
 from run_ofo import _build_tap_schedule, run_mode
-
 from sweep_dc_locations import (
     SweepConfig,
     _parse_fraction,
 )
-from openg2g.datacenter.config import InferenceModelSpec
+
+from openg2g.controller.ofo import LogisticModelStore
 from openg2g.datacenter.workloads.inference import InferenceData
 from openg2g.datacenter.workloads.training import TrainingTrace
-from openg2g.controller.ofo import LogisticModelStore
 from openg2g.grid.config import TapSchedule
 from openg2g.metrics.voltage import VoltageStats
 
@@ -75,26 +71,29 @@ def main(*, config_path: Path, system: str, mode: str = "no-tap") -> None:
     logger.info("Loading data for %s...", system)
     data_sources = {s.model_label: s for s in config.data_sources}
     inference_data = InferenceData.ensure(
-        data_dir, all_models, data_sources,
-        mlenergy_data_dir=config.mlenergy_data_dir, plot=False, dt_s=float(dt_dc),
+        data_dir,
+        all_models,
+        data_sources,
+        mlenergy_data_dir=config.mlenergy_data_dir,
+        plot=False,
+        dt_s=float(dt_dc),
     )
     training_trace = TrainingTrace.ensure(
-        data_dir / "training_trace.csv", config.training_trace_params,
+        data_dir / "training_trace.csv",
+        config.training_trace_params,
     )
     # LogisticModelStore is needed by run_mode signature but not used for baseline
     logistic_models = LogisticModelStore.ensure(
-        data_dir / "logistic_fits.csv", all_models, data_sources,
-        mlenergy_data_dir=config.mlenergy_data_dir, plot=False,
+        data_dir / "logistic_fits.csv",
+        all_models,
+        data_sources,
+        mlenergy_data_dir=config.mlenergy_data_dir,
+        plot=False,
     )
 
     # Build tap schedule
-    has_tap_schedule = (
-        config.tap_schedule is not None and len(config.tap_schedule) > 0
-    )
-    tap_sched = (
-        _build_tap_schedule(config.tap_schedule, config.initial_taps)
-        if has_tap_schedule else None
-    )
+    has_tap_schedule = config.tap_schedule is not None and len(config.tap_schedule) > 0
+    tap_sched = _build_tap_schedule(config.tap_schedule, config.initial_taps) if has_tap_schedule else None
 
     # Build cases based on mode
     cases: list[tuple[str, TapSchedule | None]] = []
@@ -116,14 +115,16 @@ def main(*, config_path: Path, system: str, mode: str = "no-tap") -> None:
     results: dict[str, VoltageStats] = {}
     for folder, sched in cases:
         logger.info("Running %s baseline (%s)...", system, folder)
-        stats, log = run_mode(
+        stats, _log = run_mode(
             "baseline",
             config=config,
             all_models=all_models,
             inference_data=inference_data,
             training_trace=training_trace,
             logistic_models=logistic_models,
-            dt_dc=dt_dc, dt_grid=dt_grid, dt_ctrl=dt_ctrl,
+            dt_dc=dt_dc,
+            dt_grid=dt_grid,
+            dt_ctrl=dt_ctrl,
             save_dir=save_dir,
             tap_schedule=sched,
             folder_name=folder,
@@ -138,9 +139,14 @@ def main(*, config_path: Path, system: str, mode: str = "no-tap") -> None:
     logger.info("%-25s %10s %10s %10s %14s", "Mode", "Viol(s)", "Vmin", "Vmax", "Integral")
     logger.info("-" * 70)
     for folder, s in results.items():
-        logger.info("%-25s %10.1f %10.4f %10.4f %14.4f",
-                    folder, s.violation_time_s, s.worst_vmin, s.worst_vmax,
-                    s.integral_violation_pu_s)
+        logger.info(
+            "%-25s %10.1f %10.4f %10.4f %14.4f",
+            folder,
+            s.violation_time_s,
+            s.worst_vmin,
+            s.worst_vmax,
+            s.integral_violation_pu_s,
+        )
     logger.info("-" * 70)
     logger.info("Outputs: %s", save_dir)
 

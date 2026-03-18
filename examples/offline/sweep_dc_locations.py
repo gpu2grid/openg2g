@@ -283,15 +283,14 @@ class SweepConfig(BaseModel):
     load_shift: dict | None = None
     simulation: SimulationParams = SimulationParams()
     power_augmentation: PowerAugmentationConfig = PowerAugmentationConfig(
-        amplitude_scale_range=(0.98, 1.02), noise_fraction=0.005,
+        amplitude_scale_range=(0.98, 1.02),
+        noise_fraction=0.005,
     )
 
     @model_validator(mode="after")
     def _default_dc_site(self) -> SweepConfig:
         if self.dc_sites is None:
-            self.dc_sites = {
-                "default": DCSiteConfig(bus="671", bus_kv=4.16, base_kw_per_phase=500.0)
-            }
+            self.dc_sites = {"default": DCSiteConfig(bus="671", bus_kv=4.16, base_kw_per_phase=500.0)}
         return self
 
     @property
@@ -316,23 +315,18 @@ class SweepConfig(BaseModel):
 class ScenarioOpenDSSGrid(OpenDSSGrid):
     """OpenDSSGrid with PV systems and external loads at arbitrary buses."""
 
-    def __init__(self, *, pv_systems=None, time_varying_loads=None, source_pu=None,
-                 constant_pv: bool = False, **kwargs):
+    def __init__(
+        self, *, pv_systems=None, time_varying_loads=None, source_pu=None, constant_pv: bool = False, **kwargs
+    ):
         super().__init__(**kwargs)
         self._pv_specs = list(pv_systems or [])
         self._load_specs = list(time_varying_loads or [])
         self._source_pu = source_pu
         self._constant_pv = constant_pv
 
-        self._pv_csv = [
-            load_csv_profile(s.csv_path) if s.csv_path else None for s in self._pv_specs
-        ]
-        self._load_csv = [
-            load_csv_profile(s.csv_path) if s.csv_path else None for s in self._load_specs
-        ]
-        self._pv_load_names = [
-            (f"PV_{i}_A", f"PV_{i}_B", f"PV_{i}_C") for i in range(len(self._pv_specs))
-        ]
+        self._pv_csv = [load_csv_profile(s.csv_path) if s.csv_path else None for s in self._pv_specs]
+        self._load_csv = [load_csv_profile(s.csv_path) if s.csv_path else None for s in self._load_specs]
+        self._pv_load_names = [(f"PV_{i}_A", f"PV_{i}_B", f"PV_{i}_C") for i in range(len(self._pv_specs))]
         self._ext_load_names = [
             (f"ExtLoad_{i}_A", f"ExtLoad_{i}_B", f"ExtLoad_{i}_C") for i in range(len(self._load_specs))
         ]
@@ -346,7 +340,7 @@ class ScenarioOpenDSSGrid(OpenDSSGrid):
 
         for i, spec in enumerate(self._pv_specs):
             kv_ln = spec.bus_kv / math.sqrt(3.0)
-            for ph, name in zip((1, 2, 3), self._pv_load_names[i]):
+            for ph, name in zip((1, 2, 3), self._pv_load_names[i], strict=False):
                 dss.Text.Command(
                     f"New Load.{name} bus1={spec.bus}.{ph} phases=1 "
                     f"conn=wye kV={kv_ln:.6f} kW=0 kvar=0 model=1 vminpu=0.85"
@@ -354,7 +348,7 @@ class ScenarioOpenDSSGrid(OpenDSSGrid):
 
         for i, spec in enumerate(self._load_specs):
             kv_ln = spec.bus_kv / math.sqrt(3.0)
-            for ph, name in zip((1, 2, 3), self._ext_load_names[i]):
+            for ph, name in zip((1, 2, 3), self._ext_load_names[i], strict=False):
                 dss.Text.Command(
                     f"New Load.{name} bus1={spec.bus}.{ph} phases=1 "
                     f"conn=wye kV={kv_ln:.6f} kW=0 kvar=0 model=1 vminpu=0.85"
@@ -368,8 +362,11 @@ class ScenarioOpenDSSGrid(OpenDSSGrid):
                 kw = spec.peak_kw
             else:
                 kw = eval_profile(
-                    clock.time_s, peak_kw=spec.peak_kw, csv_data=self._pv_csv[i],
-                    profile_fn=pv_profile_kw, site_idx=i,
+                    clock.time_s,
+                    peak_kw=spec.peak_kw,
+                    csv_data=self._pv_csv[i],
+                    profile_fn=pv_profile_kw,
+                    site_idx=i,
                 )
             pf = max(min(spec.power_factor, 0.999999), 1e-6)
             kvar = kw * math.tan(math.acos(pf))
@@ -380,8 +377,11 @@ class ScenarioOpenDSSGrid(OpenDSSGrid):
 
         for i, spec in enumerate(self._load_specs):
             kw = eval_profile(
-                clock.time_s, peak_kw=spec.peak_kw, csv_data=self._load_csv[i],
-                profile_fn=load_profile_kw, site_idx=i,
+                clock.time_s,
+                peak_kw=spec.peak_kw,
+                csv_data=self._load_csv[i],
+                profile_fn=load_profile_kw,
+                site_idx=i,
             )
             pf = max(min(spec.power_factor, 0.999999), 1e-6)
             kvar = kw * math.tan(math.acos(pf))
@@ -440,23 +440,27 @@ def _build_workload_kwargs(
     if config.training is not None:
         tc = config.training
         kwargs["training"] = TrainingRun(
-            n_gpus=tc.n_gpus, trace=training_trace,
+            n_gpus=tc.n_gpus,
+            trace=training_trace,
             target_peak_W_per_gpu=tc.target_peak_W_per_gpu,
         ).at(t_start=tc.t_start, t_end=tc.t_end)
     # Per-site inference ramps take precedence over config-level ramp
     if site_ramps:
         schedule = InferenceRamp(target=site_ramps[0].target, model=site_ramps[0].model).at(
-            t_start=site_ramps[0].t_start, t_end=site_ramps[0].t_end,
+            t_start=site_ramps[0].t_start,
+            t_end=site_ramps[0].t_end,
         )
         for rc in site_ramps[1:]:
             schedule = schedule | InferenceRamp(target=rc.target, model=rc.model).at(
-                t_start=rc.t_start, t_end=rc.t_end,
+                t_start=rc.t_start,
+                t_end=rc.t_end,
             )
         kwargs["inference_ramps"] = schedule
     elif config.inference_ramp is not None:
         rc = config.inference_ramp
         kwargs["inference_ramps"] = InferenceRamp(target=rc.target, model=rc.model).at(
-            t_start=rc.t_start, t_end=rc.t_end,
+            t_start=rc.t_start,
+            t_end=rc.t_end,
         )
     return kwargs
 
@@ -513,8 +517,12 @@ def discover_candidate_buses(
 def _load_shared_data(config: SweepConfig, all_models, data_dir: Path, dt_dc: float):
     logger.info("Loading inference data...")
     inference_data = InferenceData.ensure(
-        data_dir, all_models, {s.model_label: s for s in config.data_sources},
-        mlenergy_data_dir=config.mlenergy_data_dir, plot=False, dt_s=dt_dc,
+        data_dir,
+        all_models,
+        {s.model_label: s for s in config.data_sources},
+        mlenergy_data_dir=config.mlenergy_data_dir,
+        plot=False,
+        dt_s=dt_dc,
     )
 
     logger.info("Loading training trace...")
@@ -522,8 +530,11 @@ def _load_shared_data(config: SweepConfig, all_models, data_dir: Path, dt_dc: fl
 
     logger.info("Loading logistic fits...")
     logistic_models = LogisticModelStore.ensure(
-        data_dir / "logistic_fits.csv", all_models, {s.model_label: s for s in config.data_sources},
-        mlenergy_data_dir=config.mlenergy_data_dir, plot=False,
+        data_dir / "logistic_fits.csv",
+        all_models,
+        {s.model_label: s for s in config.data_sources},
+        mlenergy_data_dir=config.mlenergy_data_dir,
+        plot=False,
     )
 
     return inference_data, training_trace, logistic_models
@@ -601,7 +612,10 @@ def optimize_taps_for_bus(
         workload = OfflineWorkload(**workload_kwargs)
 
         dc = OfflineDatacenter(
-            dc_config, workload, dt_s=dt_coarse, seed=0,
+            dc_config,
+            workload,
+            dt_s=dt_coarse,
+            seed=0,
             power_augmentation=config.power_augmentation,
         )
 
@@ -621,8 +635,11 @@ def optimize_taps_for_bus(
 
         ctrl = TapScheduleController(schedule=TapSchedule(()), dt_s=dt_coarse)
         coord = Coordinator(
-            datacenter=dc, grid=grid, controllers=[ctrl],
-            total_duration_s=t_total_s, dc_bus=dc_bus,
+            datacenter=dc,
+            grid=grid,
+            controllers=[ctrl],
+            total_duration_s=t_total_s,
+            dc_bus=dc_bus,
         )
         log = coord.run()
 
@@ -638,7 +655,7 @@ def optimize_taps_for_bus(
             return tap_pos
 
         phase_adjust = {"a": 0, "b": 0, "c": 0}
-        for bus, phase, vtype, val, mag in violations:
+        for _bus, phase, vtype, _val, _mag in violations:
             if vtype == "under":
                 phase_adjust[phase] = max(phase_adjust[phase], 1)
             elif vtype == "over":
@@ -713,6 +730,7 @@ def optimize_taps_multiscenario(
     base_taps = _extract_scenario_base_taps(config, initial_tap_position)
 
     COARSE_TICK = 60
+
     def _round_up(t: int) -> int:
         return ((t + COARSE_TICK - 1) // COARSE_TICK) * COARSE_TICK
 
@@ -734,13 +752,13 @@ def optimize_taps_multiscenario(
 
     results = {}
     for name, t_total, t_start, init_taps in scenarios:
-        taps_str = ", ".join(
-            f"{k}=%+d" % round((v - 1.0) / TAP_STEP)
-            for k, v in init_taps.regulators.items()
-        )
+        taps_str = ", ".join(f"{k}=%+d" % round((v - 1.0) / TAP_STEP) for k, v in init_taps.regulators.items())
         logger.info(
             "    Scenario '%s': T=%d, analysis>=%d, base taps: %s",
-            name, t_total, t_start, taps_str,
+            name,
+            t_total,
+            t_start,
+            taps_str,
         )
         optimal = optimize_taps_for_bus(
             config=config,
@@ -755,10 +773,7 @@ def optimize_taps_multiscenario(
             v_max=v_max,
         )
         results[name] = optimal
-        opt_str = ", ".join(
-            f"{k}=%+d" % round((v - 1.0) / TAP_STEP)
-            for k, v in optimal.regulators.items()
-        )
+        opt_str = ", ".join(f"{k}=%+d" % round((v - 1.0) / TAP_STEP) for k, v in optimal.regulators.items())
         logger.info("    -> %s taps: %s", name, opt_str)
     return results
 
@@ -789,7 +804,10 @@ def run_case_1d(
     workload = OfflineWorkload(**workload_kwargs)
 
     dc = OfflineDatacenter(
-        dc_config, workload, dt_s=dt_dc, seed=0,
+        dc_config,
+        workload,
+        dt_s=dt_dc,
+        seed=0,
         power_augmentation=config.power_augmentation,
     )
 
@@ -815,13 +833,19 @@ def run_case_1d(
     if use_ofo:
         ofo_config = _build_ofo_config(config.ofo, sim)
         ofo_ctrl = OFOBatchSizeController(
-            all_models, models=logistic_models, config=ofo_config, dt_s=dt_ctrl,
+            all_models,
+            models=logistic_models,
+            config=ofo_config,
+            dt_s=dt_ctrl,
         )
         controllers.append(ofo_ctrl)
 
     coord = Coordinator(
-        datacenter=dc, grid=grid, controllers=controllers,
-        total_duration_s=sim.total_duration_s, dc_bus=dc_bus,
+        datacenter=dc,
+        grid=grid,
+        controllers=controllers,
+        total_duration_s=sim.total_duration_s,
+        dc_bus=dc_bus,
     )
     log = coord.run()
 
@@ -844,17 +868,22 @@ def run_case_1d(
             plot_allbus_voltages_per_phase,
             plot_model_timeseries_4panel,
         )
+
         save_dir.mkdir(parents=True, exist_ok=True)
         time_s = np.array(log.time_s)
         plot_allbus_voltages_per_phase(
-            log.grid_states, time_s, save_dir=save_dir,
-            v_min=sim.v_min, v_max=sim.v_max,
+            log.grid_states,
+            time_s,
+            save_dir=save_dir,
+            v_min=sim.v_min,
+            v_max=sim.v_max,
             title_template=f"DC@{dc_bus} {case_name} — Voltage (Phase {{label}})",
         )
         if use_ofo:
             per_model = extract_per_model_timeseries(log.dc_states)
             plot_model_timeseries_4panel(
-                per_model.time_s, per_model,
+                per_model.time_s,
+                per_model,
                 model_labels=[m.model_label for m in all_models],
                 regime_shading=False,
                 save_path=save_dir / "OFO_results.png",
@@ -906,8 +935,14 @@ def _plot_bus_comparison(all_rows: list[dict], save_path: Path) -> None:
     logger.info("Comparison plot saved to: %s", save_path)
 
 
-def main_1d(*, config: SweepConfig, system: str, buses: list[str] | None = None,
-            dt_override: str | None = None, output_dir: Path | None = None) -> None:
+def main_1d(
+    *,
+    config: SweepConfig,
+    system: str,
+    buses: list[str] | None = None,
+    dt_override: str | None = None,
+    output_dir: Path | None = None,
+) -> None:
     """1-D sweep: single DC site swept across candidate buses."""
     sim = config.simulation
     all_models = tuple(config.models)
@@ -923,15 +958,19 @@ def main_1d(*, config: SweepConfig, system: str, buses: list[str] | None = None,
         sim.dt_ctrl = dt_override
         logger.info("Time resolution override: dt = %s s for all components", dt_override)
 
-    save_dir = output_dir if output_dir else (Path(__file__).resolve().parent / "outputs" / system / "sweep_dc_locations_1d")
+    save_dir = (
+        output_dir if output_dir else (Path(__file__).resolve().parent / "outputs" / system / "sweep_dc_locations_1d")
+    )
     save_dir.mkdir(parents=True, exist_ok=True)
-
 
     assert config.dc_sites is not None
     default_site = next(iter(config.dc_sites.values()))
 
     inference_data, training_trace, logistic_models = _load_shared_data(
-        config, all_models, data_dir, data_dt,
+        config,
+        all_models,
+        data_dir,
+        data_dt,
     )
 
     # Discover candidate buses
@@ -941,8 +980,10 @@ def main_1d(*, config: SweepConfig, system: str, buses: list[str] | None = None,
     else:
         logger.info("Discovering candidate 3-phase buses at %.2f kV...", default_site.bus_kv)
         candidate_buses = discover_candidate_buses(
-            config.ieee_case_dir, config.dss_master_file,
-            default_site.bus_kv, exclude=set(config.exclude_buses),
+            config.ieee_case_dir,
+            config.dss_master_file,
+            default_site.bus_kv,
+            exclude=set(config.exclude_buses),
         )
         logger.info("Found %d candidate buses: %s", len(candidate_buses), candidate_buses)
 
@@ -966,14 +1007,18 @@ def main_1d(*, config: SweepConfig, system: str, buses: list[str] | None = None,
         logger.info("")
         logger.info("  Bus %s: optimizing taps...", dc_bus)
         dc_site_cfg = DCSiteConfig(
-            bus=dc_bus, bus_kv=default_site.bus_kv,
+            bus=dc_bus,
+            bus_kv=default_site.bus_kv,
             base_kw_per_phase=default_site.base_kw_per_phase,
             connection_type=default_site.connection_type,
         )
         try:
             taps = optimize_taps_multiscenario(
-                config=config, dc_bus=dc_bus, dc_site_cfg=dc_site_cfg,
-                inference_data=inference_data, training_trace=training_trace,
+                config=config,
+                dc_bus=dc_bus,
+                dc_site_cfg=dc_site_cfg,
+                inference_data=inference_data,
+                training_trace=training_trace,
                 initial_tap_position=initial_taps,
             )
             optimal_taps[dc_bus] = taps
@@ -1016,7 +1061,8 @@ def main_1d(*, config: SweepConfig, system: str, buses: list[str] | None = None,
 
     for dc_bus in candidate_buses:
         dc_site_cfg = DCSiteConfig(
-            bus=dc_bus, bus_kv=default_site.bus_kv,
+            bus=dc_bus,
+            bus_kv=default_site.bus_kv,
             base_kw_per_phase=default_site.base_kw_per_phase,
             connection_type=default_site.connection_type,
         )
@@ -1030,15 +1076,13 @@ def main_1d(*, config: SweepConfig, system: str, buses: list[str] | None = None,
             t_low = config.inference_ramp.t_end + 120
             tap_schedule_entries.append((t_low, bus_taps["low_load"]))
 
-        tap_schedule = TapSchedule(()) if not tap_schedule_entries else TapSchedule(
-            tuple(tap_schedule_entries)
-        )
+        tap_schedule = TapSchedule(()) if not tap_schedule_entries else TapSchedule(tuple(tap_schedule_entries))
 
         cases = [
-            ("baseline_no_tap",     False, False),
+            ("baseline_no_tap", False, False),
             ("baseline_tap_change", False, True),
-            ("ofo_no_tap",          True,  False),
-            ("ofo_tap_change",      True,  True),
+            ("ofo_no_tap", True, False),
+            ("ofo_tap_change", True, True),
         ]
 
         bus_results = {"dc_bus": dc_bus}
@@ -1052,23 +1096,37 @@ def main_1d(*, config: SweepConfig, system: str, buses: list[str] | None = None,
 
             try:
                 result = run_case_1d(
-                    config=config, dc_bus=dc_bus, dc_site_cfg=dc_site_cfg,
-                    case_name=case_name, inference_data=inference_data,
-                    training_trace=training_trace, logistic_models=logistic_models,
-                    all_models=all_models, initial_taps=inference_taps,
+                    config=config,
+                    dc_bus=dc_bus,
+                    dc_site_cfg=dc_site_cfg,
+                    case_name=case_name,
+                    inference_data=inference_data,
+                    training_trace=training_trace,
+                    logistic_models=logistic_models,
+                    all_models=all_models,
+                    initial_taps=inference_taps,
                     tap_schedule=tap_schedule if use_tap_change else None,
-                    use_ofo=use_ofo, save_dir=case_save_dir,
+                    use_ofo=use_ofo,
+                    save_dir=case_save_dir,
                 )
                 logger.info(
                     "  -> viol=%.1fs  integral=%.4f pu·s  vmin=%.4f  vmax=%.4f",
-                    result["violation_time_s"], result["integral_violation_pu_s"],
-                    result["worst_vmin"], result["worst_vmax"],
+                    result["violation_time_s"],
+                    result["integral_violation_pu_s"],
+                    result["worst_vmin"],
+                    result["worst_vmax"],
                 )
                 for k, v in result.items():
                     bus_results[f"{case_name}_{k}"] = v
             except Exception as e:
                 logger.error("  Bus %s — %s FAILED: %s", dc_bus, case_name, e)
-                for k in ["violation_time_s", "worst_vmin", "worst_vmax", "integral_violation_pu_s", "avg_power_kw_per_phase"]:
+                for k in [
+                    "violation_time_s",
+                    "worst_vmin",
+                    "worst_vmax",
+                    "integral_violation_pu_s",
+                    "avg_power_kw_per_phase",
+                ]:
                     bus_results[f"{case_name}_{k}"] = float("nan")
 
         all_rows.append(bus_results)
@@ -1092,8 +1150,15 @@ def main_1d(*, config: SweepConfig, system: str, buses: list[str] | None = None,
     logger.info("=" * 160)
     logger.info(
         "%-8s | %12s %12s | %12s %12s | %12s %12s | %12s %12s",
-        "Bus", "NoTap V(s)", "NoTap I", "TapChg V(s)", "TapChg I",
-        "OFO V(s)", "OFO I", "OFO+TC V(s)", "OFO+TC I",
+        "Bus",
+        "NoTap V(s)",
+        "NoTap I",
+        "TapChg V(s)",
+        "TapChg I",
+        "OFO V(s)",
+        "OFO I",
+        "OFO+TC V(s)",
+        "OFO+TC I",
     )
     logger.info("-" * 160)
     for row in all_rows:
@@ -1170,8 +1235,9 @@ def _plot_heatmaps(df: pd.DataFrame, buses: list[str], save_dir: Path) -> None:
         logger.info("Saved heatmap: %s", fname)
 
 
-def main_2d(*, config: SweepConfig, system: str, dt_override: str | None = None,
-            output_dir: Path | None = None) -> None:
+def main_2d(
+    *, config: SweepConfig, system: str, dt_override: str | None = None, output_dir: Path | None = None
+) -> None:
     """2-D sweep: multiple DC sites, sweep all unordered pairs of candidate buses."""
     sim = config.simulation
     ofo_params = config.ofo
@@ -1189,11 +1255,16 @@ def main_2d(*, config: SweepConfig, system: str, dt_override: str | None = None,
         dt_grid = _parse_fraction(sim.dt_grid)
         dt_ctrl = _parse_fraction(sim.dt_ctrl)
 
-    save_dir = output_dir if output_dir else (Path(__file__).resolve().parent / "outputs" / system / "sweep_dc_locations_2d")
+    save_dir = (
+        output_dir if output_dir else (Path(__file__).resolve().parent / "outputs" / system / "sweep_dc_locations_2d")
+    )
     save_dir.mkdir(parents=True, exist_ok=True)
 
     inference_data, training_trace, logistic_models = _load_shared_data(
-        config, all_models, data_dir, data_dt,
+        config,
+        all_models,
+        data_dir,
+        data_dt,
     )
 
     # Discover candidate buses
@@ -1203,8 +1274,10 @@ def main_2d(*, config: SweepConfig, system: str, dt_override: str | None = None,
 
     logger.info("Discovering candidate 3-phase buses at %.1f kV...", target_kv)
     candidate_buses = discover_candidate_buses(
-        config.ieee_case_dir, config.dss_master_file,
-        target_kv, exclude=set(config.exclude_buses),
+        config.ieee_case_dir,
+        config.dss_master_file,
+        target_kv,
+        exclude=set(config.exclude_buses),
     )
     logger.info("Found %d candidate buses: %s", len(candidate_buses), candidate_buses)
 
@@ -1238,30 +1311,37 @@ def main_2d(*, config: SweepConfig, system: str, dt_override: str | None = None,
     rows: list[dict] = []
 
     for idx, (bus_A, bus_B) in enumerate(pairs, start=1):
-        logger.info("[%d/%d] DC1(%s)@%s + DC2(%s)@%s",
-                     idx, total, site_A_id, bus_A, site_B_id, bus_B)
+        logger.info("[%d/%d] DC1(%s)@%s + DC2(%s)@%s", idx, total, site_A_id, bus_A, site_B_id, bus_B)
 
         try:
             dc_config_A = DatacenterConfig(gpus_per_server=8, base_kw_per_phase=site_A_template.base_kw_per_phase)
             dc_config_B = DatacenterConfig(gpus_per_server=8, base_kw_per_phase=site_B_template.base_kw_per_phase)
 
             workload_A_kwargs = _build_workload_kwargs(
-                config, inference_A, training_trace,
+                config,
+                inference_A,
+                training_trace,
                 site_ramps=site_A_template.inference_ramps if site_A_template.inference_ramps else None,
             )
             workload_B_kwargs = _build_workload_kwargs(
-                config, inference_B, training_trace,
+                config,
+                inference_B,
+                training_trace,
                 site_ramps=site_B_template.inference_ramps if site_B_template.inference_ramps else None,
             )
 
             dc_A = OfflineDatacenter(
-                dc_config_A, OfflineWorkload(**workload_A_kwargs),
-                dt_s=dt_dc, seed=site_A_template.seed,
+                dc_config_A,
+                OfflineWorkload(**workload_A_kwargs),
+                dt_s=dt_dc,
+                seed=site_A_template.seed,
                 power_augmentation=config.power_augmentation,
             )
             dc_B = OfflineDatacenter(
-                dc_config_B, OfflineWorkload(**workload_B_kwargs),
-                dt_s=dt_dc, seed=site_B_template.seed,
+                dc_config_B,
+                OfflineWorkload(**workload_B_kwargs),
+                dt_s=dt_dc,
+                seed=site_B_template.seed,
                 power_augmentation=config.power_augmentation,
             )
 
@@ -1285,16 +1365,23 @@ def main_2d(*, config: SweepConfig, system: str, dt_override: str | None = None,
             )
 
             ofo_A = OFOBatchSizeController(
-                models_A, models=logistic_models, config=ofo_config,
-                dt_s=dt_ctrl, site_id=site_A_id,
+                models_A,
+                models=logistic_models,
+                config=ofo_config,
+                dt_s=dt_ctrl,
+                site_id=site_A_id,
             )
             ofo_B = OFOBatchSizeController(
-                models_B, models=logistic_models, config=ofo_config,
-                dt_s=dt_ctrl, site_id=site_B_id,
+                models_B,
+                models=logistic_models,
+                config=ofo_config,
+                dt_s=dt_ctrl,
+                site_id=site_B_id,
             )
 
             coord = Coordinator(
-                datacenters=datacenters, grid=grid,
+                datacenters=datacenters,
+                grid=grid,
                 controllers=[ofo_A, ofo_B],
                 total_duration_s=sim.total_duration_s,
                 dc_bus=bus_A,
@@ -1305,7 +1392,9 @@ def main_2d(*, config: SweepConfig, system: str, dt_override: str | None = None,
             wall_s = time.monotonic() - t0
 
             vstats = compute_allbus_voltage_stats(
-                log.grid_states, v_min=sim.v_min, v_max=sim.v_max,
+                log.grid_states,
+                v_min=sim.v_min,
+                v_max=sim.v_max,
                 exclude_buses=exclude_buses,
             )
 
@@ -1321,8 +1410,10 @@ def main_2d(*, config: SweepConfig, system: str, dt_override: str | None = None,
             rows.append(row)
             logger.info(
                 "  -> viol=%.1fs  integral=%.4f pu·s  vmin=%.4f  wall=%.1fs",
-                vstats.violation_time_s, vstats.integral_violation_pu_s,
-                vstats.worst_vmin, wall_s,
+                vstats.violation_time_s,
+                vstats.integral_violation_pu_s,
+                vstats.worst_vmin,
+                wall_s,
             )
 
         except Exception:
@@ -1380,31 +1471,40 @@ def _run_multi_dc_case(
     for sid in site_ids:
         tmpl = site_templates[sid]
         dc_config = DatacenterConfig(
-            gpus_per_server=8, base_kw_per_phase=tmpl.base_kw_per_phase,
+            gpus_per_server=8,
+            base_kw_per_phase=tmpl.base_kw_per_phase,
         )
         if stress_test:
             # Immediate ramp to fill total GPU capacity
             models_for_site = site_models[sid]
-            current_gpus = sum(
-                m.initial_num_replicas * m.gpus_per_replica for m in models_for_site
-            )
+            current_gpus = sum(m.initial_num_replicas * m.gpus_per_replica for m in models_for_site)
             total_cap = tmpl.total_gpu_capacity or current_gpus
             ramp_target = total_cap / current_gpus if current_gpus > 0 else 1.0
-            stress_ramps = [
-                InferenceRampConfig(target=ramp_target, t_start=0, t_end=1),
-            ] if ramp_target > 1.0 else None
+            stress_ramps = (
+                [
+                    InferenceRampConfig(target=ramp_target, t_start=0, t_end=1),
+                ]
+                if ramp_target > 1.0
+                else None
+            )
             wl_kwargs = _build_workload_kwargs(
-                config, site_inference_data[sid], training_trace,
+                config,
+                site_inference_data[sid],
+                training_trace,
                 site_ramps=stress_ramps,
             )
         else:
             wl_kwargs = _build_workload_kwargs(
-                config, site_inference_data[sid], training_trace,
+                config,
+                site_inference_data[sid],
+                training_trace,
                 site_ramps=tmpl.inference_ramps if tmpl.inference_ramps else None,
             )
         dc = OfflineDatacenter(
-            dc_config, OfflineWorkload(**wl_kwargs),
-            dt_s=dt_dc, seed=tmpl.seed,
+            dc_config,
+            OfflineWorkload(**wl_kwargs),
+            dt_s=dt_dc,
+            seed=tmpl.seed,
             power_augmentation=config.power_augmentation,
         )
         datacenters[sid] = dc
@@ -1412,7 +1512,8 @@ def _run_multi_dc_case(
     # Build grid with multi-DC loads
     dc_loads = {
         sid: DCLoadSpec(
-            bus=bus_map[sid], bus_kv=target_kv,
+            bus=bus_map[sid],
+            bus_kv=target_kv,
             connection_type=site_templates[sid].connection_type,
         )
         for sid in site_ids
@@ -1436,15 +1537,19 @@ def _run_multi_dc_case(
     controllers = []
     for sid in site_ids:
         ofo_ctrl = OFOBatchSizeController(
-            site_models[sid], models=logistic_models, config=ofo_config,
-            dt_s=dt_ctrl, site_id=sid,
+            site_models[sid],
+            models=logistic_models,
+            config=ofo_config,
+            dt_s=dt_ctrl,
+            site_id=sid,
         )
         controllers.append(ofo_ctrl)
 
     duration = total_duration_s if total_duration_s is not None else sim.total_duration_s
 
     coord = Coordinator(
-        datacenters=datacenters, grid=grid,
+        datacenters=datacenters,
+        grid=grid,
         controllers=controllers,
         total_duration_s=duration,
         dc_bus=bus_map[site_ids[0]],
@@ -1455,20 +1560,24 @@ def _run_multi_dc_case(
     wall_s = time.monotonic() - t0
 
     vstats = compute_allbus_voltage_stats(
-        log.grid_states, v_min=sim.v_min, v_max=sim.v_max,
+        log.grid_states,
+        v_min=sim.v_min,
+        v_max=sim.v_max,
         exclude_buses=exclude_buses,
     )
 
     row: dict = {}
     for sid in site_ids:
         row[f"bus_{sid}"] = bus_map[sid]
-    row.update({
-        "violation_time_s": vstats.violation_time_s,
-        "integral_violation_pu_s": vstats.integral_violation_pu_s,
-        "worst_vmin": vstats.worst_vmin,
-        "worst_vmax": vstats.worst_vmax,
-        "wall_time_s": wall_s,
-    })
+    row.update(
+        {
+            "violation_time_s": vstats.violation_time_s,
+            "integral_violation_pu_s": vstats.integral_violation_pu_s,
+            "worst_vmin": vstats.worst_vmin,
+            "worst_vmax": vstats.worst_vmax,
+            "wall_time_s": wall_s,
+        }
+    )
     return row
 
 
@@ -1484,16 +1593,17 @@ def _log_results_table(
     logger.info("=" * 120)
     bus_cols = [f"bus_{sid}" for sid in site_ids]
     header = "  ".join(f"{col:>10s}" for col in bus_cols)
-    header += "  %12s %12s %10s %10s %10s" % (
-        "Viol(s)", "Integral", "Vmin", "Vmax", "Wall(s)",
-    )
+    header += f"  {'Viol(s)':>12s} {'Integral':>12s} {'Vmin':>10s} {'Vmax':>10s} {'Wall(s)':>10s}"
     logger.info(header)
     logger.info("-" * 120)
     for _, row in df.iterrows():
         line = "  ".join(f"{row[col]:>10s}" for col in bus_cols)
-        line += "  %12.1f %12.4f %10.4f %10.4f %10.1f" % (
-            row["violation_time_s"], row["integral_violation_pu_s"],
-            row["worst_vmin"], row["worst_vmax"], row["wall_time_s"],
+        line += "  {:12.1f} {:12.4f} {:10.4f} {:10.4f} {:10.1f}".format(
+            row["violation_time_s"],
+            row["integral_violation_pu_s"],
+            row["worst_vmin"],
+            row["worst_vmax"],
+            row["wall_time_s"],
         )
         logger.info(line)
 
@@ -1512,9 +1622,7 @@ def _plot_zoned_summary(
     df_top = df.head(n_show)
 
     bus_cols = [f"bus_{sid}" for sid in site_ids]
-    labels = [
-        "/".join(str(row[c]) for c in bus_cols) for _, row in df_top.iterrows()
-    ]
+    labels = ["/".join(str(row[c]) for c in bus_cols) for _, row in df_top.iterrows()]
 
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(max(14, n_show * 0.7), 10))
 
@@ -1533,7 +1641,11 @@ def _plot_zoned_summary(
     ax2.set_xticklabels(labels, rotation=45, ha="right", fontsize=8)
 
     fig.tight_layout()
-    fname = f"Phase_2_combination_results_{system}.png" if suffix == "phase2" else f"comparison_{system}_zoned{('_' + suffix) if suffix else ''}.png"
+    fname = (
+        f"Phase_2_combination_results_{system}.png"
+        if suffix == "phase2"
+        else f"comparison_{system}_zoned{('_' + suffix) if suffix else ''}.png"
+    )
     fig.savefig(save_dir / fname, dpi=150, bbox_inches="tight")
     plt.close(fig)
     logger.info("Saved comparison plot: %s", fname)
@@ -1550,7 +1662,7 @@ def _plot_screening_bars(
     n_zones = len(screening_results)
     fig, axes = plt.subplots(1, n_zones, figsize=(5 * n_zones, 5), squeeze=False)
 
-    for ax, (sid, df) in zip(axes[0], screening_results.items()):
+    for ax, (sid, df) in zip(axes[0], screening_results.items(), strict=False):
         buses = df[f"bus_{sid}"].values
         viol = df["violation_time_s"].values
         x = np.arange(len(buses))
@@ -1610,7 +1722,7 @@ def _plot_refinement_iteration(
         ]:
             ax = axes[ax_row][col]
             vals = df[metric].values
-            bars = ax.bar(x, vals, color=color)
+            ax.bar(x, vals, color=color)
 
             # Mark previous best with diamond, new best with star
             for idx, bus in enumerate(buses):
@@ -1618,8 +1730,16 @@ def _plot_refinement_iteration(
                 if prev_bus and bus_str == prev_bus and bus_str != (new_bus or ""):
                     ax.plot(idx, vals[idx], "Dk", markersize=10, zorder=5)
                 if new_bus and bus_str == new_bus:
-                    ax.plot(idx, vals[idx], "*", color="gold", markersize=16,
-                            markeredgecolor="black", markeredgewidth=0.8, zorder=5)
+                    ax.plot(
+                        idx,
+                        vals[idx],
+                        "*",
+                        color="gold",
+                        markersize=16,
+                        markeredgecolor="black",
+                        markeredgewidth=0.8,
+                        zorder=5,
+                    )
 
             ax.set_ylabel(ylabel)
             ax.set_title(f"Zone '{sid}' — {title_suffix}")
@@ -1628,17 +1748,26 @@ def _plot_refinement_iteration(
 
     # Add legend for markers
     from matplotlib.lines import Line2D
+
     legend_handles = [
-        Line2D([0], [0], marker="D", color="w", markerfacecolor="black",
-               markersize=8, label="Previous best"),
-        Line2D([0], [0], marker="*", color="w", markerfacecolor="gold",
-               markersize=14, markeredgecolor="black", label="New best"),
+        Line2D([0], [0], marker="D", color="w", markerfacecolor="black", markersize=8, label="Previous best"),
+        Line2D(
+            [0],
+            [0],
+            marker="*",
+            color="w",
+            markerfacecolor="gold",
+            markersize=14,
+            markeredgecolor="black",
+            label="New best",
+        ),
     ]
     fig.legend(handles=legend_handles, loc="upper right", fontsize=10, framealpha=0.9)
 
     fig.suptitle(
         f"{system.upper()} Phase 3 Refinement — Iteration {iteration}",
-        fontsize=14, y=1.01,
+        fontsize=14,
+        y=1.01,
     )
     fig.tight_layout()
     fname = f"Phase_3_refinement_results_{system}_iter{iteration}.png"
@@ -1647,10 +1776,16 @@ def _plot_refinement_iteration(
     logger.info("Saved refinement plot: %s", fname)
 
 
-def main_zoned(*, config: SweepConfig, system: str, dt_override: str | None = None,
-               dt_screening: str | None = None,
-               output_dir: Path | None = None, top_k: int = 4,
-               refine: bool = False) -> None:
+def main_zoned(
+    *,
+    config: SweepConfig,
+    system: str,
+    dt_override: str | None = None,
+    dt_screening: str | None = None,
+    output_dir: Path | None = None,
+    top_k: int = 4,
+    refine: bool = False,
+) -> None:
     """Zone-constrained sweep with screening + combination + optional refinement.
 
     Three-phase design with different resolution/duration per phase:
@@ -1677,8 +1812,7 @@ def main_zoned(*, config: SweepConfig, system: str, dt_override: str | None = No
     dt_dc = _parse_fraction(sim.dt_dc)
     dt_grid = _parse_fraction(sim.dt_grid)
     dt_ctrl = _parse_fraction(sim.dt_ctrl)
-    logger.info("Phase 2/3 resolution: dt_dc=%s, dt_grid=%s, dt_ctrl=%s",
-                dt_dc, dt_grid, dt_ctrl)
+    logger.info("Phase 2/3 resolution: dt_dc=%s, dt_grid=%s, dt_ctrl=%s", dt_dc, dt_grid, dt_ctrl)
 
     # Screening dt (Phase 1): coarse resolution for fast ranking
     if dt_screening is not None:
@@ -1690,13 +1824,18 @@ def main_zoned(*, config: SweepConfig, system: str, dt_override: str | None = No
         dt_dc_screen = dt_grid_screen = dt_ctrl_screen = Fraction(60)
     logger.info("Phase 1 screening resolution: dt = %s s", dt_dc_screen)
 
-    save_dir = output_dir if output_dir else (
-        Path(__file__).resolve().parent / "outputs" / system / "sweep_dc_locations_zoned"
+    save_dir = (
+        output_dir
+        if output_dir
+        else (Path(__file__).resolve().parent / "outputs" / system / "sweep_dc_locations_zoned")
     )
     save_dir.mkdir(parents=True, exist_ok=True)
 
     inference_data, training_trace, logistic_models = _load_shared_data(
-        config, all_models, data_dir, data_dt,
+        config,
+        all_models,
+        data_dir,
+        data_dt,
     )
 
     assert config.dc_sites is not None
@@ -1708,10 +1847,14 @@ def main_zoned(*, config: SweepConfig, system: str, dt_override: str | None = No
     target_kv = ref_site.bus_kv
 
     logger.info("Discovering candidate 3-phase buses at %.1f kV...", target_kv)
-    all_candidate_buses = set(discover_candidate_buses(
-        config.ieee_case_dir, config.dss_master_file,
-        target_kv, exclude=set(config.exclude_buses),
-    ))
+    all_candidate_buses = set(
+        discover_candidate_buses(
+            config.ieee_case_dir,
+            config.dss_master_file,
+            target_kv,
+            exclude=set(config.exclude_buses),
+        )
+    )
     logger.info("Found %d candidate 3-phase buses total", len(all_candidate_buses))
 
     # Build per-zone candidate lists (intersect zone bus lists with 3-phase candidates)
@@ -1723,13 +1866,13 @@ def main_zoned(*, config: SweepConfig, system: str, dt_override: str | None = No
             zone_candidates[site_id] = sorted(all_candidate_buses)
         else:
             zone_set = {b.lower() for b in zone_buses}
-            candidates = sorted(
-                b for b in all_candidate_buses if b.lower() in zone_set
-            )
+            candidates = sorted(b for b in all_candidate_buses if b.lower() in zone_set)
             zone_candidates[site_id] = candidates
         logger.info(
             "  Zone '%s': %d candidate buses: %s",
-            site_id, len(zone_candidates[site_id]), zone_candidates[site_id],
+            site_id,
+            len(zone_candidates[site_id]),
+            zone_candidates[site_id],
         )
 
     # Check for empty zones
@@ -1746,10 +1889,7 @@ def main_zoned(*, config: SweepConfig, system: str, dt_override: str | None = No
         tmpl = site_templates[sid]
         models = _resolve_models_for_site(tmpl, all_models)
         site_models[sid] = models
-        site_inference_data[sid] = (
-            inference_data.filter_models(models) if tmpl.models is not None
-            else inference_data
-        )
+        site_inference_data[sid] = inference_data.filter_models(models) if tmpl.models is not None else inference_data
 
     ofo_config = _build_ofo_config(ofo_params, sim)
     initial_taps = _taps_dict_to_position(config.initial_taps)
@@ -1770,10 +1910,16 @@ def main_zoned(*, config: SweepConfig, system: str, dt_override: str | None = No
         exclude_buses=exclude_buses,
     )
     screening_kwargs = dict(
-        **_base_kwargs, dt_dc=dt_dc_screen, dt_grid=dt_grid_screen, dt_ctrl=dt_ctrl_screen,
+        **_base_kwargs,
+        dt_dc=dt_dc_screen,
+        dt_grid=dt_grid_screen,
+        dt_ctrl=dt_ctrl_screen,
     )
     full_res_kwargs = dict(
-        **_base_kwargs, dt_dc=dt_dc, dt_grid=dt_grid, dt_ctrl=dt_ctrl,
+        **_base_kwargs,
+        dt_dc=dt_dc,
+        dt_grid=dt_grid,
+        dt_ctrl=dt_ctrl,
     )
 
     # Default bus map from config
@@ -1805,7 +1951,11 @@ def main_zoned(*, config: SweepConfig, system: str, dt_override: str | None = No
             bus_map[sweep_sid] = bus
             combo_str = ", ".join(f"{sid}@{b}" for sid, b in bus_map.items())
             logger.info(
-                "[%d/%d] Screening %s: %s", screen_idx, total_screening, sweep_sid, combo_str,
+                "[%d/%d] Screening %s: %s",
+                screen_idx,
+                total_screening,
+                sweep_sid,
+                combo_str,
             )
 
             try:
@@ -1813,8 +1963,10 @@ def main_zoned(*, config: SweepConfig, system: str, dt_override: str | None = No
                 zone_rows.append(row)
                 logger.info(
                     "  -> viol=%.1fs  integral=%.4f  vmin=%.4f  wall=%.1fs",
-                    row["violation_time_s"], row["integral_violation_pu_s"],
-                    row["worst_vmin"], row["wall_time_s"],
+                    row["violation_time_s"],
+                    row["integral_violation_pu_s"],
+                    row["worst_vmin"],
+                    row["wall_time_s"],
                 )
             except Exception:
                 logger.exception("  Screening %s@%s failed; skipping.", sweep_sid, bus)
@@ -1833,7 +1985,10 @@ def main_zoned(*, config: SweepConfig, system: str, dt_override: str | None = No
         top_buses = df_zone[f"bus_{sweep_sid}"].head(k).tolist()
         top_k_per_zone[sweep_sid] = top_buses
         logger.info(
-            "  Zone '%s' top-%d: %s", sweep_sid, k, top_buses,
+            "  Zone '%s' top-%d: %s",
+            sweep_sid,
+            k,
+            top_buses,
         )
 
         # Save per-zone screening CSV
@@ -1858,7 +2013,8 @@ def main_zoned(*, config: SweepConfig, system: str, dt_override: str | None = No
     logger.info(
         "PHASE 2: COMBINATION — Cartesian product of top-%d per zone "
         "(%ds stress test: constant PV + full DC capacity, no time-varying loads)",
-        top_k, phase2_duration_s,
+        top_k,
+        phase2_duration_s,
     )
     logger.info("=" * 80)
 
@@ -1874,21 +2030,24 @@ def main_zoned(*, config: SweepConfig, system: str, dt_override: str | None = No
     phase2_rows: list[dict] = []
 
     for idx, combo in enumerate(combinations, start=1):
-        bus_map = {sid: bus for sid, bus in zip(site_ids, combo)}
+        bus_map = {sid: bus for sid, bus in zip(site_ids, combo, strict=False)}
         combo_str = ", ".join(f"{sid}@{bus}" for sid, bus in bus_map.items())
         logger.info("[%d/%d] %s", idx, total, combo_str)
 
         try:
             row = _run_multi_dc_case(
-                bus_map=bus_map, total_duration_s=phase2_duration_s,
+                bus_map=bus_map,
+                total_duration_s=phase2_duration_s,
                 stress_test=True,
                 **full_res_kwargs,
             )
             phase2_rows.append(row)
             logger.info(
                 "  -> viol=%.1fs  integral=%.4f  vmin=%.4f  wall=%.1fs",
-                row["violation_time_s"], row["integral_violation_pu_s"],
-                row["worst_vmin"], row["wall_time_s"],
+                row["violation_time_s"],
+                row["integral_violation_pu_s"],
+                row["worst_vmin"],
+                row["wall_time_s"],
             )
         except Exception:
             logger.exception("Combination %s failed; skipping.", combo_str)
@@ -1971,7 +2130,9 @@ def main_zoned(*, config: SweepConfig, system: str, dt_override: str | None = No
         for sweep_sid in site_ids:
             cands = zone_candidates[sweep_sid]
             logger.info(
-                "  Re-sweeping zone '%s': %d candidates", sweep_sid, len(cands),
+                "  Re-sweeping zone '%s': %d candidates",
+                sweep_sid,
+                len(cands),
             )
 
             best_for_zone = current_best[sweep_sid]
@@ -1991,7 +2152,10 @@ def main_zoned(*, config: SweepConfig, system: str, dt_override: str | None = No
                     integ = row["integral_violation_pu_s"]
                     logger.info(
                         "    %s@%s -> viol=%.1fs  integral=%.4f",
-                        sweep_sid, bus, viol, integ,
+                        sweep_sid,
+                        bus,
+                        viol,
+                        integ,
                     )
                     zone_rows.append(row)
                     if (viol, integ) < (best_viol, best_integral):
@@ -2006,13 +2170,18 @@ def main_zoned(*, config: SweepConfig, system: str, dt_override: str | None = No
             if best_for_zone != current_best[sweep_sid]:
                 logger.info(
                     "  Zone '%s' improved: %s -> %s (viol=%.1fs)",
-                    sweep_sid, current_best[sweep_sid], best_for_zone, best_viol,
+                    sweep_sid,
+                    current_best[sweep_sid],
+                    best_for_zone,
+                    best_viol,
                 )
                 current_best[sweep_sid] = best_for_zone
                 improved = True
             else:
                 logger.info(
-                    "  Zone '%s' unchanged: %s", sweep_sid, current_best[sweep_sid],
+                    "  Zone '%s' unchanged: %s",
+                    sweep_sid,
+                    current_best[sweep_sid],
                 )
 
         # Save per-iteration CSV and plot
@@ -2022,15 +2191,16 @@ def main_zoned(*, config: SweepConfig, system: str, dt_override: str | None = No
                 df_iter_zone = pd.DataFrame(zone_rows).sort_values(
                     ["violation_time_s", "integral_violation_pu_s"],
                 )
-                csv_path = save_dir / (
-                    f"Phase_3_refinement_results_{system}_iter{iteration}_{sweep_sid}.csv"
-                )
+                csv_path = save_dir / (f"Phase_3_refinement_results_{system}_iter{iteration}_{sweep_sid}.csv")
                 df_iter_zone.to_csv(csv_path, index=False)
 
         # Plot this iteration: one subplot per zone
         _plot_refinement_iteration(
-            all_refinement_rows[iteration], site_ids, save_dir,
-            system, iteration,
+            all_refinement_rows[iteration],
+            site_ids,
+            save_dir,
+            system,
+            iteration,
             prev_best=prev_best,
             new_best=dict(current_best),
         )
@@ -2047,7 +2217,8 @@ def main_zoned(*, config: SweepConfig, system: str, dt_override: str | None = No
     df_final = pd.DataFrame([final_row])
     # Also overwrite the final summary with the refined result
     df_final.to_csv(
-        save_dir / f"sweep_dc_locations_final_results_{system}.csv", index=False,
+        save_dir / f"sweep_dc_locations_final_results_{system}.csv",
+        index=False,
     )
 
     logger.info("")
@@ -2065,7 +2236,10 @@ def main_zoned(*, config: SweepConfig, system: str, dt_override: str | None = No
     logger.info("")
     logger.info(
         "Total simulations: %d (Phase 1: %d, Phase 2: %d, Phase 3: %d)",
-        total_sims, total_phase1, len(phase2_rows), total_sims - total_phase1 - len(phase2_rows),
+        total_sims,
+        total_phase1,
+        len(phase2_rows),
+        total_sims - total_phase1 - len(phase2_rows),
     )
     logger.info("All outputs in: %s", save_dir)
 
@@ -2099,12 +2273,17 @@ def main(
     if has_zones:
         logger.info(
             "Config has %d DC site(s) with %d zone(s) -> zone-constrained sweep",
-            n_sites, len(config.zones),
+            n_sites,
+            len(config.zones),
         )
         main_zoned(
-            config=config, system=system, dt_override=dt_override,
+            config=config,
+            system=system,
+            dt_override=dt_override,
             dt_screening=dt_screening,
-            output_dir=output_dir, top_k=top_k, refine=refine,
+            output_dir=output_dir,
+            top_k=top_k,
+            refine=refine,
         )
     elif n_sites <= 1:
         logger.info("Config has %d DC site(s) -> 1-D sweep", n_sites)
@@ -2151,6 +2330,13 @@ if __name__ == "__main__":
 
     bus_list = [b.strip() for b in args.buses.split(",")] if args.buses else None
     out_dir = Path(args.output_dir) if args.output_dir else None
-    main(config_path=Path(args.config), system=args.system, buses=bus_list,
-         dt_override=args.dt, dt_screening=args.dt_screening,
-         output_dir=out_dir, top_k=args.top_k, refine=args.refine)
+    main(
+        config_path=Path(args.config),
+        system=args.system,
+        buses=bus_list,
+        dt_override=args.dt,
+        dt_screening=args.dt_screening,
+        output_dir=out_dir,
+        top_k=args.top_k,
+        refine=args.refine,
+    )

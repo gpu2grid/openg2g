@@ -43,6 +43,16 @@ from pathlib import Path
 from typing import Literal
 
 import numpy as np
+from sweep_dc_locations import (
+    TAP_STEP,
+    ScenarioOpenDSSGrid,
+    SweepConfig,
+    _parse_fraction,
+    _taps_dict_to_position,
+    discover_candidate_buses,
+    extract_all_voltages,
+    find_violations,
+)
 
 from openg2g.controller.ofo import (
     LogisticModelStore,
@@ -61,18 +71,6 @@ from openg2g.datacenter.offline import OfflineDatacenter, OfflineWorkload
 from openg2g.datacenter.workloads.inference import InferenceData
 from openg2g.grid.config import DCLoadSpec, TapPosition, TapSchedule
 from openg2g.metrics.voltage import VoltageStats, compute_allbus_voltage_stats
-
-from sweep_dc_locations import (
-    TAP_STEP,
-    DCSiteConfig,
-    ScenarioOpenDSSGrid,
-    SweepConfig,
-    _parse_fraction,
-    _taps_dict_to_position,
-    discover_candidate_buses,
-    extract_all_voltages,
-    find_violations,
-)
 
 logger = logging.getLogger("hosting_capacity")
 
@@ -197,15 +195,22 @@ def run_step_check(
         ramps = InferenceRamp(target=fraction).at(t_start=0, t_end=0)
         workload = OfflineWorkload(inference_data=single_inference, inference_ramps=ramps)
         dc = OfflineDatacenter(
-            dc_config, workload, dt_s=STEP_DT, seed=0,
+            dc_config,
+            workload,
+            dt_s=STEP_DT,
+            seed=0,
             power_augmentation=PowerAugmentationConfig(),
         )
-        grid_kwargs.update(dc_bus=dc_buses[0], dc_bus_kv=default_site.bus_kv,
-                           connection_type=default_site.connection_type)
+        grid_kwargs.update(
+            dc_bus=dc_buses[0], dc_bus_kv=default_site.bus_kv, connection_type=default_site.connection_type
+        )
         grid = ScenarioOpenDSSGrid(**grid_kwargs)
         coord = Coordinator(
-            datacenter=dc, grid=grid, controllers=[],
-            total_duration_s=STEP_DURATION_S, dc_bus=dc_buses[0],
+            datacenter=dc,
+            grid=grid,
+            controllers=[],
+            total_duration_s=STEP_DURATION_S,
+            dc_bus=dc_buses[0],
         )
     else:
         datacenters: dict[str, OfflineDatacenter] = {}
@@ -215,18 +220,25 @@ def run_step_check(
             ramps = InferenceRamp(target=fraction).at(t_start=0, t_end=0)
             workload = OfflineWorkload(inference_data=single_inference, inference_ramps=ramps)
             datacenters[sid] = OfflineDatacenter(
-                dc_config, workload, dt_s=STEP_DT, seed=0,
+                dc_config,
+                workload,
+                dt_s=STEP_DT,
+                seed=0,
                 power_augmentation=PowerAugmentationConfig(),
             )
             dc_loads[sid] = DCLoadSpec(
-                bus=bus, bus_kv=default_site.bus_kv,
+                bus=bus,
+                bus_kv=default_site.bus_kv,
                 connection_type=default_site.connection_type,
             )
         grid_kwargs.update(dc_loads=dc_loads)
         grid = ScenarioOpenDSSGrid(**grid_kwargs)
         coord = Coordinator(
-            datacenters=datacenters, grid=grid, controllers=[],
-            total_duration_s=STEP_DURATION_S, dc_bus=dc_buses[0],
+            datacenters=datacenters,
+            grid=grid,
+            controllers=[],
+            total_duration_s=STEP_DURATION_S,
+            dc_bus=dc_buses[0],
         )
 
     log = coord.run()
@@ -301,11 +313,17 @@ def optimize_taps_for_step(
     best_stats = None
     best_tap_pos = initial_taps
 
-    for iteration in range(MAX_TAP_ITERATIONS):
+    for _iteration in range(MAX_TAP_ITERATIONS):
         tap_pos = TapPosition(regulators={rn: _tap_pu(tap_steps[rn]) for rn in reg_names})
 
         stats, grid_states = run_step_check(
-            config, dc_buses, model_spec, num_replicas, inference_data, fraction, tap_pos,
+            config,
+            dc_buses,
+            model_spec,
+            num_replicas,
+            inference_data,
+            fraction,
+            tap_pos,
         )
 
         if best_stats is None or stats.integral_violation_pu_s < best_stats.integral_violation_pu_s:
@@ -321,9 +339,7 @@ def optimize_taps_for_step(
         if zone_bus_sets and zone_keys:
             # ── Zone-aware: adjust each bank independently ──
             has_conflict = False
-            bank_adjust: dict[str, dict[str, int]] = {
-                bank: {"a": 0, "b": 0, "c": 0} for bank in zone_keys
-            }
+            bank_adjust: dict[str, dict[str, int]] = {bank: {"a": 0, "b": 0, "c": 0} for bank in zone_keys}
 
             for bank, bus_set in zone_bus_sets.items():
                 zone_viols = [v for v in violations if v[0].lower() in bus_set]
@@ -399,7 +415,13 @@ def check_all_steps(
 
     for frac in LOAD_FRACTIONS:
         stats, taps = optimize_taps_for_step(
-            config, dc_buses, model_spec, num_replicas, inference_data, frac, initial_taps,
+            config,
+            dc_buses,
+            model_spec,
+            num_replicas,
+            inference_data,
+            frac,
+            initial_taps,
         )
         feasible = stats.integral_violation_pu_s <= integral_threshold
         steps.append(StepResult(fraction=frac, stats=stats, taps=taps, feasible=feasible))
@@ -522,19 +544,28 @@ def run_ofo_staircase(
         ramps = _build_staircase_ramps()
         workload = OfflineWorkload(inference_data=single_inference, inference_ramps=ramps)
         dc = OfflineDatacenter(
-            dc_config, workload, dt_s=STAIRCASE_DT, seed=0,
+            dc_config,
+            workload,
+            dt_s=STAIRCASE_DT,
+            seed=0,
             power_augmentation=PowerAugmentationConfig(),
         )
         ofo_ctrl = OFOBatchSizeController(
-            (single_model,), models=logistic_models,
-            config=ofo_config, dt_s=STAIRCASE_DT,
+            (single_model,),
+            models=logistic_models,
+            config=ofo_config,
+            dt_s=STAIRCASE_DT,
         )
-        grid_kwargs.update(dc_bus=dc_buses[0], dc_bus_kv=default_site.bus_kv,
-                           connection_type=default_site.connection_type)
+        grid_kwargs.update(
+            dc_bus=dc_buses[0], dc_bus_kv=default_site.bus_kv, connection_type=default_site.connection_type
+        )
         grid = ScenarioOpenDSSGrid(**grid_kwargs)
         coord = Coordinator(
-            datacenter=dc, grid=grid, controllers=[tap_ctrl, ofo_ctrl],
-            total_duration_s=STAIRCASE_DURATION_S, dc_bus=dc_buses[0],
+            datacenter=dc,
+            grid=grid,
+            controllers=[tap_ctrl, ofo_ctrl],
+            total_duration_s=STAIRCASE_DURATION_S,
+            dc_bus=dc_buses[0],
         )
     else:
         datacenters: dict[str, OfflineDatacenter] = {}
@@ -545,28 +576,42 @@ def run_ofo_staircase(
             ramps = _build_staircase_ramps()
             workload = OfflineWorkload(inference_data=single_inference, inference_ramps=ramps)
             datacenters[sid] = OfflineDatacenter(
-                dc_config, workload, dt_s=STAIRCASE_DT, seed=0,
+                dc_config,
+                workload,
+                dt_s=STAIRCASE_DT,
+                seed=0,
                 power_augmentation=PowerAugmentationConfig(),
             )
             dc_loads[sid] = DCLoadSpec(
-                bus=bus, bus_kv=default_site.bus_kv,
+                bus=bus,
+                bus_kv=default_site.bus_kv,
                 connection_type=default_site.connection_type,
             )
-            controllers.append(OFOBatchSizeController(
-                (single_model,), models=logistic_models,
-                config=ofo_config, dt_s=STAIRCASE_DT, site_id=sid,
-            ))
+            controllers.append(
+                OFOBatchSizeController(
+                    (single_model,),
+                    models=logistic_models,
+                    config=ofo_config,
+                    dt_s=STAIRCASE_DT,
+                    site_id=sid,
+                )
+            )
         grid_kwargs.update(dc_loads=dc_loads)
         grid = ScenarioOpenDSSGrid(**grid_kwargs)
         coord = Coordinator(
-            datacenters=datacenters, grid=grid, controllers=controllers,
-            total_duration_s=STAIRCASE_DURATION_S, dc_bus=dc_buses[0],
+            datacenters=datacenters,
+            grid=grid,
+            controllers=controllers,
+            total_duration_s=STAIRCASE_DURATION_S,
+            dc_bus=dc_buses[0],
         )
 
     log = coord.run()
 
     return compute_allbus_voltage_stats(
-        log.grid_states, v_min=sim.v_min, v_max=sim.v_max,
+        log.grid_states,
+        v_min=sim.v_min,
+        v_max=sim.v_max,
         exclude_buses=tuple(config.exclude_buses),
     )
 
@@ -609,20 +654,33 @@ def find_max_replicas(
         iterations += 1
         logger.info(
             "    [%s @ %s] iter %d: trying num_replicas=%d (lo=%d, hi=%d)",
-            model_spec.model_label, bus_label, iterations, n, lo, hi,
+            model_spec.model_label,
+            bus_label,
+            iterations,
+            n,
+            lo,
+            hi,
         )
         result = check_all_steps(
-            config, dc_buses, model_spec, n, inference_data, initial_taps,
+            config,
+            dc_buses,
+            model_spec,
+            n,
+            inference_data,
+            initial_taps,
             integral_threshold=integral_threshold,
         )
         for sr in result.steps:
             status = "OK" if sr.feasible else "VIOL"
-            taps_str = ",".join(
-                "%+d" % _tap_step(sr.taps, rn) for rn in sr.taps.regulators
+            taps_str = ",".join(f"{_tap_step(sr.taps, rn):+d}" for rn in sr.taps.regulators)
+            logger.info(
+                "        %3.0f%%: %s vmin=%.4f vmax=%.4f taps=(%s)",
+                sr.fraction * 100,
+                status,
+                sr.stats.worst_vmin,
+                sr.stats.worst_vmax,
+                taps_str,
             )
-            logger.info("        %3.0f%%: %s vmin=%.4f vmax=%.4f taps=(%s)",
-                        sr.fraction * 100, status, sr.stats.worst_vmin, sr.stats.worst_vmax,
-                        taps_str)
         return result
 
     # First probe: try a small number to check if DC load helps with
@@ -632,12 +690,17 @@ def find_max_replicas(
     if not probe_result.feasible:
         # Even a small DC load can't be hosted (after tap optimisation)
         logger.info("      -> VIOLATION even at %d replicas, capacity = 0", probe_n)
-        return 0, PerStepResult(
-            feasible=True,
-            worst_stats=VoltageStats(worst_vmin=1.0, worst_vmax=1.0,
-                                     violation_time_s=0.0, integral_violation_pu_s=0.0),
-            steps=[],
-        ), iterations
+        return (
+            0,
+            PerStepResult(
+                feasible=True,
+                worst_stats=VoltageStats(
+                    worst_vmin=1.0, worst_vmax=1.0, violation_time_s=0.0, integral_violation_pu_s=0.0
+                ),
+                steps=[],
+            ),
+            iterations,
+        )
     else:
         logger.info("      -> ALL OK at probe")
         best_replicas = probe_n
@@ -657,8 +720,7 @@ def find_max_replicas(
             lo = mid
         else:
             failed = [sr for sr in result.steps if not sr.feasible]
-            logger.info("      -> VIOLATION at %s",
-                        ", ".join(f"{sr.fraction*100:.0f}%" for sr in failed))
+            logger.info("      -> VIOLATION at %s", ", ".join(f"{sr.fraction * 100:.0f}%" for sr in failed))
             hi = mid
 
     if best_result is None:
@@ -704,7 +766,7 @@ def find_max_replicas_ofo(
     iterations = 0
 
     # Use base taps as initial tap schedule; if lo == hi already, nothing to do
-    last_steps = list(base_steps)
+    list(base_steps)
 
     while hi - lo > search_tol:
         mid = (lo + hi) // 2
@@ -714,31 +776,50 @@ def find_max_replicas_ofo(
         iterations += 1
         logger.info(
             "    [OFO %s @ %s] iter %d: trying num_replicas=%d (lo=%d, hi=%d)",
-            model_spec.model_label, "+".join(dc_buses), iterations, mid, lo, hi,
+            model_spec.model_label,
+            "+".join(dc_buses),
+            iterations,
+            mid,
+            lo,
+            hi,
         )
 
         # Find per-step optimal taps for this replica count
         step_result = check_all_steps(
-            config, dc_buses, model_spec, mid, inference_data, initial_taps,
+            config,
+            dc_buses,
+            model_spec,
+            mid,
+            inference_data,
+            initial_taps,
         )
         tap_schedule = _build_tap_schedule_from_steps(step_result.steps)
         initial_step_taps = step_result.steps[0].taps if step_result.steps else initial_taps
 
         # Run full staircase with OFO + tap schedule
         stats = run_ofo_staircase(
-            config, dc_buses, model_spec, mid, inference_data, logistic_models,
-            tap_schedule=tap_schedule, initial_taps=initial_step_taps,
+            config,
+            dc_buses,
+            model_spec,
+            mid,
+            inference_data,
+            logistic_models,
+            tap_schedule=tap_schedule,
+            initial_taps=initial_step_taps,
         )
 
         if stats.integral_violation_pu_s > integral_threshold:
-            logger.info("      -> VIOLATION: integral=%.4f pu·s, vmin=%.4f, vmax=%.4f",
-                        stats.integral_violation_pu_s, stats.worst_vmin, stats.worst_vmax)
+            logger.info(
+                "      -> VIOLATION: integral=%.4f pu·s, vmin=%.4f, vmax=%.4f",
+                stats.integral_violation_pu_s,
+                stats.worst_vmin,
+                stats.worst_vmax,
+            )
             hi = mid
         else:
             logger.info("      -> OK: vmin=%.4f, vmax=%.4f", stats.worst_vmin, stats.worst_vmax)
             best_replicas = mid
             best_stats = stats
-            last_steps = step_result.steps
             lo = mid
 
     return best_replicas, best_stats, iterations
@@ -844,9 +925,14 @@ def _log_summary(summary_rows: list[dict], label: str) -> None:
     logger.info("%-10s %15s %15s %20s %12s", "Bus", "Capacity (kW)", "Capacity (MW)", "Limiting Model", "Max GPUs")
     logger.info("-" * 80)
     for row in summary_rows:
-        logger.info("%-10s %15.1f %15.3f %20s %12d",
-                    row["dc_bus"], row["hosting_capacity_kw"], row["hosting_capacity_MW"],
-                    row["limiting_model"], row["limiting_max_gpus"])
+        logger.info(
+            "%-10s %15.1f %15.3f %20s %12d",
+            row["dc_bus"],
+            row["hosting_capacity_kw"],
+            row["hosting_capacity_MW"],
+            row["limiting_model"],
+            row["limiting_max_gpus"],
+        )
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -880,7 +966,10 @@ def _run_pass1(
 
             try:
                 max_reps, result, iters = find_max_replicas(
-                    config, [dc_bus], ms, inference_data,
+                    config,
+                    [dc_bus],
+                    ms,
+                    inference_data,
                     max_replicas_upper=upper,
                     initial_taps=initial_taps,
                     search_tol=search_tol,
@@ -897,13 +986,22 @@ def _run_pass1(
             hosting_kw = max_gpus * 700 * 2 / 1000
             hosting_mw = hosting_kw / 1000
 
-            logger.info("  -> %s: max_replicas=%d, max_gpus=%d, hosting=%.3f MW (%d iters)",
-                        ms.model_label, max_reps, max_gpus, hosting_mw, iters)
+            logger.info(
+                "  -> %s: max_replicas=%d, max_gpus=%d, hosting=%.3f MW (%d iters)",
+                ms.model_label,
+                max_reps,
+                max_gpus,
+                hosting_mw,
+                iters,
+            )
 
             row: dict = {
-                "dc_bus": dc_bus, "model": ms.model_label,
-                "max_replicas": max_reps, "max_gpus": max_gpus,
-                "hosting_capacity_kw": hosting_kw, "hosting_capacity_MW": hosting_mw,
+                "dc_bus": dc_bus,
+                "model": ms.model_label,
+                "max_replicas": max_reps,
+                "max_gpus": max_gpus,
+                "hosting_capacity_kw": hosting_kw,
+                "hosting_capacity_MW": hosting_mw,
                 "search_iterations": iters,
             }
             if result.steps:
@@ -920,11 +1018,15 @@ def _run_pass1(
 
         if bus_min_kw == float("inf"):
             bus_min_kw = 0.0
-        base_summary.append({
-            "dc_bus": dc_bus, "hosting_capacity_kw": bus_min_kw,
-            "hosting_capacity_MW": bus_min_kw / 1000,
-            "limiting_model": bus_lim_model, "limiting_max_gpus": bus_lim_gpus,
-        })
+        base_summary.append(
+            {
+                "dc_bus": dc_bus,
+                "hosting_capacity_kw": bus_min_kw,
+                "hosting_capacity_MW": bus_min_kw / 1000,
+                "limiting_model": bus_lim_model,
+                "limiting_max_gpus": bus_lim_gpus,
+            }
+        )
 
     return base_rows, base_summary, base_results
 
@@ -963,8 +1065,12 @@ def _run_pass2(
                 iters = 0
             else:
                 try:
-                    max_reps, stats, iters = find_max_replicas_ofo(
-                        config, [dc_bus], ms, inference_data, logistic_models,
+                    max_reps, _stats, iters = find_max_replicas_ofo(
+                        config,
+                        [dc_bus],
+                        ms,
+                        inference_data,
+                        logistic_models,
                         max_replicas_upper=upper,
                         initial_taps=initial_taps,
                         base_max_replicas=base_max,
@@ -980,15 +1086,26 @@ def _run_pass2(
             hosting_kw = max_gpus * 700 * 2 / 1000
             hosting_mw = hosting_kw / 1000
 
-            logger.info("  -> %s: max_replicas=%d, max_gpus=%d, hosting=%.3f MW (%d OFO iters)",
-                        ms.model_label, max_reps, max_gpus, hosting_mw, iters)
+            logger.info(
+                "  -> %s: max_replicas=%d, max_gpus=%d, hosting=%.3f MW (%d OFO iters)",
+                ms.model_label,
+                max_reps,
+                max_gpus,
+                hosting_mw,
+                iters,
+            )
 
-            ofo_rows.append({
-                "dc_bus": dc_bus, "model": ms.model_label,
-                "max_replicas": max_reps, "max_gpus": max_gpus,
-                "hosting_capacity_kw": hosting_kw, "hosting_capacity_MW": hosting_mw,
-                "search_iterations": iters,
-            })
+            ofo_rows.append(
+                {
+                    "dc_bus": dc_bus,
+                    "model": ms.model_label,
+                    "max_replicas": max_reps,
+                    "max_gpus": max_gpus,
+                    "hosting_capacity_kw": hosting_kw,
+                    "hosting_capacity_MW": hosting_mw,
+                    "search_iterations": iters,
+                }
+            )
 
             if hosting_kw < bus_min_kw:
                 bus_min_kw = hosting_kw
@@ -997,11 +1114,15 @@ def _run_pass2(
 
         if bus_min_kw == float("inf"):
             bus_min_kw = 0.0
-        ofo_summary.append({
-            "dc_bus": dc_bus, "hosting_capacity_kw": bus_min_kw,
-            "hosting_capacity_MW": bus_min_kw / 1000,
-            "limiting_model": bus_lim_model, "limiting_max_gpus": bus_lim_gpus,
-        })
+        ofo_summary.append(
+            {
+                "dc_bus": dc_bus,
+                "hosting_capacity_kw": bus_min_kw,
+                "hosting_capacity_MW": bus_min_kw / 1000,
+                "limiting_model": bus_lim_model,
+                "limiting_max_gpus": bus_lim_gpus,
+            }
+        )
 
     return ofo_rows, ofo_summary
 
@@ -1025,18 +1146,17 @@ def main(
     config.ieee_case_dir = (config_dir / config.ieee_case_dir).resolve()
 
     # Zero out PV and time-varying loads so they don't affect hosting capacity
-    for pv in (config.pv_systems or []):
+    for pv in config.pv_systems or []:
         pv.peak_kw = 0.0
-    for tvl in (config.time_varying_loads or []):
+    for tvl in config.time_varying_loads or []:
         tvl.peak_kw = 0.0
 
     all_models = tuple(config.models)
     data_sources = {s.model_label: s for s in config.data_sources}
     data_dir = config.data_dir or Path("data/offline") / config.data_hash
 
-    save_dir = (Path(__file__).resolve().parent / "outputs" / system / "hosting_capacity_1d")
+    save_dir = Path(__file__).resolve().parent / "outputs" / system / "hosting_capacity_1d"
     save_dir.mkdir(parents=True, exist_ok=True)
-
 
     assert config.dc_sites is not None
     default_site = next(iter(config.dc_sites.values()))
@@ -1045,14 +1165,21 @@ def main(
     logger.info("Loading inference data...")
     dt_dc = _parse_fraction(config.simulation.dt_dc)
     inference_data = InferenceData.ensure(
-        data_dir, all_models, data_sources,
-        mlenergy_data_dir=config.mlenergy_data_dir, plot=False, dt_s=float(dt_dc),
+        data_dir,
+        all_models,
+        data_sources,
+        mlenergy_data_dir=config.mlenergy_data_dir,
+        plot=False,
+        dt_s=float(dt_dc),
     )
 
     logger.info("Loading logistic fits...")
     logistic_models = LogisticModelStore.ensure(
-        data_dir / "logistic_fits.csv", all_models, data_sources,
-        mlenergy_data_dir=config.mlenergy_data_dir, plot=False,
+        data_dir / "logistic_fits.csv",
+        all_models,
+        data_sources,
+        mlenergy_data_dir=config.mlenergy_data_dir,
+        plot=False,
     )
 
     # Discover candidate buses
@@ -1073,7 +1200,9 @@ def main(
         logger.error("No candidate buses found!")
         return
 
-    initial_taps = _taps_dict_to_position(config.initial_taps) or TapPosition(regulators={"reg1": 1.0, "reg2": 1.0, "reg3": 1.0})
+    initial_taps = _taps_dict_to_position(config.initial_taps) or TapPosition(
+        regulators={"reg1": 1.0, "reg2": 1.0, "reg3": 1.0}
+    )
 
     logger.info("")
     logger.info("=" * 70)
@@ -1103,8 +1232,14 @@ def main(
         t0 = time.time()
 
         base_rows, base_summary, base_results = _run_pass1(
-            config, candidate_buses, all_models, inference_data,
-            initial_taps, max_power_mw, search_tol, mi,
+            config,
+            candidate_buses,
+            all_models,
+            inference_data,
+            initial_taps,
+            max_power_mw,
+            search_tol,
+            mi,
         )
         logger.info("Pass 1 complete in %.1f s", time.time() - t0)
 
@@ -1118,9 +1253,16 @@ def main(
         t0 = time.time()
 
         ofo_rows, ofo_summary = _run_pass2(
-            config, candidate_buses, all_models, inference_data,
-            logistic_models, initial_taps, max_power_mw, search_tol,
-            mi, base_results,
+            config,
+            candidate_buses,
+            all_models,
+            inference_data,
+            logistic_models,
+            initial_taps,
+            max_power_mw,
+            search_tol,
+            mi,
+            base_results,
         )
         logger.info("Pass 2 complete in %.1f s", time.time() - t0)
 
@@ -1130,7 +1272,8 @@ def main(
 
         # Combined plot for this threshold
         _plot_hosting_capacity_combined(
-            base_summary, ofo_summary,
+            base_summary,
+            ofo_summary,
             save_dir / f"hosting_capacity_{system}_{tag}.png",
             title=f"Hosting Capacity — max integral {mi:.2f} pu·s",
         )
@@ -1180,8 +1323,11 @@ def _run_pass1_2d(
             logger.info("  Model %s (upper=%d):", ms.model_label, upper)
 
             try:
-                max_reps, result, iters = find_max_replicas(
-                    config, [bus_a, bus_b], ms, inference_data,
+                max_reps, _result, iters = find_max_replicas(
+                    config,
+                    [bus_a, bus_b],
+                    ms,
+                    inference_data,
                     max_replicas_upper=upper,
                     initial_taps=initial_taps,
                     search_tol=search_tol,
@@ -1194,14 +1340,21 @@ def _run_pass1_2d(
             max_gpus = max_reps * ms.gpus_per_replica
             hosting_kw = max_gpus * 700 * 2 / 1000
             hosting_mw = hosting_kw / 1000
-            logger.info("  -> %s: max_replicas=%d, hosting=%.3f MW (%d iters)",
-                        ms.model_label, max_reps, hosting_mw, iters)
+            logger.info(
+                "  -> %s: max_replicas=%d, hosting=%.3f MW (%d iters)", ms.model_label, max_reps, hosting_mw, iters
+            )
 
-            rows.append({
-                "bus_a": bus_a, "bus_b": bus_b, "model": ms.model_label,
-                "max_replicas": max_reps, "max_gpus": max_gpus,
-                "hosting_capacity_kw": hosting_kw, "hosting_capacity_MW": hosting_mw,
-            })
+            rows.append(
+                {
+                    "bus_a": bus_a,
+                    "bus_b": bus_b,
+                    "model": ms.model_label,
+                    "max_replicas": max_reps,
+                    "max_gpus": max_gpus,
+                    "hosting_capacity_kw": hosting_kw,
+                    "hosting_capacity_MW": hosting_mw,
+                }
+            )
 
             if hosting_kw < pair_min_kw:
                 pair_min_kw = hosting_kw
@@ -1255,10 +1408,19 @@ def _run_pass2_2d(
                 try:
                     # Get base steps for tap schedule
                     base_step_result = check_all_steps(
-                        config, [bus_a, bus_b], ms, base_max, inference_data, initial_taps,
+                        config,
+                        [bus_a, bus_b],
+                        ms,
+                        base_max,
+                        inference_data,
+                        initial_taps,
                     )
-                    max_reps, stats, iters = find_max_replicas_ofo(
-                        config, [bus_a, bus_b], ms, inference_data, logistic_models,
+                    max_reps, _stats, _iters = find_max_replicas_ofo(
+                        config,
+                        [bus_a, bus_b],
+                        ms,
+                        inference_data,
+                        logistic_models,
                         max_replicas_upper=upper,
                         initial_taps=initial_taps,
                         base_max_replicas=base_max,
@@ -1275,11 +1437,17 @@ def _run_pass2_2d(
             hosting_mw = hosting_kw / 1000
             logger.info("  -> %s: max_replicas=%d, hosting=%.3f MW", ms.model_label, max_reps, hosting_mw)
 
-            rows.append({
-                "bus_a": bus_a, "bus_b": bus_b, "model": ms.model_label,
-                "max_replicas": max_reps, "max_gpus": max_gpus,
-                "hosting_capacity_kw": hosting_kw, "hosting_capacity_MW": hosting_mw,
-            })
+            rows.append(
+                {
+                    "bus_a": bus_a,
+                    "bus_b": bus_b,
+                    "model": ms.model_label,
+                    "max_replicas": max_reps,
+                    "max_gpus": max_gpus,
+                    "hosting_capacity_kw": hosting_kw,
+                    "hosting_capacity_MW": hosting_mw,
+                }
+            )
 
             if hosting_kw < pair_min_kw:
                 pair_min_kw = hosting_kw
@@ -1310,8 +1478,7 @@ def _plot_hosting_heatmap(
         grid[j, i] = cap_mw  # symmetric
 
     fig, ax = plt.subplots(figsize=(max(8, n * 0.8), max(7, n * 0.7)), dpi=150)
-    im = ax.imshow(grid, origin="lower", aspect="auto",
-                   extent=[-0.5, n - 0.5, -0.5, n - 0.5])
+    im = ax.imshow(grid, origin="lower", aspect="auto", extent=[-0.5, n - 0.5, -0.5, n - 0.5])
     ax.set_xticks(range(n))
     ax.set_xticklabels(candidate_buses, fontsize=8, rotation=45, ha="right")
     ax.set_yticks(range(n))
@@ -1327,9 +1494,9 @@ def _plot_hosting_heatmap(
         for j in range(n):
             val = grid[i, j]
             if np.isfinite(val):
-                ax.text(j, i, f"{val:.2f}",
-                        ha="center", va="center", fontsize=7,
-                        color="white" if val > median else "black")
+                ax.text(
+                    j, i, f"{val:.2f}", ha="center", va="center", fontsize=7, color="white" if val > median else "black"
+                )
 
     fig.tight_layout()
     fig.savefig(save_path, bbox_inches="tight")
@@ -1356,9 +1523,9 @@ def main_2d(
     config_dir = config_path.parent
     config.ieee_case_dir = (config_dir / config.ieee_case_dir).resolve()
 
-    for pv in (config.pv_systems or []):
+    for pv in config.pv_systems or []:
         pv.peak_kw = 0.0
-    for tvl in (config.time_varying_loads or []):
+    for tvl in config.time_varying_loads or []:
         tvl.peak_kw = 0.0
 
     all_models = tuple(config.models)
@@ -1368,21 +1535,27 @@ def main_2d(
     save_dir = Path(__file__).resolve().parent / "outputs" / system / "hosting_capacity_2d"
     save_dir.mkdir(parents=True, exist_ok=True)
 
-
     assert config.dc_sites is not None
     default_site = next(iter(config.dc_sites.values()))
 
     logger.info("Loading inference data...")
     dt_dc = _parse_fraction(config.simulation.dt_dc)
     inference_data = InferenceData.ensure(
-        data_dir, all_models, data_sources,
-        mlenergy_data_dir=config.mlenergy_data_dir, plot=False, dt_s=float(dt_dc),
+        data_dir,
+        all_models,
+        data_sources,
+        mlenergy_data_dir=config.mlenergy_data_dir,
+        plot=False,
+        dt_s=float(dt_dc),
     )
 
     logger.info("Loading logistic fits...")
     logistic_models = LogisticModelStore.ensure(
-        data_dir / "logistic_fits.csv", all_models, data_sources,
-        mlenergy_data_dir=config.mlenergy_data_dir, plot=False,
+        data_dir / "logistic_fits.csv",
+        all_models,
+        data_sources,
+        mlenergy_data_dir=config.mlenergy_data_dir,
+        plot=False,
     )
 
     if buses:
@@ -1390,7 +1563,9 @@ def main_2d(
     else:
         logger.info("Discovering candidate 3-phase buses at %.2f kV...", default_site.bus_kv)
         candidate_buses = discover_candidate_buses(
-            config.ieee_case_dir, config.dss_master_file, default_site.bus_kv,
+            config.ieee_case_dir,
+            config.dss_master_file,
+            default_site.bus_kv,
             exclude=set(config.exclude_buses),
         )
         logger.info("Found %d candidate buses: %s", len(candidate_buses), candidate_buses)
@@ -1419,14 +1594,21 @@ def main_2d(
         logger.info("=== PASS 1 (tap-only) -- %s ===", tag)
         t0 = time.time()
         base_rows, base_cap = _run_pass1_2d(
-            config, candidate_buses, all_models, inference_data,
-            initial_taps, max_power_mw, search_tol, mi,
+            config,
+            candidate_buses,
+            all_models,
+            inference_data,
+            initial_taps,
+            max_power_mw,
+            search_tol,
+            mi,
         )
         logger.info("Pass 1 complete in %.1f s", time.time() - t0)
 
         _save_csv(base_rows, save_dir / f"results_2d_{system}_WO_OFO_{tag}.csv")
         _plot_hosting_heatmap(
-            base_cap, candidate_buses,
+            base_cap,
+            candidate_buses,
             save_dir / f"heatmap_2d_{system}_WO_OFO_{tag}.png",
             title=f"Pairwise Hosting Capacity - Tap Only ({tag})",
         )
@@ -1435,15 +1617,23 @@ def main_2d(
         logger.info("=== PASS 2 (OFO + tap) -- %s ===", tag)
         t0 = time.time()
         ofo_rows, ofo_cap = _run_pass2_2d(
-            config, candidate_buses, all_models, inference_data,
-            logistic_models, initial_taps, max_power_mw, search_tol,
-            mi, base_rows,
+            config,
+            candidate_buses,
+            all_models,
+            inference_data,
+            logistic_models,
+            initial_taps,
+            max_power_mw,
+            search_tol,
+            mi,
+            base_rows,
         )
         logger.info("Pass 2 complete in %.1f s", time.time() - t0)
 
         _save_csv(ofo_rows, save_dir / f"results_2d_{system}_W_OFO_{tag}.csv")
         _plot_hosting_heatmap(
-            ofo_cap, candidate_buses,
+            ofo_cap,
+            candidate_buses,
             save_dir / f"heatmap_2d_{system}_W_OFO_{tag}.png",
             title=f"Pairwise Hosting Capacity - OFO + Tap ({tag})",
         )

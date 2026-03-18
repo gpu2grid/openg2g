@@ -14,14 +14,14 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 import matplotlib
+
 matplotlib.use("Agg")
 import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
-
 
 # ── Parsing helpers ──────────────────────────────────────────────────────────
 
@@ -88,7 +88,7 @@ def parse_dss_edges(dss_dir: Path, master_file: str) -> list[tuple[str, str]]:
             # Follow redirect/compile directives
             for directive in ("redirect", "compile"):
                 if lower.startswith(directive):
-                    ref = line[len(directive):].strip().strip('"').strip("'")
+                    ref = line[len(directive) :].strip().strip('"').strip("'")
                     _parse_file(fpath.parent / ref)
 
             # Parse New Line.xxx Bus1=... Bus2=...
@@ -169,7 +169,7 @@ def parse_dss_regulators(dss_dir: Path, master_file: str) -> list[RegulatorInfo]
             lower = line.lower()
             for directive in ("redirect", "compile"):
                 if lower.startswith(directive):
-                    ref = line[len(directive):].strip().strip('"').strip("'")
+                    ref = line[len(directive) :].strip().strip('"').strip("'")
                     _parse_file(fpath.parent / ref)
 
             # Parse transformers
@@ -240,13 +240,15 @@ def parse_dss_regulators(dss_dir: Path, master_file: str) -> list[RegulatorInfo]
             phase_label = {1: "1ph", 2: "2ph", 3: "3ph"}.get(n_phases, f"{n_phases}ph")
             display_name = ctrl_name.upper()
 
-        regs.append(RegulatorInfo(
-            name=display_name,
-            from_bus=from_bus,
-            to_bus=to_bus,
-            phases=phase_label,
-            ctrl_name=ctrl_label,
-        ))
+        regs.append(
+            RegulatorInfo(
+                name=display_name,
+                from_bus=from_bus,
+                to_bus=to_bus,
+                phases=phase_label,
+                ctrl_name=ctrl_label,
+            )
+        )
 
     return regs
 
@@ -254,8 +256,14 @@ def parse_dss_regulators(dss_dir: Path, master_file: str) -> list[RegulatorInfo]
 # ── Zone color palette ───────────────────────────────────────────────────────
 
 ZONE_PALETTE = [
-    "#2196F3", "#4CAF50", "#FF9800", "#E91E63",
-    "#9C27B0", "#00BCD4", "#795548", "#607D8B",
+    "#2196F3",
+    "#4CAF50",
+    "#FF9800",
+    "#E91E63",
+    "#9C27B0",
+    "#00BCD4",
+    "#795548",
+    "#607D8B",
 ]
 
 
@@ -292,7 +300,7 @@ def plot_topology(
 
     coords = parse_bus_coords(coord_file)
     edges = parse_dss_edges(dss_dir, master_file)
-    regulators = parse_dss_regulators(dss_dir, master_file)
+    parse_dss_regulators(dss_dir, master_file)
 
     # Config overlays
     zones_cfg = cfg.get("zones", {})
@@ -332,7 +340,7 @@ def plot_topology(
             ax.plot(x, y, "-", color=color, linewidth=3.0, alpha=alpha, zorder=1)
 
     # Draw buses
-    exclude_labels = {b.lower() for b in cfg.get("exclude_buses", [])}
+    {b.lower() for b in cfg.get("exclude_buses", [])}
     for bus_name, (x, y) in coords.items():
         zid = bus_zone.get(bus_name)
         is_dc = bus_name in dc_buses
@@ -342,25 +350,30 @@ def plot_topology(
             color = zone_colors.get(zid, "#999999")
             # ax.plot(x, y, "*", color=color, markersize=24, markeredgecolor="black",
             #         markeredgewidth=1.5, zorder=5)
-            ax.plot(x, y, "*", color=color, markersize=48, markeredgecolor="black",
-                    markeredgewidth=2.0, zorder=5)
+            ax.plot(x, y, "*", color=color, markersize=48, markeredgecolor="black", markeredgewidth=2.0, zorder=5)
         elif is_pv:
             # ax.plot(x, y, "^", color="#FFD600", markersize=14, markeredgecolor="black",
             #         markeredgewidth=1.2, zorder=5)
-            ax.plot(x, y, "^", color="#FFD600", markersize=28, markeredgecolor="black",
-                    markeredgewidth=1.8, zorder=5)
+            ax.plot(x, y, "^", color="#FFD600", markersize=28, markeredgecolor="black", markeredgewidth=1.8, zorder=5)
         elif zid:
-            ax.plot(x, y, "o", color=zone_colors[zid], markersize=6,
-                    markeredgecolor="black", markeredgewidth=0.4, zorder=3)
+            ax.plot(
+                x, y, "o", color=zone_colors[zid], markersize=6, markeredgecolor="black", markeredgewidth=0.4, zorder=3
+            )
         else:
-            ax.plot(x, y, "s", color="#CCCCCC", markersize=5,
-                    markeredgecolor="#888", markeredgewidth=0.3, zorder=2)
+            ax.plot(x, y, "s", color="#CCCCCC", markersize=5, markeredgecolor="#888", markeredgewidth=0.3, zorder=2)
 
         fontsize = (9 if (is_dc or is_pv) else 6) * fs
         fontweight = "bold" if (is_dc or is_pv) else "normal"
-        ax.annotate(bus_name, (x, y), textcoords="offset points",
-                    xytext=(0, (8 if (is_dc or is_pv) else 5) * fs), ha="center",
-                    fontsize=fontsize, fontweight=fontweight, zorder=6)
+        ax.annotate(
+            bus_name,
+            (x, y),
+            textcoords="offset points",
+            xytext=(0, (8 if (is_dc or is_pv) else 5) * fs),
+            ha="center",
+            fontsize=fontsize,
+            fontweight=fontweight,
+            zorder=6,
+        )
 
     # Draw regulators (temporarily disabled)
     # for i, reg in enumerate(regulators):
@@ -390,30 +403,60 @@ def plot_topology(
     if zones_cfg:
         for zid in zone_ids:
             dc_bus = dc_sites.get(zid, {}).get("bus", "?")
-            handles.append(mpatches.Patch(
-                color=zone_colors[zid],
-                label=f"Zone {zid} — DC@{dc_bus}",
-            ))
+            handles.append(
+                mpatches.Patch(
+                    color=zone_colors[zid],
+                    label=f"Zone {zid} — DC@{dc_bus}",
+                )
+            )
     elif dc_sites:
         for sid, site in dc_sites.items():
-            handles.append(mpatches.Patch(
-                color=zone_colors.get(sid, "#999999"),
-                label=f"DC '{sid}' @ bus {site['bus']}",
-            ))
-    handles.append(plt.Line2D([0], [0], marker="*", color="w", markerfacecolor="gray",
-                   markersize=15, markeredgecolor="black", label="DC Location"))
+            handles.append(
+                mpatches.Patch(
+                    color=zone_colors.get(sid, "#999999"),
+                    label=f"DC '{sid}' @ bus {site['bus']}",
+                )
+            )
+    handles.append(
+        plt.Line2D(
+            [0],
+            [0],
+            marker="*",
+            color="w",
+            markerfacecolor="gray",
+            markersize=15,
+            markeredgecolor="black",
+            label="DC Location",
+        )
+    )
     if pv_buses:
-        handles.append(plt.Line2D([0], [0], marker="^", color="w", markerfacecolor="#FFD600",
-                       markersize=12, markeredgecolor="black", label="PV System"))
+        handles.append(
+            plt.Line2D(
+                [0],
+                [0],
+                marker="^",
+                color="w",
+                markerfacecolor="#FFD600",
+                markersize=12,
+                markeredgecolor="black",
+                label="PV System",
+            )
+        )
     # handles.append(plt.Line2D([0], [0], marker="D", color="w", markerfacecolor="red",
     #                markersize=10, markeredgecolor="darkred", label="Voltage Regulator"))
     handles.append(mpatches.Patch(color="#CCCCCC", label="Unzoned / Source"))
     # ax.legend(handles=handles, loc="best", fontsize=11 * fs, framealpha=0.9)
     # ax.legend(handles=handles, loc="lower right", fontsize=11 * fs, framealpha=0.9)
-    ax.legend(handles=handles, loc="center left", bbox_to_anchor=(1.02, 0.5),
-              fontsize=11 * fs, framealpha=0.9, borderaxespad=0)
+    ax.legend(
+        handles=handles,
+        loc="center left",
+        bbox_to_anchor=(1.02, 0.5),
+        fontsize=11 * fs,
+        framealpha=0.9,
+        borderaxespad=0,
+    )
 
-    system_upper = system.upper().replace("IEEE", "IEEE ")
+    system.upper().replace("IEEE", "IEEE ")
     # ax.set_title(f"{system_upper} Topology with DCs, PV Systems, and Regulators",
     #              fontsize=18 * fs, fontweight="bold")
     ax.set_xlabel("X coordinate", fontsize=13 * fs)
@@ -450,5 +493,4 @@ if __name__ == "__main__":
 
     args = tyro.cli(Args)
     out_dir = Path(args.output_dir) if args.output_dir else None
-    plot_topology(config_path=Path(args.config), system=args.system, output_dir=out_dir,
-                  large_font=args.large_font)
+    plot_topology(config_path=Path(args.config), system=args.system, output_dir=out_dir, large_font=args.large_font)

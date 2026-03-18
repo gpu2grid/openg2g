@@ -8,16 +8,13 @@ controllers in the coordinator loop.
 from __future__ import annotations
 
 import logging
-import math
 from fractions import Fraction
-from typing import Any
 
-import numpy as np
 from pydantic import BaseModel
 
 from openg2g.clock import SimulationClock
 from openg2g.controller.base import Controller
-from openg2g.datacenter.base import LLMBatchSizeControlledDatacenter, LLMDatacenterState
+from openg2g.datacenter.base import LLMBatchSizeControlledDatacenter
 from openg2g.datacenter.command import DatacenterCommand, ShiftReplicas
 from openg2g.events import EventEmitter
 from openg2g.grid.command import GridCommand
@@ -95,7 +92,7 @@ class LoadShiftController(Controller[LLMBatchSizeControlledDatacenter, OpenDSSGr
         voltages = grid.voltages_vector()
         v_index = grid.v_index  # list of (bus, phase)
         bus_voltages: dict[str, list[float]] = {}
-        for (bus, _phase), v in zip(v_index, voltages):
+        for (bus, _phase), v in zip(v_index, voltages, strict=False):
             bus_voltages.setdefault(bus.lower(), []).append(float(v))
 
         # Per-site min/max voltage
@@ -155,15 +152,28 @@ class LoadShiftController(Controller[LLMBatchSizeControlledDatacenter, OpenDSSGr
                     continue
 
                 replicas = max(1, self._config.gpus_per_shift // self._gpus_per_replica[model])
-                commands.append(ShiftReplicas(
-                    model_label=model, replica_delta=-replicas, target_site_id=site_id,
-                ))
-                commands.append(ShiftReplicas(
-                    model_label=model, replica_delta=+replicas, target_site_id=best_dest,
-                ))
+                commands.append(
+                    ShiftReplicas(
+                        model_label=model,
+                        replica_delta=-replicas,
+                        target_site_id=site_id,
+                    )
+                )
+                commands.append(
+                    ShiftReplicas(
+                        model_label=model,
+                        replica_delta=+replicas,
+                        target_site_id=best_dest,
+                    )
+                )
                 logger.info(
                     "LoadShift: undervoltage at %s (Vmin=%.4f), shift %s ×%d replicas -> %s (Vmin=%.4f, free=%d GPUs)",
-                    site_id, vmin, model, replicas, best_dest, best_v,
+                    site_id,
+                    vmin,
+                    model,
+                    replicas,
+                    best_dest,
+                    best_v,
                     self._datacenters[best_dest].available_gpu_capacity() if best_dest in self._datacenters else -1,
                 )
 
@@ -196,15 +206,28 @@ class LoadShiftController(Controller[LLMBatchSizeControlledDatacenter, OpenDSSGr
                     continue
 
                 replicas = max(1, self._config.gpus_per_shift // self._gpus_per_replica[model])
-                commands.append(ShiftReplicas(
-                    model_label=model, replica_delta=-replicas, target_site_id=best_src,
-                ))
-                commands.append(ShiftReplicas(
-                    model_label=model, replica_delta=+replicas, target_site_id=site_id,
-                ))
+                commands.append(
+                    ShiftReplicas(
+                        model_label=model,
+                        replica_delta=-replicas,
+                        target_site_id=best_src,
+                    )
+                )
+                commands.append(
+                    ShiftReplicas(
+                        model_label=model,
+                        replica_delta=+replicas,
+                        target_site_id=site_id,
+                    )
+                )
                 logger.info(
                     "LoadShift: overvoltage at %s (Vmax=%.4f), shift %s ×%d replicas <- %s (Vmax=%.4f)",
-                    site_id, vmax, model, replicas, best_src, best_v,
+                    site_id,
+                    vmax,
+                    model,
+                    replicas,
+                    best_src,
+                    best_v,
                 )
 
         return commands

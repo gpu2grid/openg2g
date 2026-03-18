@@ -289,7 +289,11 @@ def plot_allbus_voltages_per_phase(
         for bus in snap.voltages.buses():
             if bus.lower() not in drop_set:
                 all_plot_buses.add(bus)
-    missing = [b for b in sorted(all_plot_buses, key=_bus_sort_key) if b not in bus_color_map and b.lower() not in bus_color_map]
+    missing = [
+        b
+        for b in sorted(all_plot_buses, key=_bus_sort_key)
+        if b not in bus_color_map and b.lower() not in bus_color_map
+    ]
     if missing:
         auto_cmap = plt.colormaps.get_cmap("tab20")
         for i, b in enumerate(missing):
@@ -396,20 +400,31 @@ def plot_allbus_voltages_per_phase(
                 phase_regs = all_reg_names
 
             for r_idx, reg_name in enumerate(phase_regs):
-                tap_pu = np.array([
-                    gs.tap_positions.regulators.get(reg_name, 1.0)
-                    if gs.tap_positions else 1.0
-                    for gs in grid_states
-                ])
+                tap_pu = np.array(
+                    [gs.tap_positions.regulators.get(reg_name, 1.0) if gs.tap_positions else 1.0 for gs in grid_states]
+                )
                 tap_int = np.round((tap_pu - 1.0) / TAP_STEP).astype(int)
-                ax2.step(t_min, tap_int, where="post",
-                         color=tap_colors(r_idx % 10), linewidth=2.5,
-                         alpha=0.7, label=reg_name, zorder=8)
+                ax2.step(
+                    t_min,
+                    tap_int,
+                    where="post",
+                    color=tap_colors(r_idx % 10),
+                    linewidth=2.5,
+                    alpha=0.7,
+                    label=reg_name,
+                    zorder=8,
+                )
 
             ax2.set_ylabel("Tap Position (steps)", fontsize=8)
             ax2.tick_params(labelsize=7)
-            ax2.legend(loc="lower right", fontsize=6, ncol=max(1, len(phase_regs) // 2),
-                       framealpha=0.85, title="Taps", title_fontsize=6)
+            ax2.legend(
+                loc="lower right",
+                fontsize=6,
+                ncol=max(1, len(phase_regs) // 2),
+                framealpha=0.85,
+                title="Taps",
+                title_fontsize=6,
+            )
 
         ax.set_ylim(y_lo, y_hi)
 
@@ -556,8 +571,7 @@ def plot_zone_voltage_envelope(
             v_min_arr = np.nanmin(V, axis=0)
 
             ax.plot(t_min, v_max_arr, color=color, linewidth=1.5, label=f"{zid} max")
-            ax.plot(t_min, v_min_arr, color=color, linewidth=1.5, linestyle="--",
-                    label=f"{zid} min")
+            ax.plot(t_min, v_min_arr, color=color, linewidth=1.5, linestyle="--", label=f"{zid} min")
             ax.fill_between(t_min, v_min_arr, v_max_arr, color=color, alpha=fill_alpha)
 
         ax.axhline(v_min, color="red", linestyle=":", linewidth=2.0, alpha=0.8, label="V limits")
@@ -576,20 +590,31 @@ def plot_zone_voltage_envelope(
                 phase_regs = all_reg_names
 
             for r_idx, reg_name in enumerate(phase_regs):
-                tap_pu = np.array([
-                    gs.tap_positions.regulators.get(reg_name, 1.0)
-                    if gs.tap_positions else 1.0
-                    for gs in grid_states
-                ])
+                tap_pu = np.array(
+                    [gs.tap_positions.regulators.get(reg_name, 1.0) if gs.tap_positions else 1.0 for gs in grid_states]
+                )
                 tap_int = np.round((tap_pu - 1.0) / TAP_STEP).astype(int)
-                ax2.step(t_min, tap_int, where="post",
-                         color=tap_cmap(r_idx % 10), linewidth=2.5,
-                         alpha=0.7, label=reg_name, zorder=8)
+                ax2.step(
+                    t_min,
+                    tap_int,
+                    where="post",
+                    color=tap_cmap(r_idx % 10),
+                    linewidth=2.5,
+                    alpha=0.7,
+                    label=reg_name,
+                    zorder=8,
+                )
 
             ax2.set_ylabel("Tap Position (steps)", fontsize=10)
             ax2.tick_params(labelsize=9)
-            ax2.legend(loc="lower right", fontsize=7, ncol=max(1, len(phase_regs) // 2),
-                       framealpha=0.85, title="Taps", title_fontsize=7)
+            ax2.legend(
+                loc="lower right",
+                fontsize=7,
+                ncol=max(1, len(phase_regs) // 2),
+                framealpha=0.85,
+                title="Taps",
+                title_fontsize=7,
+            )
 
         if y_limits is not None:
             ax.set_ylim(*y_limits)
@@ -609,8 +634,7 @@ def plot_zone_voltage_envelope(
         ax.tick_params(labelsize=11)
 
         fig.tight_layout()
-        fig.savefig(save_dir / filename_template.format(label=phase_letter),
-                    bbox_inches="tight")
+        fig.savefig(save_dir / filename_template.format(label=phase_letter), bbox_inches="tight")
         plt.close(fig)
 
 

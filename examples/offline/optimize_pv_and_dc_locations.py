@@ -54,18 +54,15 @@ from __future__ import annotations
 import csv
 import json
 import logging
-import math
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
-
 from optimize_pv_locations_and_capacities import (
-    MILPResult,
-    Scenario,
-    TAP_STEP,
     _DC_DEMAND_ARCHETYPES,
+    TAP_STEP,
+    Scenario,
     compute_load_sensitivities,
     compute_pv_sensitivities,
     compute_tap_sensitivities,
@@ -142,9 +139,7 @@ def compute_dc_demand_profiles(
         if site_cfg.total_gpu_capacity is not None:
             total_gpus = site_cfg.total_gpu_capacity
         else:
-            total_gpus = sum(
-                model_gpu_map.get(m, 0) for m in (site_cfg.models or [])
-            )
+            total_gpus = sum(model_gpu_map.get(m, 0) for m in (site_cfg.models or []))
 
         gpu_kw_per_phase = total_gpus * typical_gpu_w / 1000.0 / 3.0
         peak_kw_per_phase = site_cfg.base_kw_per_phase + gpu_kw_per_phase
@@ -161,10 +156,12 @@ def compute_dc_demand_profiles(
             dc_demand_kw[k, :, sc_idx] = peak_kw_per_phase * profile
 
         logger.info(
-            "DC site %s: %d GPUs, peak %.0f kW/ph (base %.0f + GPU %.0f), "
-            "archetype %d (%s)",
-            site_id, total_gpus, peak_kw_per_phase,
-            site_cfg.base_kw_per_phase, gpu_kw_per_phase,
+            "DC site %s: %d GPUs, peak %.0f kW/ph (base %.0f + GPU %.0f), archetype %d (%s)",
+            site_id,
+            total_gpus,
+            peak_kw_per_phase,
+            site_cfg.base_kw_per_phase,
+            gpu_kw_per_phase,
             k % len(_DC_DEMAND_ARCHETYPES),
             archetype.__name__,
         )
@@ -300,9 +297,7 @@ def solve_pv_dc_milp(
     for j in range(n_pv_cand):
         model.addConstr(s[j] <= s_max_kw * x[j], name=f"pv_link_{j}")
 
-    model.addConstr(
-        gp.quicksum(x[j] for j in range(n_pv_cand)) <= n_pv, name="n_pv"
-    )
+    model.addConstr(gp.quicksum(x[j] for j in range(n_pv_cand)) <= n_pv, name="n_pv")
 
     # Total PV capacity budget
     if s_total_max_kw is not None:
@@ -324,7 +319,9 @@ def solve_pv_dc_milp(
                 )
                 logger.info(
                     "  PV zone %s: %d candidates, max %d PV",
-                    zid, len(zone_indices), max_pv_per_zone,
+                    zid,
+                    len(zone_indices),
+                    max_pv_per_zone,
                 )
 
     # ── DC placement decision variables ──
@@ -345,9 +342,7 @@ def solve_pv_dc_milp(
 
     # DC mutual exclusion: at most one DC per bus
     for b in range(n_dc_cand):
-        sites_at_b = [
-            k for k in range(n_sites) if b in dc_zone_indices[dc_site_ids[k]]
-        ]
+        sites_at_b = [k for k in range(n_sites) if b in dc_zone_indices[dc_site_ids[k]]]
         if len(sites_at_b) > 1:
             model.addConstr(
                 gp.quicksum(y[(k, b)] for k in sites_at_b) <= 1,
@@ -368,7 +363,9 @@ def solve_pv_dc_milp(
                     lb = max(abs_lb, -max_tap_delta)
                     ub = min(abs_ub, max_tap_delta)
                     delta_tap[(r, sc_idx, h)] = model.addVar(
-                        vtype=GRB.INTEGER, lb=lb, ub=ub,
+                        vtype=GRB.INTEGER,
+                        lb=lb,
+                        ub=ub,
                         name=f"dtap_{reg_name}_{sc_idx}_{h}",
                     )
 
@@ -379,9 +376,7 @@ def solve_pv_dc_milp(
     dc_sens_expr: dict[tuple[int, int], gp.LinExpr] = {}
     for k, site_id in enumerate(dc_site_ids):
         for i in range(n_mon):
-            dc_sens_expr[(k, i)] = gp.quicksum(
-                H_dc[i, b] * y[(k, b)] for b in dc_zone_indices[site_id]
-            )
+            dc_sens_expr[(k, i)] = gp.quicksum(H_dc[i, b] * y[(k, b)] for b in dc_zone_indices[site_id])
 
     # ── Curtailment variables and voltage constraints ──
     curtail: dict[tuple[int, int, int], gp.Var] = {}
@@ -418,10 +413,7 @@ def solve_pv_dc_milp(
                 # PV voltage effect (using actual output after curtailment)
                 if pv_frac >= 1e-6:
                     pv_effect = gp.quicksum(
-                        H_pv[i, j]
-                        * (s[j] * pv_frac - curtail[(j, sc_idx, t)])
-                        / 3.0
-                        for j in range(n_pv_cand)
+                        H_pv[i, j] * (s[j] * pv_frac - curtail[(j, sc_idx, t)]) / 3.0 for j in range(n_pv_cand)
                     )
                 else:
                     pv_effect = 0
@@ -429,24 +421,16 @@ def solve_pv_dc_milp(
                 # DC effect: sum over sites of demand * sensitivity expression
                 # dc_demand_kw[k, t, sc_idx] is kW per phase (scalar for this t, sc)
                 # dc_sens_expr[(k, i)] is the effective sensitivity (LinExpr of y vars)
-                dc_effect = gp.quicksum(
-                    dc_demand_kw[k, t, sc_idx] * dc_sens_expr[(k, i)]
-                    for k in range(n_sites)
-                )
+                dc_effect = gp.quicksum(dc_demand_kw[k, t, sc_idx] * dc_sens_expr[(k, i)] for k in range(n_sites))
 
                 # Tap voltage effect
                 if n_regs > 0:
-                    tap_effect = gp.quicksum(
-                        H_tap[i, r] * delta_tap[(r, sc_idx, tap_hour)]
-                        for r in range(n_regs)
-                    )
+                    tap_effect = gp.quicksum(H_tap[i, r] * delta_tap[(r, sc_idx, tap_hour)] for r in range(n_regs))
                 else:
                     tap_effect = 0
 
                 # Load voltage shift (known constant)
-                load_shift = (
-                    load_v_shift[sc_idx][t, i] if load_v_shift is not None else 0.0
-                )
+                load_shift = load_v_shift[sc_idx][t, i] if load_v_shift is not None else 0.0
 
                 v_expr = v0[i] + pv_effect + dc_effect + tap_effect + load_shift
 
@@ -475,18 +459,16 @@ def solve_pv_dc_milp(
             if pv_frac < 1e-6:
                 continue
             price = sc.price_per_kwh[t]
-            actual_gen = gp.quicksum(
-                s[j] * pv_frac - curtail[(j, sc_idx, t)]
-                for j in range(n_pv_cand)
-            )
+            actual_gen = gp.quicksum(s[j] * pv_frac - curtail[(j, sc_idx, t)] for j in range(n_pv_cand))
             savings_expr += sc.weight * price * actual_gen * sc.hours_per_step
 
     annual_savings = savings_expr * days_per_year
 
     # 3. Voltage violation penalty
-    violation = c_viol * days_per_year * (
-        gp.quicksum(w * sv for sv, w in all_slack_o)
-        + gp.quicksum(w * sv for sv, w in all_slack_u)
+    violation = (
+        c_viol
+        * days_per_year
+        * (gp.quicksum(w * sv for sv, w in all_slack_o) + gp.quicksum(w * sv for sv, w in all_slack_u))
     )
 
     # 4. Tap switching cost
@@ -501,9 +483,7 @@ def solve_pv_dc_milp(
                     model.addConstr(d >= diff, name=f"sw_pos_{sc_idx}_{h}_{r}")
                     model.addConstr(d >= -diff, name=f"sw_neg_{sc_idx}_{h}_{r}")
                     all_switch_vars.append((d, sc.weight))
-        switching_cost_expr = c_switch * days_per_year * gp.quicksum(
-            w * d for d, w in all_switch_vars
-        )
+        switching_cost_expr = c_switch * days_per_year * gp.quicksum(w * d for d, w in all_switch_vars)
 
     model.setObjective(
         investment - annual_savings + violation + switching_cost_expr,
@@ -512,16 +492,23 @@ def solve_pv_dc_milp(
 
     model.update()
     logger.info(
-        "MILP: %d PV cand, %d DC cand, %d DC sites, %d monitored, "
-        "%d scenarios, %d PVs, %d regulators",
-        n_pv_cand, n_dc_cand, n_sites, n_mon, len(scenarios), n_pv, n_regs,
+        "MILP: %d PV cand, %d DC cand, %d DC sites, %d monitored, %d scenarios, %d PVs, %d regulators",
+        n_pv_cand,
+        n_dc_cand,
+        n_sites,
+        n_mon,
+        len(scenarios),
+        n_pv,
+        n_regs,
     )
     logger.info(
-        "MILP: s_max=%.0f kW, s_total_max=%s kW, c_inv=%.2f $/kW/yr, "
-        "c_viol=%.0f, c_switch=%.0f, days/yr=%.0f",
+        "MILP: s_max=%.0f kW, s_total_max=%s kW, c_inv=%.2f $/kW/yr, c_viol=%.0f, c_switch=%.0f, days/yr=%.0f",
         s_max_kw,
         f"{s_total_max_kw:.0f}" if s_total_max_kw else "None",
-        c_inv, c_viol, c_switch, days_per_year,
+        c_inv,
+        c_viol,
+        c_switch,
+        days_per_year,
     )
     logger.info("MILP: %d variables, %d constraints", model.NumVars, model.NumConstrs)
 
@@ -565,9 +552,7 @@ def solve_pv_dc_milp(
                     for r, reg_name in enumerate(regulator_names):
                         delta = int(round(delta_tap[(r, sc_idx, h_slot)].X))
                         hour_taps[reg_name] = initial_tap_ints[reg_name] + delta
-                    for hh in range(
-                        h_slot * TAP_INTERVAL_H, (h_slot + 1) * TAP_INTERVAL_H
-                    ):
+                    for hh in range(h_slot * TAP_INTERVAL_H, (h_slot + 1) * TAP_INTERVAL_H):
                         if hh < 24:
                             schedule[hh] = hour_taps
                 tap_schedules_val[sc.name] = schedule
@@ -584,11 +569,7 @@ def solve_pv_dc_milp(
                 price = sc.price_per_kwh[t]
                 actual_gen = 0.0
                 for j, b in enumerate(pv_candidate_buses):
-                    c_val = (
-                        curtail[(j, sc_idx, t)].X
-                        if (j, sc_idx, t) in curtail
-                        else 0.0
-                    )
+                    c_val = curtail[(j, sc_idx, t)].X if (j, sc_idx, t) in curtail else 0.0
                     gen_j = all_s_vals[b] * pv_frac - c_val
                     actual_gen += gen_j
                     curtail_kwh += sc.weight * c_val * sc.hours_per_step
@@ -628,11 +609,7 @@ def solve_pv_dc_milp(
         )
     else:
         return CoOptMILPResult(
-            status=(
-                "infeasible"
-                if model.Status == GRB.INFEASIBLE
-                else f"status_{model.Status}"
-            ),
+            status=("infeasible" if model.Status == GRB.INFEASIBLE else f"status_{model.Status}"),
             objective=float("inf"),
             pv_locations=[],
             pv_capacities_kw=[],
@@ -688,9 +665,7 @@ def validate_coopt(
         # dc_demand_kw[k, :, sc_idx] is the total demand in kW per phase
         dc_profile = dc_demand_kw[k, :, sc_idx]
         if assigned_bus in mod_sc.load_kw_per_bus:
-            mod_sc.load_kw_per_bus[assigned_bus] = (
-                mod_sc.load_kw_per_bus[assigned_bus] + dc_profile
-            )
+            mod_sc.load_kw_per_bus[assigned_bus] = mod_sc.load_kw_per_bus[assigned_bus] + dc_profile
         else:
             mod_sc.load_kw_per_bus[assigned_bus] = dc_profile.copy()
 
@@ -738,10 +713,7 @@ def plot_coopt_results(
     # PV placements
     ax = axes[0]
     caps = [result.all_s.get(b, 0.0) for b in pv_candidate_buses]
-    colors = [
-        "#DD8452" if result.all_x.get(b, 0) > 0.5 else "#4C72B0"
-        for b in pv_candidate_buses
-    ]
+    colors = ["#DD8452" if result.all_x.get(b, 0) > 0.5 else "#4C72B0" for b in pv_candidate_buses]
     xp = np.arange(len(pv_candidate_buses))
     ax.bar(xp, caps, color=colors)
     ax.set_xlabel("Bus")
@@ -749,10 +721,12 @@ def plot_coopt_results(
     ax.set_title(f"PV Placements — {system}")
     ax.set_xticks(xp)
     ax.set_xticklabels(pv_candidate_buses, rotation=45, ha="right", fontsize=8)
-    ax.legend(handles=[
-        Patch(color="#DD8452", label="Selected"),
-        Patch(color="#4C72B0", label="Not selected"),
-    ])
+    ax.legend(
+        handles=[
+            Patch(color="#DD8452", label="Selected"),
+            Patch(color="#4C72B0", label="Not selected"),
+        ]
+    )
 
     # DC assignments — show peak load (kW per phase) at each candidate bus
     ax = axes[1]
@@ -770,10 +744,7 @@ def plot_coopt_results(
                 bus_site_label[bus] = site_id
 
     bar_vals = [bus_peak_kw.get(b, 0.0) for b in dc_candidate_buses]
-    dc_colors = [
-        "#55A868" if b in assigned_buses else "#CCCCCC"
-        for b in dc_candidate_buses
-    ]
+    dc_colors = ["#55A868" if b in assigned_buses else "#CCCCCC" for b in dc_candidate_buses]
     xd = np.arange(len(dc_candidate_buses))
     ax.bar(xd, bar_vals, color=dc_colors)
     ax.set_xlabel("Bus")
@@ -788,20 +759,24 @@ def plot_coopt_results(
             idx = dc_candidate_buses.index(bus)
             y_val = bus_peak_kw.get(bus, 0.0)
             ax.annotate(
-                site_id, (idx, y_val), ha="center", va="bottom",
-                fontsize=8, fontweight="bold",
+                site_id,
+                (idx, y_val),
+                ha="center",
+                va="bottom",
+                fontsize=8,
+                fontweight="bold",
             )
 
-    ax.legend(handles=[
-        Patch(color="#55A868", label="DC assigned"),
-        Patch(color="#CCCCCC", label="Not assigned"),
-    ])
+    ax.legend(
+        handles=[
+            Patch(color="#55A868", label="DC assigned"),
+            Patch(color="#CCCCCC", label="Not assigned"),
+        ]
+    )
 
     fig.suptitle(f"PV + DC Co-Optimisation — {system}", fontsize=14)
     fig.tight_layout()
-    fig.savefig(
-        save_dir / f"pv_dc_placements_{system}.png", dpi=150, bbox_inches="tight"
-    )
+    fig.savefig(save_dir / f"pv_dc_placements_{system}.png", dpi=150, bbox_inches="tight")
     plt.close(fig)
     logger.info("Plot saved: %s", save_dir / f"pv_dc_placements_{system}.png")
 
@@ -852,7 +827,6 @@ def main(
     save_dir = Path(__file__).resolve().parent / "outputs" / system / "pv_dc_coopt"
     save_dir.mkdir(parents=True, exist_ok=True)
 
-
     # ── Step 1: Discover PV candidate buses ──
     logger.info("")
     logger.info("=" * 70)
@@ -869,19 +843,11 @@ def main(
     # PV candidates: zone-filtered if zones are defined
     pv_candidate_buses = list(all_candidate_buses)
     if config.zones:
-        zoned_buses = {
-            b.lower() for buses_list in config.zones.values() for b in buses_list
-        }
+        zoned_buses = {b.lower() for buses_list in config.zones.values() for b in buses_list}
         before = len(pv_candidate_buses)
-        pv_candidate_buses = [
-            b for b in pv_candidate_buses if b.lower() in zoned_buses
-        ]
-        logger.info(
-            "PV: Filtered to zoned buses: %d -> %d candidates", before, len(pv_candidate_buses)
-        )
-    logger.info(
-        "PV candidate buses (%d): %s", len(pv_candidate_buses), pv_candidate_buses
-    )
+        pv_candidate_buses = [b for b in pv_candidate_buses if b.lower() in zoned_buses]
+        logger.info("PV: Filtered to zoned buses: %d -> %d candidates", before, len(pv_candidate_buses))
+    logger.info("PV candidate buses (%d): %s", len(pv_candidate_buses), pv_candidate_buses)
 
     # ── Step 2: Build DC candidate buses per zone ──
     logger.info("")
@@ -914,13 +880,13 @@ def main(
         for k, site_id in enumerate(dc_site_ids):
             zone_name = zone_names[k % len(zone_names)]
             zone_set = {b.lower() for b in config.zones[zone_name]}
-            indices = [
-                j for j, b in enumerate(dc_cand_lower) if b in zone_set
-            ]
+            indices = [j for j, b in enumerate(dc_cand_lower) if b in zone_set]
             dc_zone_indices[site_id] = indices
             logger.info(
                 "  DC site %s -> zone %s: %d candidate buses",
-                site_id, zone_name, len(indices),
+                site_id,
+                zone_name,
+                len(indices),
             )
     else:
         # No zones: all candidate buses are available for all DC sites
@@ -930,9 +896,7 @@ def main(
         for site_id in dc_site_ids:
             dc_zone_indices[site_id] = list(all_indices)
 
-    logger.info(
-        "DC candidate buses (%d): %s", len(dc_candidate_buses), dc_candidate_buses
-    )
+    logger.info("DC candidate buses (%d): %s", len(dc_candidate_buses), dc_candidate_buses)
 
     # ── Step 3: Parse taps and compute DC demand info ──
     logger.info("")
@@ -957,10 +921,7 @@ def main(
 
     # Estimate GPU counts per model
     TYPICAL_GPU_W = 300.0
-    model_gpu_map = {
-        m.model_label: m.initial_num_replicas * m.gpus_per_replica
-        for m in config.models
-    }
+    model_gpu_map = {m.model_label: m.initial_num_replicas * m.gpus_per_replica for m in config.models}
 
     # ── Build load_configs from config ──
     load_configs: list[tuple[str, float]] = []
@@ -989,7 +950,9 @@ def main(
     for sc in scenarios:
         logger.info(
             "  %s: %d steps, weight=%.2f (~%d days/yr), peak PV=%.2f, loads=%d buses",
-            sc.name, len(sc.hours), sc.weight,
+            sc.name,
+            len(sc.hours),
+            sc.weight,
             int(sc.weight * 365),
             sc.pv_profile.max(),
             len(sc.load_kw_per_bus),
@@ -1016,8 +979,9 @@ def main(
         bus_kv=default_site.bus_kv,
         dc_sites=None,  # bare circuit
     )
-    logger.info("  PV sensitivity: %.1f s, %d monitored x %d candidates",
-                time.time() - t0, H_pv.shape[0], H_pv.shape[1])
+    logger.info(
+        "  PV sensitivity: %.1f s, %d monitored x %d candidates", time.time() - t0, H_pv.shape[0], H_pv.shape[1]
+    )
     logger.info("  Base voltage range: %.4f to %.4f pu", v0.min(), v0.max())
 
     plot_sensitivity_heatmap(H_pv, v_index, pv_candidate_buses, save_dir, system)
@@ -1039,8 +1003,9 @@ def main(
         initial_taps=tap_pu if tap_pu else None,
         bus_kv=default_site.bus_kv,
     )
-    logger.info("  DC sensitivity: %.1f s, %d monitored x %d candidates",
-                time.time() - t0, H_dc.shape[0], H_dc.shape[1])
+    logger.info(
+        "  DC sensitivity: %.1f s, %d monitored x %d candidates", time.time() - t0, H_dc.shape[0], H_dc.shape[1]
+    )
 
     # Plot DC sensitivity heatmap
     plot_sensitivity_heatmap(H_dc, v_index, dc_candidate_buses, save_dir, system)
@@ -1093,12 +1058,12 @@ def main(
     logger.info("=" * 70)
 
     dc_demand_kw, site_ids_ordered = compute_dc_demand_profiles(
-        config.dc_sites, model_gpu_map, scenarios,
+        config.dc_sites,
+        model_gpu_map,
+        scenarios,
         typical_gpu_w=TYPICAL_GPU_W,
     )
-    logger.info(
-        "DC demand shape: %s (sites x timesteps x scenarios)", dc_demand_kw.shape
-    )
+    logger.info("DC demand shape: %s (sites x timesteps x scenarios)", dc_demand_kw.shape)
     for k, sid in enumerate(site_ids_ordered):
         logger.info(
             "  %s: mean=%.0f, min=%.0f, max=%.0f kW/ph",
@@ -1109,8 +1074,11 @@ def main(
         )
 
     plot_scenario_profiles(
-        scenarios, save_dir, system,
-        dc_demand_kw=dc_demand_kw, dc_site_ids=site_ids_ordered,
+        scenarios,
+        save_dir,
+        system,
+        dc_demand_kw=dc_demand_kw,
+        dc_site_ids=site_ids_ordered,
     )
 
     # ── Step 7: Solve MILP ──
@@ -1119,11 +1087,13 @@ def main(
     logger.info("STEP 7: Solving PV + DC co-optimisation MILP")
     logger.info("=" * 70)
     logger.info(
-        "  n_pv=%d, s_max=%.0f kW, s_total_max=%s kW, "
-        "c_inv=%.1f $/kW/yr, c_viol=%.0f, c_switch=%.0f",
-        n_pv, s_max_kw,
+        "  n_pv=%d, s_max=%.0f kW, s_total_max=%s kW, c_inv=%.1f $/kW/yr, c_viol=%.0f, c_switch=%.0f",
+        n_pv,
+        s_max_kw,
         f"{s_total_max_kw:.0f}" if s_total_max_kw else "None",
-        c_inv, c_viol, c_switch,
+        c_inv,
+        c_viol,
+        c_switch,
     )
     logger.info("  v_min=%.2f, v_max=%.2f, days_per_year=%.0f", v_min, v_max, days_per_year)
 
@@ -1173,10 +1143,8 @@ def main(
     logger.info("")
     logger.info("  PV Placements:")
     if result.pv_locations:
-        for bus, cap in zip(result.pv_locations, result.pv_capacities_kw):
-            logger.info(
-                "    Bus %-10s  Capacity: %8.1f kW (%.1f kW/phase)", bus, cap, cap / 3
-            )
+        for bus, cap in zip(result.pv_locations, result.pv_capacities_kw, strict=False):
+            logger.info("    Bus %-10s  Capacity: %8.1f kW (%.1f kW/phase)", bus, cap, cap / 3)
     else:
         logger.info("    (none)")
 
@@ -1197,17 +1165,12 @@ def main(
                 unique_settings[key].append(hour)
             logger.info(
                 "    Scenario: %s (%d distinct tap settings)",
-                sc_name, len(unique_settings),
+                sc_name,
+                len(unique_settings),
             )
             for taps_tuple, hours_list in unique_settings.items():
-                hour_range = (
-                    f"h{hours_list[0]}-{hours_list[-1]}"
-                    if len(hours_list) > 1
-                    else f"h{hours_list[0]}"
-                )
-                taps_str = ", ".join(
-                    f"{r}={t:+d}" for r, t in zip(regulator_names, taps_tuple)
-                )
+                hour_range = f"h{hours_list[0]}-{hours_list[-1]}" if len(hours_list) > 1 else f"h{hours_list[0]}"
+                taps_str = ", ".join(f"{r}={t:+d}" for r, t in zip(regulator_names, taps_tuple, strict=False))
                 logger.info("      %s: %s", hour_range, taps_str)
 
     # ── Save outputs ──
@@ -1219,11 +1182,13 @@ def main(
     # PV placements CSV
     pv_rows = []
     for bus in pv_candidate_buses:
-        pv_rows.append({
-            "bus": bus,
-            "selected": int(result.all_x.get(bus, 0) > 0.5),
-            "capacity_kw": result.all_s.get(bus, 0.0),
-        })
+        pv_rows.append(
+            {
+                "bus": bus,
+                "selected": int(result.all_x.get(bus, 0) > 0.5),
+                "capacity_kw": result.all_s.get(bus, 0.0),
+            }
+        )
     pv_csv_path = save_dir / f"pv_placements_{system}.csv"
     with open(pv_csv_path, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=list(pv_rows[0].keys()))
@@ -1243,12 +1208,14 @@ def main(
             zone_name = zone_names[k % len(zone_names)]
         # Peak demand
         peak_kw = float(dc_demand_kw[site_ids_ordered.index(site_id)].max())
-        dc_rows.append({
-            "site_id": site_id,
-            "assigned_bus": assigned_bus,
-            "zone": zone_name,
-            "peak_kw_per_phase": f"{peak_kw:.1f}",
-        })
+        dc_rows.append(
+            {
+                "site_id": site_id,
+                "assigned_bus": assigned_bus,
+                "zone": zone_name,
+                "peak_kw_per_phase": f"{peak_kw:.1f}",
+            }
+        )
     dc_csv_path = save_dir / f"dc_assignments_{system}.csv"
     with open(dc_csv_path, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=list(dc_rows[0].keys()))
@@ -1260,11 +1227,7 @@ def main(
     if result.tap_schedules:
         tap_csv_path = save_dir / f"tap_schedule_{system}.csv"
         with open(tap_csv_path, "w", newline="") as f:
-            fields = (
-                ["scenario", "hour"]
-                + [f"{r}_tap" for r in regulator_names]
-                + [f"{r}_pu" for r in regulator_names]
-            )
+            fields = ["scenario", "hour"] + [f"{r}_tap" for r in regulator_names] + [f"{r}_pu" for r in regulator_names]
             writer = csv.DictWriter(f, fieldnames=fields)
             writer.writeheader()
             for sc_name, schedule in result.tap_schedules.items():
@@ -1312,8 +1275,13 @@ def main(
 
     # Plots
     plot_coopt_results(
-        pv_candidate_buses, dc_candidate_buses, result, save_dir, system,
-        dc_demand_kw=dc_demand_kw, dc_site_ids=site_ids_ordered,
+        pv_candidate_buses,
+        dc_candidate_buses,
+        result,
+        save_dir,
+        system,
+        dc_demand_kw=dc_demand_kw,
+        dc_site_ids=site_ids_ordered,
     )
 
     # ── Plot optimized topology ──
@@ -1328,9 +1296,8 @@ def main(
                 cfg_dict["dc_sites"][site_id]["bus"] = assigned_bus
         # Update PV systems to optimized locations and capacities
         cfg_dict["pv_systems"] = [
-            {"bus": bus, "bus_kv": default_site.bus_kv,
-             "peak_kw": cap / 3.0, "power_factor": 1.0}
-            for bus, cap in zip(result.pv_locations, result.pv_capacities_kw)
+            {"bus": bus, "bus_kv": default_site.bus_kv, "peak_kw": cap / 3.0, "power_factor": 1.0}
+            for bus, cap in zip(result.pv_locations, result.pv_capacities_kw, strict=False)
         ]
         # Use absolute ieee_case_dir so the temp config works from any location
         cfg_dict["ieee_case_dir"] = str(config.ieee_case_dir)
@@ -1338,7 +1305,8 @@ def main(
         tmp_config = save_dir / f"_optimized_config_{system}.json"
         tmp_config.write_text(json.dumps(cfg_dict, indent=2))
         plot_topology(
-            config_path=tmp_config, system=system,
+            config_path=tmp_config,
+            system=system,
             output_dir=save_dir,
         )
         # Rename to a more descriptive name
@@ -1363,13 +1331,12 @@ def main(
             val_schedule = None
             if result.tap_schedules and sc.name in result.tap_schedules:
                 val_schedule = result.tap_schedules[sc.name]
-                unique = len(set(
-                    tuple(sorted(taps.items()))
-                    for taps in val_schedule.values()
-                ))
+                unique = len(set(tuple(sorted(taps.items())) for taps in val_schedule.values()))
                 logger.info(
                     "  Validating %s with %d distinct tap settings across %d hours",
-                    sc.name, unique, len(val_schedule),
+                    sc.name,
+                    unique,
+                    len(val_schedule),
                 )
 
             vr = validate_coopt(
@@ -1400,9 +1367,7 @@ def main(
             for vr in val_results:
                 row = dict(vr)
                 row["pv_locations"] = ";".join(row["pv_locations"])
-                row["pv_capacities_kw"] = ";".join(
-                    f"{c:.1f}" for c in row["pv_capacities_kw"]
-                )
+                row["pv_capacities_kw"] = ";".join(f"{c:.1f}" for c in row["pv_capacities_kw"])
                 writer.writerow(row)
         logger.info("  Validation CSV: %s", val_csv_path)
 
@@ -1414,8 +1379,9 @@ def main(
 
 
 if __name__ == "__main__":
-    import tyro
     from dataclasses import dataclass as _dataclass
+
+    import tyro
 
     @_dataclass
     class Args:

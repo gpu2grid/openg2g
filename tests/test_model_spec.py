@@ -11,7 +11,11 @@ class TestInferenceModelSpec:
     def test_basic(self) -> None:
         """Constructor should store label, replica count, and GPUs per replica."""
         m = InferenceModelSpec(
-            model_label="TestModel", initial_num_replicas=10, gpus_per_replica=4, initial_batch_size=128, itl_deadline_s=0.1
+            model_label="TestModel",
+            initial_num_replicas=10,
+            gpus_per_replica=4,
+            initial_batch_size=128,
+            itl_deadline_s=0.1,
         )
         assert m.model_label == "TestModel"
         assert m.initial_num_replicas == 10

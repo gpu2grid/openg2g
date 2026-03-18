@@ -475,26 +475,21 @@ class InferenceData:
                 )
 
     def filter_models(
-        self, models: tuple[InferenceModelSpec, ...],
+        self,
+        models: tuple[InferenceModelSpec, ...],
     ) -> InferenceData:
         """Return a new InferenceData containing only the specified models."""
         labels = {ms.model_label for ms in models}
 
         # Filter power templates
-        filtered_templates = {
-            k: v for k, v in self._power_templates._templates.items() if k[0] in labels
-        }
-        filtered_batch_sizes = {
-            k: v for k, v in self._power_templates._batch_sizes_by_model.items() if k in labels
-        }
+        filtered_templates = {k: v for k, v in self._power_templates._templates.items() if k[0] in labels}
+        filtered_batch_sizes = {k: v for k, v in self._power_templates._batch_sizes_by_model.items() if k in labels}
         new_templates = InferenceTemplateStore(filtered_templates, filtered_batch_sizes)
 
         # Filter ITL fits
         new_itl_fits = None
         if self._itl_fits is not None:
-            filtered_dists = {
-                k: v for k, v in self._itl_fits.distributions.items() if k in labels
-            }
+            filtered_dists = {k: v for k, v in self._itl_fits.distributions.items() if k in labels}
             new_itl_fits = ITLFitStore(filtered_dists)
 
         return InferenceData(models, power_templates=new_templates, itl_fits=new_itl_fits)

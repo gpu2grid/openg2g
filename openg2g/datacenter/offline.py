@@ -112,9 +112,7 @@ class OfflineDatacenter(LLMBatchSizeControlledDatacenter[OfflineDatacenterState]
         # Total GPU capacity: if not specified, compute from initial model allocation
         models = list(workload.inference_data.models)
         if total_gpu_capacity is None:
-            total_gpu_capacity = sum(
-                ms.initial_num_replicas * ms.gpus_per_replica for ms in models
-            )
+            total_gpu_capacity = sum(ms.initial_num_replicas * ms.gpus_per_replica for ms in models)
         self._total_gpu_capacity = total_gpu_capacity
         self._dt_s = dt_s
         self._seed = int(seed)
@@ -301,16 +299,22 @@ class OfflineDatacenter(LLMBatchSizeControlledDatacenter[OfflineDatacenterState]
                 if max_replicas <= 0:
                     logger.warning(
                         "ShiftReplicas %s: rejected, no GPU capacity (need %d, have %d)",
-                        label, gpus_needed, available,
+                        label,
+                        gpus_needed,
+                        available,
                     )
                     return
                 effective_replicas = ms.initial_num_replicas + old_offset + max_replicas
                 logger.info(
                     "ShiftReplicas %s: clamped from %+d to %+d replicas (GPU cap %d, used %d)",
-                    label, delta, max_replicas, self._total_gpu_capacity, self.current_gpu_usage(),
+                    label,
+                    delta,
+                    max_replicas,
+                    self._total_gpu_capacity,
+                    self.current_gpu_usage(),
                 )
 
-        base_servers = math.ceil(ms.initial_num_replicas * ms.gpus_per_replica / gpus_per_server)
+        math.ceil(ms.initial_num_replicas * ms.gpus_per_replica / gpus_per_server)
         new_base = math.ceil(effective_replicas * ms.gpus_per_replica / gpus_per_server)
 
         # Clamp to allocated server capacity
@@ -326,8 +330,12 @@ class OfflineDatacenter(LLMBatchSizeControlledDatacenter[OfflineDatacenterState]
         if old_base != new_base:
             logger.info(
                 "ShiftReplicas %s: offset %+d -> %+d, base_servers %d -> %d (cap %d)",
-                label, old_offset, self._replica_offset_by_model[label],
-                old_base, new_base, policy._n,
+                label,
+                old_offset,
+                self._replica_offset_by_model[label],
+                old_base,
+                new_base,
+                policy._n,
             )
 
         events.emit(
@@ -380,7 +388,9 @@ class OfflineDatacenter(LLMBatchSizeControlledDatacenter[OfflineDatacenterState]
 
                 # Policy dictates which servers are active at a given time.
                 self._policies[ms.model_label] = RampActivationPolicy(
-                    model_schedule, num_servers, rng,
+                    model_schedule,
+                    num_servers,
+                    rng,
                     base_servers=base_servers if effective_max > 1.0 else None,
                 )
 

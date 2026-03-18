@@ -42,7 +42,8 @@ Constraints:
 
 Usage:
     python optimize_pv_locations_and_capacities.py --config config_ieee34_pv_optimization.json --system ieee34
-    python optimize_pv_locations_and_capacities.py --config config_ieee34_pv_optimization.json --system ieee34 --n-pv 5 --s-max 1000 --s-total-max 2500
+    python optimize_pv_locations_and_capacities.py --config config_ieee34_pv_optimization.json \
+        --system ieee34 --n-pv 5 --s-max 1000 --s-total-max 2500
 """
 
 from __future__ import annotations
@@ -52,7 +53,6 @@ import logging
 import math
 import time
 from dataclasses import dataclass, field
-from fractions import Fraction
 from pathlib import Path
 
 import numpy as np
@@ -68,10 +68,10 @@ class Scenario:
     """A representative operating scenario (e.g. one day)."""
 
     name: str
-    hours: np.ndarray            # shape (T,)  — hour of day
-    pv_profile: np.ndarray       # shape (T,)  — normalised PV output [0,1]
-    price_per_kwh: np.ndarray    # shape (T,)  — electricity price ($/kWh)
-    weight: float = 1.0          # scenario weight in objective
+    hours: np.ndarray  # shape (T,)  — hour of day
+    pv_profile: np.ndarray  # shape (T,)  — normalised PV output [0,1]
+    price_per_kwh: np.ndarray  # shape (T,)  — electricity price ($/kWh)
+    weight: float = 1.0  # scenario weight in objective
     hours_per_step: float = 1.0  # duration of each time step (hours)
     # Per-bus load profiles: bus -> kW per phase array (T,)
     load_kw_per_bus: dict[str, np.ndarray] = field(default_factory=dict)
@@ -101,6 +101,7 @@ def _tou_price(hour: float) -> float:
 
 
 # ── Load profile archetypes ──────────────────────────────────────────────────
+
 
 def _industrial_load(hour: float) -> float:
     """Flat during work hours, low nights."""
@@ -145,12 +146,12 @@ def _constant_load(hour: float) -> float:
 
 # Assign archetypes to load bus indices
 _LOAD_ARCHETYPES = [
-    _industrial_load,    # load bus 0 (e.g. 860)
-    _commercial_load,    # load bus 1 (e.g. 844)
-    _residential_load,   # load bus 2 (e.g. 840)
-    _residential_load,   # load bus 3 (e.g. 858)
-    _constant_load,      # load bus 4 (e.g. 854)
-    _ev_charging_load,   # load bus 5 (e.g. 848)
+    _industrial_load,  # load bus 0 (e.g. 860)
+    _commercial_load,  # load bus 1 (e.g. 844)
+    _residential_load,  # load bus 2 (e.g. 840)
+    _residential_load,  # load bus 3 (e.g. 858)
+    _constant_load,  # load bus 4 (e.g. 854)
+    _ev_charging_load,  # load bus 5 (e.g. 848)
 ]
 
 
@@ -185,9 +186,9 @@ def _dc_demand_downstream(hour: float) -> float:
     daytime = 0.12 * math.exp(-((hour - 13.5) ** 2) / 12.0)
     # Irregular fluctuations: superposition of incommensurate frequencies
     # so the pattern never repeats cleanly within 24h
-    f1 = 0.05 * math.sin(2 * math.pi * hour / 2.3)      # ~2.3h cycle
-    f2 = 0.04 * math.sin(2 * math.pi * hour / 3.7 + 1.0) # ~3.7h cycle
-    f3 = 0.03 * math.sin(2 * math.pi * hour / 1.1 + 2.5) # ~1.1h fast jitter
+    f1 = 0.05 * math.sin(2 * math.pi * hour / 2.3)  # ~2.3h cycle
+    f2 = 0.04 * math.sin(2 * math.pi * hour / 3.7 + 1.0)  # ~3.7h cycle
+    f3 = 0.03 * math.sin(2 * math.pi * hour / 1.1 + 2.5)  # ~1.1h fast jitter
     fluctuation = (f1 + f2 + f3) if 5 <= hour <= 23.5 else 0
     # Small end-of-day bump (report generation, summarisation)
     eod = 0.08 * math.exp(-((hour - 17.5) ** 2) / 0.5)
@@ -300,9 +301,7 @@ def generate_scenarios(
         if dc_sites_info:
             for dc_bus, dc_peak, dc_base, site_id in dc_sites_info:
                 loads[dc_bus] = dc_peak * dc_profiles[site_id] - dc_base
-        return Scenario(name, hours, pv, price,
-                        weight=weight, hours_per_step=hours_per_step,
-                        load_kw_per_bus=loads)
+        return Scenario(name, hours, pv, price, weight=weight, hours_per_step=hours_per_step, load_kw_per_bus=loads)
 
     scenarios = []
 
@@ -323,14 +322,17 @@ def generate_scenarios(
     #    Base output ~30% of clear sky, with two brief sunny breaks at ~10h
     #    and ~14h where output spikes to ~70%.  Very different shape from
     #    clear summer: low sustained output with sharp transients.
-    pv_summer_cloudy = np.array([
-        _solar_profile(h, peak_hour=13.0, daylight=14.0) * (
-            0.3  # heavy overcast base
-            + 0.4 * math.exp(-((h - 10.0) ** 2) / 0.5)  # brief break ~10h
-            + 0.4 * math.exp(-((h - 14.5) ** 2) / 0.3)  # brief break ~14.5h
-        )
-        for h in hours
-    ])
+    pv_summer_cloudy = np.array(
+        [
+            _solar_profile(h, peak_hour=13.0, daylight=14.0)
+            * (
+                0.3  # heavy overcast base
+                + 0.4 * math.exp(-((h - 10.0) ** 2) / 0.5)  # brief break ~10h
+                + 0.4 * math.exp(-((h - 14.5) ** 2) / 0.3)  # brief break ~14.5h
+            )
+            for h in hours
+        ]
+    )
     pv_summer_cloudy = np.minimum(pv_summer_cloudy, pv_summer)  # cap at clear sky
     scenarios.append(_sc("summer_cloudy", pv_summer_cloudy, weight=0.08, load_mult=1.05))
 
@@ -368,6 +370,7 @@ def _add_dc_loads(
     if not dc_sites:
         return
     from opendssdirect import dss
+
     ln_kv = bus_kv / math.sqrt(3.0)
     for site_id, site_cfg in dc_sites.items():
         bus = site_cfg["bus"]
@@ -379,9 +382,10 @@ def _add_dc_loads(
                 f"New Load.DC_{site_id}_{suffix} bus1={bus}.{ph} phases=1 "
                 f"conn=wye kV={ln_kv:.6f} kW={kw_per_phase:.2f} kvar=0 model=1 vminpu=0.85"
             )
-    logger.info("Added DC loads: %s",
-                ", ".join(f"{sid}@{s['bus']}={s.get('base_kw_per_phase',0):.0f}kW/ph"
-                          for sid, s in dc_sites.items()))
+    logger.info(
+        "Added DC loads: %s",
+        ", ".join(f"{sid}@{s['bus']}={s.get('base_kw_per_phase', 0):.0f}kW/ph" for sid, s in dc_sites.items()),
+    )
 
 
 def compute_pv_sensitivities(
@@ -456,8 +460,7 @@ def compute_pv_sensitivities(
         for ph, suffix in [(1, "a"), (2, "b"), (3, "c")]:
             name = f"PV_{bus}_{suffix}"
             dss.Text.Command(
-                f"New Load.{name} bus1={bus}.{ph} phases=1 "
-                f"conn=wye kV={pv_ln_kv:.6f} kW=0 kvar=0 model=1 vminpu=0.85"
+                f"New Load.{name} bus1={bus}.{ph} phases=1 conn=wye kV={pv_ln_kv:.6f} kW=0 kvar=0 model=1 vminpu=0.85"
             )
             names.append(name)
         pv_load_names[bus] = names
@@ -698,8 +701,7 @@ def compute_load_sensitivities(
         for ph, suffix in [(1, "a"), (2, "b"), (3, "c")]:
             name = f"LPERT_{bus}_{suffix}"
             dss.Text.Command(
-                f"New Load.{name} bus1={bus}.{ph} phases=1 "
-                f"conn=wye kV={ln_kv:.6f} kW=0 kvar=0 model=1 vminpu=0.85"
+                f"New Load.{name} bus1={bus}.{ph} phases=1 conn=wye kV={ln_kv:.6f} kW=0 kvar=0 model=1 vminpu=0.85"
             )
             names.append(name)
         load_names[bus] = names
@@ -778,16 +780,16 @@ class MILPResult:
 
     status: str
     objective: float
-    pv_locations: list[str]           # selected buses
-    pv_capacities_kw: list[float]     # installed capacity (kW 3-phase)
+    pv_locations: list[str]  # selected buses
+    pv_capacities_kw: list[float]  # installed capacity (kW 3-phase)
     investment_cost: float
-    operational_savings: float        # annual PV electricity savings ($)
+    operational_savings: float  # annual PV electricity savings ($)
     violation_penalty: float
-    switching_cost: float             # annual tap switching cost ($)
-    curtailment_mwh: float            # annual PV curtailment (MWh/year)
+    switching_cost: float  # annual tap switching cost ($)
+    curtailment_mwh: float  # annual PV curtailment (MWh/year)
     solve_time_s: float
-    all_x: dict[str, float]           # x[bus] values
-    all_s: dict[str, float]           # s[bus] values (kW)
+    all_x: dict[str, float]  # x[bus] values
+    all_s: dict[str, float]  # s[bus] values (kW)
     # Time-varying tap schedules: tap_schedules[scenario_name][hour] = {reg: absolute_tap}
     tap_schedules: dict[str, dict[int, dict[str, int]]] | None = None
 
@@ -906,7 +908,9 @@ def solve_pv_milp(
                     lb = max(abs_lb, -max_tap_delta)
                     ub = min(abs_ub, max_tap_delta)
                     delta_tap[(r, sc_idx, h)] = model.addVar(
-                        vtype=GRB.INTEGER, lb=lb, ub=ub,
+                        vtype=GRB.INTEGER,
+                        lb=lb,
+                        ub=ub,
                         name=f"dtap_{reg_name}_{sc_idx}_{h}",
                     )
 
@@ -949,15 +953,18 @@ def solve_pv_milp(
 
             for i in range(n_mon):
                 # PV voltage effect (using actual output after curtailment)
-                pv_voltage_effect = gp.quicksum(
-                    H_pv[i, j] * (s[j] * pv_frac - curtail[(j, sc_idx, t)]) / 3.0
-                    for j in range(n_cand)
-                ) if pv_frac >= 1e-6 else 0
+                pv_voltage_effect = (
+                    gp.quicksum(H_pv[i, j] * (s[j] * pv_frac - curtail[(j, sc_idx, t)]) / 3.0 for j in range(n_cand))
+                    if pv_frac >= 1e-6
+                    else 0
+                )
 
                 # Tap voltage effect (hourly taps applied to minute-level constraint)
-                tap_voltage_effect = gp.quicksum(
-                    H_tap[i, r] * delta_tap[(r, sc_idx, tap_hour)] for r in range(n_regs)
-                ) if n_regs > 0 else 0
+                tap_voltage_effect = (
+                    gp.quicksum(H_tap[i, r] * delta_tap[(r, sc_idx, tap_hour)] for r in range(n_regs))
+                    if n_regs > 0
+                    else 0
+                )
 
                 # Load voltage shift (known constant, not a decision variable)
                 load_shift = load_v_shift[sc_idx][t, i] if load_v_shift is not None else 0.0
@@ -985,17 +992,16 @@ def solve_pv_milp(
             if pv_frac < 1e-6:
                 continue
             price = sc.price_per_kwh[t]
-            actual_gen = gp.quicksum(
-                s[j] * pv_frac - curtail[(j, sc_idx, t)] for j in range(n_cand)
-            )
+            actual_gen = gp.quicksum(s[j] * pv_frac - curtail[(j, sc_idx, t)] for j in range(n_cand))
             savings_expr += sc.weight * price * actual_gen * sc.hours_per_step
 
     annual_savings = savings_expr * days_per_year
 
     # 3. Voltage violation penalty (annualised, same weighting as savings)
-    violation = c_viol * days_per_year * (
-        gp.quicksum(w * sv for sv, w in all_slack_o)
-        + gp.quicksum(w * sv for sv, w in all_slack_u)
+    violation = (
+        c_viol
+        * days_per_year
+        * (gp.quicksum(w * sv for sv, w in all_slack_o) + gp.quicksum(w * sv for sv, w in all_slack_u))
     )
 
     # 4. Tap switching cost: penalise changes between consecutive hours
@@ -1012,9 +1018,7 @@ def solve_pv_milp(
                     model.addConstr(d >= -diff, name=f"sw_neg_{sc_idx}_{h}_{r}")
                     all_switch_vars.append((d, sc.weight))
         # Annualise: c_switch * days_per_year * weighted_sum_of_switches
-        switching_cost_expr = c_switch * days_per_year * gp.quicksum(
-            w * d for d, w in all_switch_vars
-        )
+        switching_cost_expr = c_switch * days_per_year * gp.quicksum(w * d for d, w in all_switch_vars)
 
     model.setObjective(
         investment - annual_savings + violation + switching_cost_expr,
@@ -1022,11 +1026,23 @@ def solve_pv_milp(
     )
 
     model.update()
-    logger.info("MILP: %d candidates, %d monitored, %d scenarios, %d PVs, %d regulators",
-                n_cand, n_mon, len(scenarios), n_pv, n_regs)
-    logger.info("MILP: s_max=%.0f kW, s_total_max=%s kW, c_inv=%.2f $/kW/yr, c_viol=%.0f, c_switch=%.0f, days/yr=%.0f",
-                s_max_kw, f"{s_total_max_kw:.0f}" if s_total_max_kw else "None",
-                c_inv, c_viol, c_switch, days_per_year)
+    logger.info(
+        "MILP: %d candidates, %d monitored, %d scenarios, %d PVs, %d regulators",
+        n_cand,
+        n_mon,
+        len(scenarios),
+        n_pv,
+        n_regs,
+    )
+    logger.info(
+        "MILP: s_max=%.0f kW, s_total_max=%s kW, c_inv=%.2f $/kW/yr, c_viol=%.0f, c_switch=%.0f, days/yr=%.0f",
+        s_max_kw,
+        f"{s_total_max_kw:.0f}" if s_total_max_kw else "None",
+        c_inv,
+        c_viol,
+        c_switch,
+        days_per_year,
+    )
     logger.info("MILP: %d variables, %d constraints", model.NumVars, model.NumConstrs)
 
     t0 = time.time()
@@ -1184,7 +1200,7 @@ def validate_with_opendss(
 
     # Add PV load elements (initially 0)
     pv_ln_kv = bus_kv / math.sqrt(3.0)
-    for bus, cap_kw in zip(pv_locations, pv_capacities_kw):
+    for bus, _cap_kw in zip(pv_locations, pv_capacities_kw, strict=False):
         for ph, suffix in [(1, "a"), (2, "b"), (3, "c")]:
             dss.Text.Command(
                 f"New Load.PV_{bus}_{suffix} bus1={bus}.{ph} phases=1 "
@@ -1211,7 +1227,7 @@ def validate_with_opendss(
         pv_frac = scenario.pv_profile[t]
 
         # Set PV generation
-        for bus, cap_kw in zip(pv_locations, pv_capacities_kw):
+        for bus, cap_kw in zip(pv_locations, pv_capacities_kw, strict=False):
             pv_per_phase = cap_kw / 3.0 * pv_frac
             for suffix in ("a", "b", "c"):
                 dss.Loads.Name(f"PV_{bus}_{suffix}")
@@ -1264,9 +1280,14 @@ def validate_with_opendss(
         "worst_vmax": worst_vmax,
     }
 
-    logger.info("Validation [%s]: %d/%d steps with violations, vmin=%.4f, vmax=%.4f",
-                scenario.name, violation_steps, total_steps,
-                worst_vmin, worst_vmax)
+    logger.info(
+        "Validation [%s]: %d/%d steps with violations, vmin=%.4f, vmax=%.4f",
+        scenario.name,
+        violation_steps,
+        total_steps,
+        worst_vmin,
+        worst_vmax,
+    )
     return result
 
 
@@ -1297,10 +1318,13 @@ def plot_results(
 
     # Legend
     from matplotlib.patches import Patch
-    ax.legend(handles=[
-        Patch(color="#DD8452", label="Selected"),
-        Patch(color="#4C72B0", label="Not selected"),
-    ])
+
+    ax.legend(
+        handles=[
+            Patch(color="#DD8452", label="Selected"),
+            Patch(color="#4C72B0", label="Not selected"),
+        ]
+    )
 
     fig.tight_layout()
     fig.savefig(save_dir / f"pv_expansion_{system}.png", dpi=150, bbox_inches="tight")
@@ -1321,12 +1345,11 @@ def plot_sensitivity_heatmap(
     # Aggregate: mean sensitivity per monitored bus (average over phases)
     bus_set = sorted(set(b for b, _ in v_index))
     H_agg = np.zeros((len(bus_set), len(candidate_buses)))
-    for i, (bus, phase) in enumerate(v_index):
+    for i, (bus, _phase) in enumerate(v_index):
         row = bus_set.index(bus)
         H_agg[row, :] += H_pv[i, :] / 3.0  # average over 3 phases
 
-    fig, ax = plt.subplots(figsize=(max(10, len(candidate_buses) * 0.6),
-                                    max(6, len(bus_set) * 0.3)))
+    fig, ax = plt.subplots(figsize=(max(10, len(candidate_buses) * 0.6), max(6, len(bus_set) * 0.3)))
     im = ax.imshow(H_agg * 1000, aspect="auto", cmap="RdYlGn")  # scale to mpu/kW
     ax.set_xticks(range(len(candidate_buses)))
     ax.set_xticklabels(candidate_buses, rotation=45, ha="right", fontsize=8)
@@ -1380,8 +1403,7 @@ def plot_scenario_profiles(
     # ── TOU prices ──
     ax = axes[0, 1]
     # All scenarios share the same price profile
-    ax.step(scenarios[0].hours, scenarios[0].price_per_kwh, where="post",
-            color="#4C72B0", linewidth=2)
+    ax.step(scenarios[0].hours, scenarios[0].price_per_kwh, where="post", color="#4C72B0", linewidth=2)
     ax.set_ylabel("Price ($/kWh)")
     ax.set_title("Time-of-Use Electricity Price")
     ax.grid(True, alpha=0.3)
@@ -1400,8 +1422,7 @@ def plot_scenario_profiles(
     if load_buses_plotted:
         load_cmap = plt.colormaps.get_cmap("Set2").resampled(max(len(load_buses_plotted), 1))
         for j, bus in enumerate(load_buses_plotted):
-            ax.plot(sc0.hours, sc0.load_kw_per_bus[bus],
-                    label=bus, color=load_cmap(j), linewidth=1.5)
+            ax.plot(sc0.hours, sc0.load_kw_per_bus[bus], label=bus, color=load_cmap(j), linewidth=1.5)
         ax.legend(fontsize=8)
     ax.set_xlabel("Hour of Day")
     ax.set_ylabel("Load (kW per phase)")
@@ -1415,20 +1436,18 @@ def plot_scenario_profiles(
         dc_cmap = plt.colormaps.get_cmap("Dark2").resampled(max(len(dc_site_ids), 1))
         for k, site_id in enumerate(dc_site_ids):
             # Plot first scenario (sc_idx=0); shape is (T,)
-            ax.plot(sc0.hours, dc_demand_kw[k, :, 0],
-                    label=site_id, color=dc_cmap(k), linewidth=1.5)
+            ax.plot(sc0.hours, dc_demand_kw[k, :, 0], label=site_id, color=dc_cmap(k), linewidth=1.5)
         ax.legend(fontsize=8)
     elif dc_sites_info:
         # Reconstruct from scenario load profiles
         dc_cmap = plt.colormaps.get_cmap("Dark2").resampled(max(len(dc_sites_info), 1))
-        for k, (dc_bus, dc_peak, dc_base, site_id) in enumerate(dc_sites_info):
+        for k, (dc_bus, _dc_peak, dc_base, site_id) in enumerate(dc_sites_info):
             # Plot the actual demand (not the deviation from base)
             if dc_bus in sc0.load_kw_per_bus:
                 actual = sc0.load_kw_per_bus[dc_bus] + dc_base
             else:
                 actual = np.full_like(sc0.hours, dc_base)
-            ax.plot(sc0.hours, actual,
-                    label=f"{site_id} ({dc_bus})", color=dc_cmap(k), linewidth=1.5)
+            ax.plot(sc0.hours, actual, label=f"{site_id} ({dc_bus})", color=dc_cmap(k), linewidth=1.5)
         ax.legend(fontsize=8)
     ax.set_xlabel("Hour of Day")
     ax.set_ylabel("DC Load (kW per phase)")
@@ -1467,21 +1486,25 @@ def compare_with_ofo(
     if system.startswith("ieee123"):
         from run_ieee123_ofo import (
             IEEE123Config as _Config,
+        )
+        from run_ieee123_ofo import (
+            PVSystemConfig,
             ScenarioOpenDSSGrid,
             _parse_fraction,
             _resolve_models_for_site,
             _taps_dict_to_position,
         )
-        from run_ieee123_ofo import PVSystemConfig
     else:
         from run_ieee34_ofo import (
             IEEE34Config as _Config,
+        )
+        from run_ieee34_ofo import (
+            PVSystemConfig,
             ScenarioOpenDSSGrid,
             _parse_fraction,
             _resolve_models_for_site,
             _taps_dict_to_position,
         )
-        from run_ieee34_ofo import PVSystemConfig
     from openg2g.controller.ofo import (
         LogisticModelStore,
         OFOBatchSizeController,
@@ -1516,24 +1539,33 @@ def compare_with_ofo(
     # Add MILP-optimized PV systems to config
     pv_systems = list(config.pv_systems)
     default_site = next(iter(config.dc_sites.values()))
-    for bus, cap_kw in zip(pv_locations, pv_capacities_kw):
-        pv_systems.append(PVSystemConfig(
-            bus=bus, bus_kv=default_site.bus_kv,
-            peak_kw=cap_kw / 3.0,  # per-phase peak (at pv_frac=1)
-        ))
+    for bus, cap_kw in zip(pv_locations, pv_capacities_kw, strict=False):
+        pv_systems.append(
+            PVSystemConfig(
+                bus=bus,
+                bus_kv=default_site.bus_kv,
+                peak_kw=cap_kw / 3.0,  # per-phase peak (at pv_frac=1)
+            )
+        )
     config.pv_systems = pv_systems
-    logger.info("  PV systems: %s", ", ".join(
-        f"{p.bus}={p.peak_kw:.0f}kW/ph" for p in pv_systems))
+    logger.info("  PV systems: %s", ", ".join(f"{p.bus}={p.peak_kw:.0f}kW/ph" for p in pv_systems))
 
     # Load inference data
     logger.info("  Loading inference data...")
     inference_data = InferenceData.ensure(
-        data_dir, all_models, data_sources,
-        mlenergy_data_dir=config.mlenergy_data_dir, plot=False, dt_s=float(dt_dc),
+        data_dir,
+        all_models,
+        data_sources,
+        mlenergy_data_dir=config.mlenergy_data_dir,
+        plot=False,
+        dt_s=float(dt_dc),
     )
     logistic_models = LogisticModelStore.ensure(
-        data_dir / "logistic_fits.csv", all_models, data_sources,
-        mlenergy_data_dir=config.mlenergy_data_dir, plot=False,
+        data_dir / "logistic_fits.csv",
+        all_models,
+        data_sources,
+        mlenergy_data_dir=config.mlenergy_data_dir,
+        plot=False,
     )
 
     # Build MILP tap schedule for coordinator (use first scenario = summer_clear)
@@ -1562,7 +1594,7 @@ def compare_with_ofo(
         run_dir = ofo_save_dir / mode_name
         run_dir.mkdir(parents=True, exist_ok=True)
 
-        site_ids = list(config.dc_sites.keys())
+        list(config.dc_sites.keys())
         dc_loads: dict[str, DCLoadSpec] = {}
         datacenters: dict[str, OfflineDatacenter] = {}
         controllers: list = []
@@ -1577,12 +1609,16 @@ def compare_with_ofo(
             dc_config = DatacenterConfig(gpus_per_server=8, base_kw_per_phase=site_cfg.base_kw_per_phase)
             workload = OfflineWorkload(inference_data=site_inference)
             dc = OfflineDatacenter(
-                dc_config, workload, dt_s=dt_dc, seed=site_cfg.seed,
+                dc_config,
+                workload,
+                dt_s=dt_dc,
+                seed=site_cfg.seed,
                 power_augmentation=config.power_augmentation,
             )
             datacenters[site_id] = dc
             dc_loads[site_id] = DCLoadSpec(
-                bus=site_cfg.bus, bus_kv=site_cfg.bus_kv,
+                bus=site_cfg.bus,
+                bus_kv=site_cfg.bus_kv,
                 connection_type=site_cfg.connection_type,
             )
             if not primary_bus:
@@ -1605,14 +1641,19 @@ def compare_with_ofo(
 
         # Tap schedule controller
         if use_taps and milp_tap_entries:
-            controllers.append(TapScheduleController(
-                schedule=TapSchedule(tuple(milp_tap_entries)),
-                dt_s=dt_ctrl,
-            ))
+            controllers.append(
+                TapScheduleController(
+                    schedule=TapSchedule(tuple(milp_tap_entries)),
+                    dt_s=dt_ctrl,
+                )
+            )
         else:
-            controllers.append(TapScheduleController(
-                schedule=TapSchedule(()), dt_s=dt_ctrl,
-            ))
+            controllers.append(
+                TapScheduleController(
+                    schedule=TapSchedule(()),
+                    dt_s=dt_ctrl,
+                )
+            )
 
         # OFO controllers
         if use_ofo:
@@ -1629,7 +1670,7 @@ def compare_with_ofo(
                 sensitivity_update_interval=ofo_params.sensitivity_update_interval,
                 sensitivity_perturbation_kw=ofo_params.sensitivity_perturbation_kw,
             )
-            for site_id, site_cfg in config.dc_sites.items():
+            for site_id, _site_cfg in config.dc_sites.items():
                 site_models = site_models_map[site_id]
                 ofo_ctrl = OFOBatchSizeController(
                     site_models,
@@ -1651,12 +1692,18 @@ def compare_with_ofo(
         log = coord.run()
 
         stats = compute_allbus_voltage_stats(
-            log.grid_states, v_min=sim.v_min, v_max=sim.v_max,
+            log.grid_states,
+            v_min=sim.v_min,
+            v_max=sim.v_max,
             exclude_buses=exclude_buses,
         )
-        logger.info("    Violation time: %.1f s, Vmin: %.4f, Vmax: %.4f, Integral: %.4f",
-                    stats.violation_time_s, stats.worst_vmin, stats.worst_vmax,
-                    stats.integral_violation_pu_s)
+        logger.info(
+            "    Violation time: %.1f s, Vmin: %.4f, Vmax: %.4f, Integral: %.4f",
+            stats.violation_time_s,
+            stats.worst_vmin,
+            stats.worst_vmax,
+            stats.integral_violation_pu_s,
+        )
         return stats
 
     # Run all three modes
@@ -1670,14 +1717,13 @@ def compare_with_ofo(
 
     # Comparison CSV
     import csv as csv_mod
+
     csv_path = ofo_save_dir / f"ofo_comparison_{system}.csv"
     with open(csv_path, "w", newline="") as f:
         writer = csv_mod.writer(f)
-        writer.writerow(["mode", "violation_time_s", "worst_vmin", "worst_vmax",
-                         "integral_violation_pu_s"])
+        writer.writerow(["mode", "violation_time_s", "worst_vmin", "worst_vmax", "integral_violation_pu_s"])
         for mode_name, s in results.items():
-            writer.writerow([mode_name, s.violation_time_s, s.worst_vmin,
-                             s.worst_vmax, s.integral_violation_pu_s])
+            writer.writerow([mode_name, s.violation_time_s, s.worst_vmin, s.worst_vmax, s.integral_violation_pu_s])
     logger.info("OFO comparison CSV: %s", csv_path)
 
     # Comparison bar chart
@@ -1719,7 +1765,7 @@ def compare_with_ofo(
         "=" * 90,
         f"PV Expansion + OFO Comparison — {system}",
         "=" * 90,
-        f"  PV: {', '.join(f'{b}={c:.0f}kW' for b, c in zip(pv_locations, pv_capacities_kw))}",
+        f"  PV: {', '.join(f'{b}={c:.0f}kW' for b, c in zip(pv_locations, pv_capacities_kw, strict=False))}",
         f"{'Mode':<16s} {'Viol(s)':>10s} {'Vmin':>10s} {'Vmax':>10s} {'Integral':>14s}",
         "-" * 90,
     ]
@@ -1793,7 +1839,7 @@ def main(
     """
     config_path = config_path.resolve()
 
-    from sweep_dc_locations import SweepConfig, _taps_dict_to_position, discover_candidate_buses
+    from sweep_dc_locations import SweepConfig, discover_candidate_buses
 
     config = SweepConfig.model_validate_json(config_path.read_bytes())
     config_dir = config_path.parent
@@ -1805,14 +1851,15 @@ def main(
     save_dir = Path(__file__).resolve().parent / "outputs" / system / "pv_expansion"
     save_dir.mkdir(parents=True, exist_ok=True)
 
-
     # Discover candidate buses
     if buses:
         candidate_buses = buses
     else:
         candidate_buses = discover_candidate_buses(
-            config.ieee_case_dir, config.dss_master_file,
-            default_site.bus_kv, exclude=set(config.exclude_buses),
+            config.ieee_case_dir,
+            config.dss_master_file,
+            default_site.bus_kv,
+            exclude=set(config.exclude_buses),
         )
 
     # Filter to only zoned buses (exclude inter-zone connectors)
@@ -1862,9 +1909,15 @@ def main(
                 "base_kw_per_phase": peak_kw_per_phase,
                 "peak_kw_per_phase": peak_kw_per_phase,
             }
-            logger.info("DC site %s@%s: %d GPUs, peak/base %.0f kW/ph (base %.0f + GPU %.0f)",
-                        sid, s.bus, total_gpus, peak_kw_per_phase,
-                        s.base_kw_per_phase, gpu_kw_per_phase)
+            logger.info(
+                "DC site %s@%s: %d GPUs, peak/base %.0f kW/ph (base %.0f + GPU %.0f)",
+                sid,
+                s.bus,
+                total_gpus,
+                peak_kw_per_phase,
+                s.base_kw_per_phase,
+                gpu_kw_per_phase,
+            )
 
     # ── Build load_configs from config ──
     load_configs: list[tuple[str, float]] = []
@@ -1887,9 +1940,10 @@ def main(
             dc_sites_info.append((dc_bus, dc_peak, dc_base, sid))
             if dc_bus not in load_buses:
                 load_buses.append(dc_bus)
-        logger.info("DC sites for time-varying demand: %s",
-                    ", ".join(f"{b}: peak={pk:.0f}, base={bs:.0f} kW/ph ({sid})"
-                              for b, pk, bs, sid in dc_sites_info))
+        logger.info(
+            "DC sites for time-varying demand: %s",
+            ", ".join(f"{b}: peak={pk:.0f}, base={bs:.0f} kW/ph ({sid})" for b, pk, bs, sid in dc_sites_info),
+        )
 
     # ── Step 2: Generate scenarios (before loop — invariant) ──
     logger.info("")
@@ -1903,11 +1957,15 @@ def main(
     total_weight = sum(sc.weight for sc in scenarios)
     logger.info("Total scenario weight: %.4f (should be 1.0)", total_weight)
     for sc in scenarios:
-        logger.info("  %s: %d steps, weight=%.2f (~%d days/yr), peak PV=%.2f, loads=%d buses",
-                    sc.name, len(sc.hours), sc.weight,
-                    int(sc.weight * 365),
-                    sc.pv_profile.max(),
-                    len(sc.load_kw_per_bus))
+        logger.info(
+            "  %s: %d steps, weight=%.2f (~%d days/yr), peak PV=%.2f, loads=%d buses",
+            sc.name,
+            len(sc.hours),
+            sc.weight,
+            int(sc.weight * 365),
+            sc.pv_profile.max(),
+            len(sc.load_kw_per_bus),
+        )
 
     plot_scenario_profiles(scenarios, save_dir, system, dc_sites_info=dc_sites_info or None)
 
@@ -1992,16 +2050,29 @@ def main(
     logger.info("=" * 70)
     logger.info("STEP 3: Solving PV + tap co-optimisation MILP")
     logger.info("=" * 70)
-    logger.info("  n_pv=%d, s_max=%.0f kW, s_total_max=%s kW, c_inv=%.1f $/kW/yr, c_viol=%.0f",
-                n_pv, s_max_kw, f"{s_total_max_kw:.0f}" if s_total_max_kw else "None",
-                c_inv, c_viol)
+    logger.info(
+        "  n_pv=%d, s_max=%.0f kW, s_total_max=%s kW, c_inv=%.1f $/kW/yr, c_viol=%.0f",
+        n_pv,
+        s_max_kw,
+        f"{s_total_max_kw:.0f}" if s_total_max_kw else "None",
+        c_inv,
+        c_viol,
+    )
     logger.info("  v_min=%.2f, v_max=%.2f, days_per_year=%.0f", v_min, v_max, days_per_year)
 
     result = solve_pv_milp(
-        candidate_buses, H_pv, v0, v_index, scenarios,
-        n_pv=n_pv, s_max_kw=s_max_kw, s_total_max_kw=s_total_max_kw,
-        v_min=v_min, v_max=v_max,
-        c_inv=c_inv, c_viol=c_viol,
+        candidate_buses,
+        H_pv,
+        v0,
+        v_index,
+        scenarios,
+        n_pv=n_pv,
+        s_max_kw=s_max_kw,
+        s_total_max_kw=s_total_max_kw,
+        v_min=v_min,
+        v_max=v_max,
+        c_inv=c_inv,
+        c_viol=c_viol,
         time_limit_s=time_limit_s,
         H_tap=H_tap,
         regulator_names=regulator_names if H_tap is not None else None,
@@ -2013,13 +2084,21 @@ def main(
         zones=config.zones,
     )
 
-    logger.info("  Objective: $%.2f/year  (inv=$%.0f, savings=$%.0f, viol=$%.0f, switch=$%.0f, curtail=%.0f MWh/yr)",
-                result.objective, result.investment_cost,
-                result.operational_savings, result.violation_penalty,
-                result.switching_cost, result.curtailment_mwh)
-    logger.info("  PV: %s", ", ".join(
-        f"{b}={c:.0f}kW" for b, c in zip(result.pv_locations, result.pv_capacities_kw)
-    ) if result.pv_locations else "(none)")
+    logger.info(
+        "  Objective: $%.2f/year  (inv=$%.0f, savings=$%.0f, viol=$%.0f, switch=$%.0f, curtail=%.0f MWh/yr)",
+        result.objective,
+        result.investment_cost,
+        result.operational_savings,
+        result.violation_penalty,
+        result.switching_cost,
+        result.curtailment_mwh,
+    )
+    logger.info(
+        "  PV: %s",
+        ", ".join(f"{b}={c:.0f}kW" for b, c in zip(result.pv_locations, result.pv_capacities_kw, strict=False))
+        if result.pv_locations
+        else "(none)",
+    )
 
     # ── Report results ──
     logger.info("")
@@ -2037,7 +2116,7 @@ def main(
     logger.info("")
     logger.info("  PV Placements:")
     if result.pv_locations:
-        for bus, cap in zip(result.pv_locations, result.pv_capacities_kw):
+        for bus, cap in zip(result.pv_locations, result.pv_capacities_kw, strict=False):
             logger.info("    Bus %-10s  Capacity: %8.1f kW (%.1f kW/phase)", bus, cap, cap / 3)
     else:
         logger.info("    (none)")
@@ -2056,19 +2135,19 @@ def main(
             logger.info("    Scenario: %s (%d distinct tap settings)", sc_name, len(unique_settings))
             for taps_tuple, hours in unique_settings.items():
                 hour_range = f"h{hours[0]}-{hours[-1]}" if len(hours) > 1 else f"h{hours[0]}"
-                taps_str = ", ".join(
-                    f"{r}={t:+d}" for r, t in zip(regulator_names, taps_tuple)
-                )
+                taps_str = ", ".join(f"{r}={t:+d}" for r, t in zip(regulator_names, taps_tuple, strict=False))
                 logger.info("      %s: %s", hour_range, taps_str)
 
     # Save result CSV
     rows = []
     for bus in candidate_buses:
-        rows.append({
-            "bus": bus,
-            "selected": int(result.all_x.get(bus, 0) > 0.5),
-            "capacity_kw": result.all_s.get(bus, 0.0),
-        })
+        rows.append(
+            {
+                "bus": bus,
+                "selected": int(result.all_x.get(bus, 0) > 0.5),
+                "capacity_kw": result.all_s.get(bus, 0.0),
+            }
+        )
     with open(save_dir / f"milp_result_{system}.csv", "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
         writer.writeheader()
@@ -2091,6 +2170,7 @@ def main(
 
     # Save summary JSON
     import json
+
     summary = {
         "status": result.status,
         "objective_dollar_per_year": result.objective,
@@ -2104,9 +2184,14 @@ def main(
         "total_pv_kw": sum(result.pv_capacities_kw),
         "tap_schedules": result.tap_schedules,
         "parameters": {
-            "n_pv": n_pv, "s_max_kw": s_max_kw, "s_total_max_kw": s_total_max_kw,
-            "c_inv": c_inv, "c_viol": c_viol, "c_switch": c_switch,
-            "v_min": v_min, "v_max": v_max,
+            "n_pv": n_pv,
+            "s_max_kw": s_max_kw,
+            "s_total_max_kw": s_total_max_kw,
+            "c_inv": c_inv,
+            "c_viol": c_viol,
+            "c_switch": c_switch,
+            "v_min": v_min,
+            "v_max": v_max,
             "days_per_year": days_per_year,
             "co_optimise_taps": co_optimise_taps,
             "max_tap_delta": max_tap_delta,
@@ -2120,13 +2205,13 @@ def main(
     # ── Plot optimised topology ──
     try:
         import json as _json
+
         from plot_topology import plot_topology
 
         cfg_dict = _json.loads(config_path.read_bytes())
         cfg_dict["pv_systems"] = [
-            {"bus": bus, "bus_kv": default_site.bus_kv,
-             "peak_kw": cap / 3.0, "power_factor": 1.0}
-            for bus, cap in zip(result.pv_locations, result.pv_capacities_kw)
+            {"bus": bus, "bus_kv": default_site.bus_kv, "peak_kw": cap / 3.0, "power_factor": 1.0}
+            for bus, cap in zip(result.pv_locations, result.pv_capacities_kw, strict=False)
         ]
         cfg_dict["ieee_case_dir"] = str(config.ieee_case_dir)
         tmp_config = save_dir / f"_optimized_config_{system}.json"
@@ -2156,12 +2241,10 @@ def main(
             if result.tap_schedules and sc.name in result.tap_schedules:
                 val_schedule = result.tap_schedules[sc.name]
                 # Show summary
-                unique = len(set(
-                    tuple(sorted(taps.items()))
-                    for taps in val_schedule.values()
-                ))
-                logger.info("  Validating %s with %d distinct tap settings across %d hours",
-                            sc.name, unique, len(val_schedule))
+                unique = len(set(tuple(sorted(taps.items())) for taps in val_schedule.values()))
+                logger.info(
+                    "  Validating %s with %d distinct tap settings across %d hours", sc.name, unique, len(val_schedule)
+                )
 
             vr = validate_with_opendss(
                 case_dir=config.ieee_case_dir,

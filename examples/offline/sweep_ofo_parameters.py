@@ -45,10 +45,13 @@ from typing import Literal
 
 import numpy as np
 import pandas as pd
+from plot_all_figures import (
+    extract_per_model_timeseries,
+    plot_allbus_voltages_per_phase,
+    plot_model_timeseries_4panel,
+)
 from pydantic import BaseModel, model_validator
 
-from openg2g.clock import SimulationClock
-from openg2g.common import ThreePhase
 from openg2g.controller.ofo import (
     LogisticModelStore,
     OFOBatchSizeController,
@@ -65,28 +68,20 @@ from openg2g.datacenter.config import (
 from openg2g.datacenter.offline import OfflineDatacenter, OfflineWorkload
 from openg2g.datacenter.workloads.inference import InferenceData, MLEnergySource
 from openg2g.datacenter.workloads.training import TrainingTrace, TrainingTraceParams
-from openg2g.events import EventEmitter
-from openg2g.grid.base import GridState
 from openg2g.grid.config import DCLoadSpec, TapPosition
 from openg2g.grid.opendss import OpenDSSGrid
 from openg2g.metrics.voltage import compute_allbus_voltage_stats
-
-from plot_all_figures import (
-    extract_per_model_timeseries,
-    plot_allbus_voltages_per_phase,
-    plot_model_timeseries_4panel,
-)
 
 logger = logging.getLogger("sweep_ofo")
 
 # ── Default sweep multipliers (centred on baseline value) ────────────────────
 
 DEFAULT_SWEEP_MULTIPLIERS: dict[str, list[float]] = {
-    "primal_step_size":       [0.2, 0.5, 1.0, 2.0, 5.0],
+    "primal_step_size": [0.2, 0.5, 1.0, 2.0, 5.0],
     "voltage_dual_step_size": [0.2, 0.5, 1.0, 2.0, 5.0],
     "latency_dual_step_size": [0.1, 1.0, 10.0, 50.0, 100.0],
-    "w_throughput":           [0.0, 0.1, 0.5, 1.0, 5.0, 10.0],
-    "w_switch":               [0.2, 0.5, 1.0, 2.0, 5.0],
+    "w_throughput": [0.0, 0.1, 0.5, 1.0, 5.0, 10.0],
+    "w_switch": [0.2, 0.5, 1.0, 2.0, 5.0],
 }
 
 
@@ -160,11 +155,8 @@ def build_sweep_grid_2d(
 
     for param_name, values in param_values.items():
         for combo in itertools.product(values, repeat=len(site_ids)):
-            site_values = dict(zip(site_ids, combo))
-            site_configs = {
-                sid: baseline.model_copy(update={param_name: val})
-                for sid, val in site_values.items()
-            }
+            site_values = dict(zip(site_ids, combo, strict=False))
+            site_configs = {sid: baseline.model_copy(update={param_name: val}) for sid, val in site_values.items()}
             runs.append((param_name, site_values, site_configs))
 
     return runs
@@ -352,15 +344,14 @@ class SweepConfig(BaseModel):
     inference_ramp: InferenceRampConfig | None = None
     simulation: SimulationParams = SimulationParams()
     power_augmentation: PowerAugmentationConfig = PowerAugmentationConfig(
-        amplitude_scale_range=(0.98, 1.02), noise_fraction=0.005,
+        amplitude_scale_range=(0.98, 1.02),
+        noise_fraction=0.005,
     )
 
     @model_validator(mode="after")
     def _default_dc_site(self) -> SweepConfig:
         if self.dc_sites is None:
-            self.dc_sites = {
-                "default": DCSiteConfig(bus="671", bus_kv=4.16, base_kw_per_phase=500.0)
-            }
+            self.dc_sites = {"default": DCSiteConfig(bus="671", bus_kv=4.16, base_kw_per_phase=500.0)}
         return self
 
     @property
@@ -387,15 +378,9 @@ class ScenarioOpenDSSGrid(OpenDSSGrid):
         self._load_specs = list(time_varying_loads or [])
         self._source_pu = source_pu
 
-        self._pv_csv = [
-            load_csv_profile(s.csv_path) if s.csv_path else None for s in self._pv_specs
-        ]
-        self._load_csv = [
-            load_csv_profile(s.csv_path) if s.csv_path else None for s in self._load_specs
-        ]
-        self._pv_load_names = [
-            (f"PV_{i}_A", f"PV_{i}_B", f"PV_{i}_C") for i in range(len(self._pv_specs))
-        ]
+        self._pv_csv = [load_csv_profile(s.csv_path) if s.csv_path else None for s in self._pv_specs]
+        self._load_csv = [load_csv_profile(s.csv_path) if s.csv_path else None for s in self._load_specs]
+        self._pv_load_names = [(f"PV_{i}_A", f"PV_{i}_B", f"PV_{i}_C") for i in range(len(self._pv_specs))]
         self._ext_load_names = [
             (f"ExtLoad_{i}_A", f"ExtLoad_{i}_B", f"ExtLoad_{i}_C") for i in range(len(self._load_specs))
         ]
@@ -409,7 +394,7 @@ class ScenarioOpenDSSGrid(OpenDSSGrid):
 
         for i, spec in enumerate(self._pv_specs):
             kv_ln = spec.bus_kv / math.sqrt(3.0)
-            for ph, name in zip((1, 2, 3), self._pv_load_names[i]):
+            for ph, name in zip((1, 2, 3), self._pv_load_names[i], strict=False):
                 dss.Text.Command(
                     f"New Load.{name} bus1={spec.bus}.{ph} phases=1 "
                     f"conn=wye kV={kv_ln:.6f} kW=0 kvar=0 model=1 vminpu=0.85"
@@ -417,7 +402,7 @@ class ScenarioOpenDSSGrid(OpenDSSGrid):
 
         for i, spec in enumerate(self._load_specs):
             kv_ln = spec.bus_kv / math.sqrt(3.0)
-            for ph, name in zip((1, 2, 3), self._ext_load_names[i]):
+            for ph, name in zip((1, 2, 3), self._ext_load_names[i], strict=False):
                 dss.Text.Command(
                     f"New Load.{name} bus1={spec.bus}.{ph} phases=1 "
                     f"conn=wye kV={kv_ln:.6f} kW=0 kvar=0 model=1 vminpu=0.85"
@@ -428,8 +413,11 @@ class ScenarioOpenDSSGrid(OpenDSSGrid):
 
         for i, spec in enumerate(self._pv_specs):
             kw = eval_profile(
-                clock.time_s, peak_kw=spec.peak_kw, csv_data=self._pv_csv[i],
-                profile_fn=pv_profile_kw, site_idx=i,
+                clock.time_s,
+                peak_kw=spec.peak_kw,
+                csv_data=self._pv_csv[i],
+                profile_fn=pv_profile_kw,
+                site_idx=i,
             )
             pf = max(min(spec.power_factor, 0.999999), 1e-6)
             kvar = kw * math.tan(math.acos(pf))
@@ -440,8 +428,11 @@ class ScenarioOpenDSSGrid(OpenDSSGrid):
 
         for i, spec in enumerate(self._load_specs):
             kw = eval_profile(
-                clock.time_s, peak_kw=spec.peak_kw, csv_data=self._load_csv[i],
-                profile_fn=load_profile_kw, site_idx=i,
+                clock.time_s,
+                peak_kw=spec.peak_kw,
+                csv_data=self._load_csv[i],
+                profile_fn=load_profile_kw,
+                site_idx=i,
             )
             pf = max(min(spec.power_factor, 0.999999), 1e-6)
             kvar = kw * math.tan(math.acos(pf))
@@ -526,9 +517,7 @@ def _collect_metrics(
             itl = per_model.itl_s.get(label, np.array([]))
             deadline = deadlines.get(label, float("nan"))
             finite = itl[np.isfinite(itl)]
-            row[f"itl_violation_frac__{label}"] = (
-                float(np.mean(finite > deadline)) if finite.size > 0 else float("nan")
-            )
+            row[f"itl_violation_frac__{label}"] = float(np.mean(finite > deadline)) if finite.size > 0 else float("nan")
 
             # Average throughput (tokens/s) = batch_size * active_replicas / itl
             wrep = per_model.active_replicas.get(label, np.array([]))
@@ -691,7 +680,7 @@ def _plot_sweep_summary_2d(
             # ── Voltage metrics heatmap ──────────────────────────────
             fig, axes = plt.subplots(2, 2, figsize=(14, 12), dpi=150)
 
-            for ax, (metric_col, metric_label) in zip(axes.flat, voltage_metrics):
+            for ax, (metric_col, metric_label) in zip(axes.flat, voltage_metrics, strict=False):
                 if metric_col not in sub.columns:
                     ax.set_visible(False)
                     continue
@@ -701,7 +690,9 @@ def _plot_sweep_summary_2d(
                     continue
 
                 im = ax.imshow(
-                    hgrid, origin="lower", aspect="auto",
+                    hgrid,
+                    origin="lower",
+                    aspect="auto",
                     extent=[-0.5, len(vals0) - 0.5, -0.5, len(vals1) - 0.5],
                 )
                 ax.set_xticks(range(len(vals0)))
@@ -719,14 +710,19 @@ def _plot_sweep_summary_2d(
                         val = hgrid[i1_idx, i0_idx]
                         if np.isfinite(val):
                             ax.text(
-                                i0_idx, i1_idx, f"{val:.2g}",
-                                ha="center", va="center", fontsize=7,
+                                i0_idx,
+                                i1_idx,
+                                f"{val:.2g}",
+                                ha="center",
+                                va="center",
+                                fontsize=7,
                                 color="white" if val > median else "black",
                             )
 
             fig.suptitle(
                 f"OFO Sweep: {param} ({s0} vs {s1}){agg_note}",
-                fontsize=14, fontweight="bold",
+                fontsize=14,
+                fontweight="bold",
             )
             fig.tight_layout(rect=[0, 0, 1, 0.96])
             fig.savefig(save_dir / f"sweep_2d_{param}_{pair_tag}.png", bbox_inches="tight")
@@ -759,7 +755,9 @@ def _plot_sweep_summary_2d(
                     continue
 
                 im = ax.imshow(
-                    hgrid, origin="lower", aspect="auto",
+                    hgrid,
+                    origin="lower",
+                    aspect="auto",
                     extent=[-0.5, len(vals0) - 0.5, -0.5, len(vals1) - 0.5],
                 )
                 ax.set_xticks(range(len(vals0)))
@@ -776,7 +774,8 @@ def _plot_sweep_summary_2d(
 
             fig.suptitle(
                 f"OFO Sweep (per-model): {param} ({s0} vs {s1}){agg_note}",
-                fontsize=14, fontweight="bold",
+                fontsize=14,
+                fontweight="bold",
             )
             fig.tight_layout(rect=[0, 0, 1, 0.96])
             fig.savefig(save_dir / f"sweep_2d_{param}_{pair_tag}_models.png", bbox_inches="tight")
@@ -786,6 +785,7 @@ def _plot_sweep_summary_2d(
 
 def _make_bus_color_map(buses: list[str]) -> dict[str, tuple[float, ...]]:
     import matplotlib.pyplot as plt
+
     cmap = plt.get_cmap("tab20")
     color_map = {}
     for i, bus in enumerate(sorted(buses, key=lambda b: b.lower())):
@@ -889,8 +889,12 @@ def _setup(
 
     logger.info("Loading inference data...")
     inference_data = InferenceData.ensure(
-        data_dir, all_models, data_sources,
-        mlenergy_data_dir=config.mlenergy_data_dir, plot=False, dt_s=data_dt,
+        data_dir,
+        all_models,
+        data_sources,
+        mlenergy_data_dir=config.mlenergy_data_dir,
+        plot=False,
+        dt_s=data_dt,
     )
 
     logger.info("Loading training trace...")
@@ -898,8 +902,11 @@ def _setup(
 
     logger.info("Loading logistic fits...")
     logistic_models = LogisticModelStore.ensure(
-        data_dir / "logistic_fits.csv", all_models, data_sources,
-        mlenergy_data_dir=config.mlenergy_data_dir, plot=False,
+        data_dir / "logistic_fits.csv",
+        all_models,
+        data_sources,
+        mlenergy_data_dir=config.mlenergy_data_dir,
+        plot=False,
     )
 
     # ── Build baseline OFOConfig ─────────────────────────────────────────
@@ -940,23 +947,29 @@ def _setup(
         if config.training is not None:
             tc = config.training
             workload_kwargs["training"] = TrainingRun(
-                n_gpus=tc.n_gpus, trace=training_trace,
+                n_gpus=tc.n_gpus,
+                trace=training_trace,
                 target_peak_W_per_gpu=tc.target_peak_W_per_gpu,
             ).at(t_start=tc.t_start, t_end=tc.t_end)
         if config.inference_ramp is not None:
             rc = config.inference_ramp
             workload_kwargs["inference_ramps"] = InferenceRamp(target=rc.target, model=rc.model).at(
-                t_start=rc.t_start, t_end=rc.t_end,
+                t_start=rc.t_start,
+                t_end=rc.t_end,
             )
         workload = OfflineWorkload(**workload_kwargs)
 
         dc = OfflineDatacenter(
-            dc_config, workload, dt_s=dt_dc, seed=site_cfg.seed,
+            dc_config,
+            workload,
+            dt_s=dt_dc,
+            seed=site_cfg.seed,
             power_augmentation=config.power_augmentation,
         )
         datacenters[site_id] = dc
         dc_loads[site_id] = DCLoadSpec(
-            bus=site_cfg.bus, bus_kv=site_cfg.bus_kv,
+            bus=site_cfg.bus,
+            bus_kv=site_cfg.bus_kv,
             connection_type=site_cfg.connection_type,
         )
         if not primary_bus:
@@ -1018,7 +1031,7 @@ def _run_single_sim(
 ):
     """Run one simulation with per-site OFO configs. Returns (log, wall_time_s)."""
     controllers = []
-    for site_id, site_cfg in config.dc_sites.items():
+    for site_id, _site_cfg in config.dc_sites.items():
         site_models = site_models_map[site_id]
         ofo_cfg = site_ofo_cfgs[site_id]
         ofo_ctrl = OFOBatchSizeController(
@@ -1052,9 +1065,13 @@ def _run_single_sim(
     wall_time_s = time.monotonic() - t0
 
     _save_plots(
-        log, run_dir=run_dir, site_models_map=site_models_map,
+        log,
+        run_dir=run_dir,
+        site_models_map=site_models_map,
         site_bus_map=site_bus_map,
-        v_min=sim.v_min, v_max=sim.v_max, exclude_buses=exclude_buses,
+        v_min=sim.v_min,
+        v_max=sim.v_max,
+        exclude_buses=exclude_buses,
     )
 
     return log, wall_time_s
@@ -1081,7 +1098,8 @@ def _run_sweep_1d(ctx: dict) -> None:
             # All sites use the same OFO config in 1-D mode
             site_ofo_cfgs = {sid: ofo_cfg for sid in ctx["site_ids"]}
             log, wall_time_s = _run_single_sim(
-                config=ctx["config"], sim=sim,
+                config=ctx["config"],
+                sim=sim,
                 site_ofo_cfgs=site_ofo_cfgs,
                 logistic_models=ctx["logistic_models"],
                 site_models_map=ctx["site_models_map"],
@@ -1096,16 +1114,22 @@ def _run_sweep_1d(ctx: dict) -> None:
             )
 
             row = _collect_metrics(
-                log, models=all_models, wall_time_s=wall_time_s,
-                param_name=param_name, param_value=param_value,
-                v_min=sim.v_min, v_max=sim.v_max,
+                log,
+                models=all_models,
+                wall_time_s=wall_time_s,
+                param_name=param_name,
+                param_value=param_value,
+                v_min=sim.v_min,
+                v_max=sim.v_max,
                 exclude_buses=ctx["exclude_buses"],
             )
             rows.append(row)
             logger.info(
                 "  -> violation_time=%.1fs  integral_viol=%.4f pu·s  worst_vmin=%.4f  wall=%.1fs",
-                row["violation_time_s"], row["integral_violation_pu_s"],
-                row["worst_vmin"], row["wall_time_s"],
+                row["violation_time_s"],
+                row["integral_violation_pu_s"],
+                row["worst_vmin"],
+                row["wall_time_s"],
             )
         except Exception:
             logger.exception("Run %s failed; skipping.", rid)
@@ -1140,7 +1164,10 @@ def _run_sweep_2d(ctx: dict) -> None:
 
     logger.info(
         "2-D sweep: %d runs across %d parameters, %d sites (%s)",
-        total, len(DEFAULT_SWEEP_MULTIPLIERS), len(site_ids), ", ".join(site_ids),
+        total,
+        len(DEFAULT_SWEEP_MULTIPLIERS),
+        len(site_ids),
+        ", ".join(site_ids),
     )
 
     rows: list[dict] = []
@@ -1152,7 +1179,8 @@ def _run_sweep_2d(ctx: dict) -> None:
 
         try:
             log, wall_time_s = _run_single_sim(
-                config=ctx["config"], sim=sim,
+                config=ctx["config"],
+                sim=sim,
                 site_ofo_cfgs=site_ofo_cfgs,
                 logistic_models=ctx["logistic_models"],
                 site_models_map=ctx["site_models_map"],
@@ -1167,9 +1195,13 @@ def _run_sweep_2d(ctx: dict) -> None:
             )
 
             row = _collect_metrics(
-                log, models=all_models, wall_time_s=wall_time_s,
-                param_name=param_name, param_value=0.0,  # placeholder
-                v_min=sim.v_min, v_max=sim.v_max,
+                log,
+                models=all_models,
+                wall_time_s=wall_time_s,
+                param_name=param_name,
+                param_value=0.0,  # placeholder
+                v_min=sim.v_min,
+                v_max=sim.v_max,
                 exclude_buses=ctx["exclude_buses"],
             )
             # Add per-site parameter values
@@ -1181,8 +1213,10 @@ def _run_sweep_2d(ctx: dict) -> None:
 
             logger.info(
                 "  -> violation_time=%.1fs  integral_viol=%.4f pu·s  worst_vmin=%.4f  wall=%.1fs",
-                row["violation_time_s"], row["integral_violation_pu_s"],
-                row["worst_vmin"], row["wall_time_s"],
+                row["violation_time_s"],
+                row["integral_violation_pu_s"],
+                row["worst_vmin"],
+                row["wall_time_s"],
             )
         except Exception:
             logger.exception("Run %s failed; skipping.", rid)
@@ -1214,8 +1248,10 @@ def main(
     output_dir: str | None = None,
 ) -> None:
     ctx = _setup(
-        config_path=config_path, system=system,
-        dt_override=dt_override, output_dir=output_dir,
+        config_path=config_path,
+        system=system,
+        dt_override=dt_override,
+        output_dir=output_dir,
     )
 
     n_sites = len(ctx["site_ids"])
@@ -1227,10 +1263,9 @@ def main(
     else:
         use_2d = False
 
-    if use_2d:
-        if n_sites < 2:
-            logger.warning("2-D sweep requested but only %d DC site(s); falling back to 1-D.", n_sites)
-            use_2d = False
+    if use_2d and n_sites < 2:
+        logger.warning("2-D sweep requested but only %d DC site(s); falling back to 1-D.", n_sites)
+        use_2d = False
 
     # Append _1d or _2d to output directory if using default path
     if output_dir is None:

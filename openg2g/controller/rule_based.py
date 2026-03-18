@@ -92,15 +92,16 @@ class RuleBasedBatchSizeController(
             self._itl_deadline[ms.model_label] = ms.itl_deadline_s
 
         # Continuous state: log2(batch) per model (for smooth proportional control)
-        self._log2_batch: dict[str, float] = {
-            ms.model_label: math.log2(ms.initial_batch_size) for ms in model_specs
-        }
+        self._log2_batch: dict[str, float] = {ms.model_label: math.log2(ms.initial_batch_size) for ms in model_specs}
 
         logger.info(
-            "RuleBasedBatchSizeController: %d models, dt=%s s, step_size=%.2f, "
-            "deadband=%.4f, v=[%.2f, %.2f]",
-            len(model_specs), dt_s, config.step_size, config.deadband,
-            config.v_min, config.v_max,
+            "RuleBasedBatchSizeController: %d models, dt=%s s, step_size=%.2f, deadband=%.4f, v=[%.2f, %.2f]",
+            len(model_specs),
+            dt_s,
+            config.step_size,
+            config.deadband,
+            config.v_min,
+            config.v_max,
         )
 
     @property
@@ -112,9 +113,7 @@ class RuleBasedBatchSizeController(
         return self._dt_s
 
     def reset(self) -> None:
-        self._log2_batch = {
-            ms.model_label: math.log2(ms.initial_batch_size) for ms in self._models
-        }
+        self._log2_batch = {ms.model_label: math.log2(ms.initial_batch_size) for ms in self._models}
 
     def step(
         self,
@@ -131,7 +130,7 @@ class RuleBasedBatchSizeController(
 
         # ── 1. Find worst voltage violation ──
         worst_under = 0.0  # magnitude of worst undervoltage (positive)
-        worst_over = 0.0   # magnitude of worst overvoltage (positive)
+        worst_over = 0.0  # magnitude of worst overvoltage (positive)
 
         for bus in voltages.buses():
             if bus.lower() in self._exclude_lower:
@@ -186,7 +185,7 @@ class RuleBasedBatchSizeController(
                     new_log2 = log2_b  # revert
 
             # Snap to nearest feasible batch size
-            target = 2.0 ** new_log2
+            target = 2.0**new_log2
             best = min(feasible, key=lambda b: abs(b - target))
 
             # Keep continuous state for accumulation; only snap for the command

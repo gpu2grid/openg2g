@@ -9,8 +9,6 @@ is not available or crashes, the entire test module is skipped.
 
 from __future__ import annotations
 
-import json
-import math
 import sys
 from pathlib import Path
 
@@ -27,16 +25,11 @@ if str(_examples_dir) not in sys.path:
 # or crashes (common on some Windows environments), skip the entire module.
 try:
     from sweep_dc_locations import (
+        TAP_STEP,
         DCSiteConfig,
-        PVSystemConfig,
-        ScenarioOpenDSSGrid,
         SimulationParams,
         SweepConfig,
-        TAP_STEP,
-        TimeVaryingLoadConfig,
-        TapScheduleEntry,
         _build_ofo_config,
-        _build_workload_kwargs,
         _extract_scenario_base_taps,
         _parse_fraction,
         _parse_tap,
@@ -45,11 +38,11 @@ try:
         _taps_dict_to_position,
         discover_candidate_buses,
         eval_profile,
-        extract_all_voltages,
         find_violations,
         load_profile_kw,
         pv_profile_kw,
     )
+
     from openg2g.grid.config import TapPosition
 
     CAN_IMPORT = True
@@ -118,6 +111,7 @@ class TestParseFraction:
 
     def test_fraction_value(self):
         from fractions import Fraction
+
         assert _parse_fraction("1/10") == Fraction(1, 10)
 
 
@@ -157,8 +151,24 @@ class TestResolveModels:
         from openg2g.datacenter.config import InferenceModelSpec
 
         models = (
-            InferenceModelSpec(model_label="A", model_id="a", gpus_per_replica=1, initial_num_replicas=1, initial_batch_size=8, itl_deadline_s=0.1, feasible_batch_sizes=[8]),
-            InferenceModelSpec(model_label="B", model_id="b", gpus_per_replica=1, initial_num_replicas=1, initial_batch_size=8, itl_deadline_s=0.1, feasible_batch_sizes=[8]),
+            InferenceModelSpec(
+                model_label="A",
+                model_id="a",
+                gpus_per_replica=1,
+                initial_num_replicas=1,
+                initial_batch_size=8,
+                itl_deadline_s=0.1,
+                feasible_batch_sizes=[8],
+            ),
+            InferenceModelSpec(
+                model_label="B",
+                model_id="b",
+                gpus_per_replica=1,
+                initial_num_replicas=1,
+                initial_batch_size=8,
+                itl_deadline_s=0.1,
+                feasible_batch_sizes=[8],
+            ),
         )
         site = DCSiteConfig(bus="x", models=None)
         result = _resolve_models_for_site(site, models)
@@ -168,8 +178,24 @@ class TestResolveModels:
         from openg2g.datacenter.config import InferenceModelSpec
 
         models = (
-            InferenceModelSpec(model_label="A", model_id="a", gpus_per_replica=1, initial_num_replicas=1, initial_batch_size=8, itl_deadline_s=0.1, feasible_batch_sizes=[8]),
-            InferenceModelSpec(model_label="B", model_id="b", gpus_per_replica=1, initial_num_replicas=1, initial_batch_size=8, itl_deadline_s=0.1, feasible_batch_sizes=[8]),
+            InferenceModelSpec(
+                model_label="A",
+                model_id="a",
+                gpus_per_replica=1,
+                initial_num_replicas=1,
+                initial_batch_size=8,
+                itl_deadline_s=0.1,
+                feasible_batch_sizes=[8],
+            ),
+            InferenceModelSpec(
+                model_label="B",
+                model_id="b",
+                gpus_per_replica=1,
+                initial_num_replicas=1,
+                initial_batch_size=8,
+                itl_deadline_s=0.1,
+                feasible_batch_sizes=[8],
+            ),
         )
         site = DCSiteConfig(bus="x", models=["B"])
         result = _resolve_models_for_site(site, models)
@@ -180,7 +206,15 @@ class TestResolveModels:
         from openg2g.datacenter.config import InferenceModelSpec
 
         models = (
-            InferenceModelSpec(model_label="A", model_id="a", gpus_per_replica=1, initial_num_replicas=1, initial_batch_size=8, itl_deadline_s=0.1, feasible_batch_sizes=[8]),
+            InferenceModelSpec(
+                model_label="A",
+                model_id="a",
+                gpus_per_replica=1,
+                initial_num_replicas=1,
+                initial_batch_size=8,
+                itl_deadline_s=0.1,
+                feasible_batch_sizes=[8],
+            ),
         )
         site = DCSiteConfig(bus="x", models=["Z"])
         with pytest.raises(ValueError, match="unknown model labels"):
@@ -315,6 +349,7 @@ class TestExtractScenarioBaseTaps:
 class TestBuildOFOConfig:
     def test_builds(self):
         from sweep_dc_locations import OFOParams
+
         ofo_params = OFOParams()
         sim = SimulationParams()
         ofo_config = _build_ofo_config(ofo_params, sim)
@@ -336,7 +371,9 @@ class TestDiscoverCandidateBusesIEEE13:
         if not IEEE13_DIR.exists():
             pytest.skip("IEEE 13 grid data not available")
         buses = discover_candidate_buses(
-            IEEE13_DIR, "IEEE13Nodeckt.dss", 4.16,
+            IEEE13_DIR,
+            "IEEE13Nodeckt.dss",
+            4.16,
             exclude={"sourcebus", "650", "rg60"},
         )
         assert len(buses) > 0
@@ -346,7 +383,9 @@ class TestDiscoverCandidateBusesIEEE13:
         if not IEEE13_DIR.exists():
             pytest.skip("IEEE 13 grid data not available")
         buses = discover_candidate_buses(
-            IEEE13_DIR, "IEEE13Nodeckt.dss", 4.16,
+            IEEE13_DIR,
+            "IEEE13Nodeckt.dss",
+            4.16,
             exclude={"sourcebus", "650", "rg60"},
         )
         assert "sourcebus" not in [b.lower() for b in buses]
@@ -358,7 +397,9 @@ class TestDiscoverCandidateBusesIEEE34:
         if not IEEE34_DIR.exists():
             pytest.skip("IEEE 34 grid data not available")
         buses = discover_candidate_buses(
-            IEEE34_DIR, "ieee34Mod1_halfline.dss", 24.9,
+            IEEE34_DIR,
+            "ieee34Mod1_halfline.dss",
+            24.9,
             exclude={"sourcebus", "800", "802", "806", "808", "810", "812", "814", "888", "890"},
         )
         assert len(buses) >= 2
@@ -367,7 +408,9 @@ class TestDiscoverCandidateBusesIEEE34:
         if not IEEE34_DIR.exists():
             pytest.skip("IEEE 34 grid data not available")
         buses = discover_candidate_buses(
-            IEEE34_DIR, "ieee34Mod1_halfline.dss", 24.9,
+            IEEE34_DIR,
+            "ieee34Mod1_halfline.dss",
+            24.9,
             exclude={"sourcebus"},
         )
         assert len(buses) > 0

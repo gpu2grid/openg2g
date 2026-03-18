@@ -12,27 +12,25 @@ Usage:
 from __future__ import annotations
 
 import csv
-import json
 import logging
 import math
 from fractions import Fraction
 from pathlib import Path
 
 import matplotlib
+
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
-
 from sweep_dc_locations import (
-    SweepConfig,
     ScenarioOpenDSSGrid,
+    SweepConfig,
+    _build_workload_kwargs,
     _parse_fraction,
     _resolve_models_for_site,
     _taps_dict_to_position,
-    _build_workload_kwargs,
-    InferenceRampConfig,
-    discover_candidate_buses,
 )
+
 from openg2g.controller.ofo import (
     LogisticModelStore,
     OFOBatchSizeController,
@@ -44,15 +42,11 @@ from openg2g.coordinator import Coordinator
 from openg2g.datacenter.config import (
     DatacenterConfig,
     InferenceModelSpec,
-    InferenceRamp,
-    PowerAugmentationConfig,
-    TrainingRun,
 )
 from openg2g.datacenter.offline import OfflineDatacenter, OfflineWorkload
 from openg2g.datacenter.workloads.inference import InferenceData
-from openg2g.datacenter.workloads.training import TrainingTrace, TrainingTraceParams
+from openg2g.datacenter.workloads.training import TrainingTrace
 from openg2g.grid.config import DCLoadSpec, TapPosition, TapSchedule
-from openg2g.grid.opendss import OpenDSSGrid
 from openg2g.metrics.voltage import VoltageStats, compute_allbus_voltage_stats
 
 logger = logging.getLogger("controller_comparison")
@@ -95,27 +89,32 @@ def run_simulation(
     for site_id, site_cfg in config.dc_sites.items():
         site_models = _resolve_models_for_site(site_cfg, all_models)
         site_models_map[site_id] = site_models
-        site_inference = (
-            inference_data.filter_models(site_models) if site_cfg.models else inference_data
-        )
+        site_inference = inference_data.filter_models(site_models) if site_cfg.models else inference_data
 
         dc_config = DatacenterConfig(
-            gpus_per_server=8, base_kw_per_phase=site_cfg.base_kw_per_phase,
+            gpus_per_server=8,
+            base_kw_per_phase=site_cfg.base_kw_per_phase,
         )
         workload_kwargs = _build_workload_kwargs(
-            config, site_inference, training_trace,
+            config,
+            site_inference,
+            training_trace,
             site_ramps=site_cfg.inference_ramps if site_cfg.inference_ramps else None,
         )
         workload = OfflineWorkload(**workload_kwargs)
 
         dc = OfflineDatacenter(
-            dc_config, workload, dt_s=dt_dc, seed=site_cfg.seed,
+            dc_config,
+            workload,
+            dt_s=dt_dc,
+            seed=site_cfg.seed,
             power_augmentation=config.power_augmentation,
             total_gpu_capacity=site_cfg.total_gpu_capacity,
         )
         datacenters[site_id] = dc
         dc_loads[site_id] = DCLoadSpec(
-            bus=site_cfg.bus, bus_kv=site_cfg.bus_kv,
+            bus=site_cfg.bus,
+            bus_kv=site_cfg.bus_kv,
             connection_type=site_cfg.connection_type,
         )
         if not primary_bus:
@@ -191,7 +190,8 @@ def run_simulation(
 
     elif mode == "rule_based":
         rb_config = rule_based_config or RuleBasedConfig(
-            v_min=sim.v_min, v_max=sim.v_max,
+            v_min=sim.v_min,
+            v_max=sim.v_max,
         )
         for site_id in site_ids:
             rb_ctrl = RuleBasedBatchSizeController(
@@ -217,13 +217,18 @@ def run_simulation(
     log = coord.run()
 
     vstats = compute_allbus_voltage_stats(
-        log.grid_states, v_min=sim.v_min, v_max=sim.v_max,
+        log.grid_states,
+        v_min=sim.v_min,
+        v_max=sim.v_max,
         exclude_buses=exclude_buses,
     )
     logger.info(
         "  %s: viol=%.1fs  integral=%.4f  vmin=%.4f  vmax=%.4f",
-        mode, vstats.violation_time_s, vstats.integral_violation_pu_s,
-        vstats.worst_vmin, vstats.worst_vmax,
+        mode,
+        vstats.violation_time_s,
+        vstats.integral_violation_pu_s,
+        vstats.worst_vmin,
+        vstats.worst_vmax,
     )
 
     return vstats, log
@@ -249,7 +254,7 @@ def plot_voltage_comparison(
 
     drop = {b.lower() for b in exclude_buses}
 
-    for ax, mode in zip(axes, modes):
+    for ax, mode in zip(axes, modes, strict=False):
         log = logs[mode]
         time_s = np.array(log.time_s)
 
@@ -300,9 +305,13 @@ def plot_batch_comparison(
         break  # only need one log to get model names
 
     n_models = len(all_models)
-    n_modes = len(modes)
+    len(modes)
     fig, axes = plt.subplots(
-        n_models, 1, figsize=(12, 3 * n_models), sharex=True, squeeze=False,
+        n_models,
+        1,
+        figsize=(12, 3 * n_models),
+        sharex=True,
+        squeeze=False,
     )
 
     colors = ["#999999", "#4CAF50", "#2196F3", "#FF9800", "#E91E63"]
@@ -313,8 +322,14 @@ def plot_batch_comparison(
             log = logs[mode]
             times = [s.time_s for s in log.dc_states]
             batches = [s.batch_size_by_model.get(model_label, 0) for s in log.dc_states]
-            ax.plot(times, batches, color=colors[i % len(colors)],
-                    linewidth=1, alpha=0.8, label=mode.replace("_", " ").title())
+            ax.plot(
+                times,
+                batches,
+                color=colors[i % len(colors)],
+                linewidth=1,
+                alpha=0.8,
+                label=mode.replace("_", " ").title(),
+            )
         ax.set_ylabel("Batch Size")
         ax.set_title(model_label, fontsize=11)
         ax.legend(fontsize=8, loc="upper right")
@@ -401,32 +416,37 @@ def main(
     # Load data
     logger.info("Loading data...")
     inference_data = InferenceData.ensure(
-        data_dir, all_models,
+        data_dir,
+        all_models,
         {s.model_label: s for s in config.data_sources},
         mlenergy_data_dir=config.mlenergy_data_dir,
-        plot=False, dt_s=float(dt_dc),
+        plot=False,
+        dt_s=float(dt_dc),
     )
     training_trace = TrainingTrace.ensure(
-        data_dir / "training_trace.csv", config.training_trace_params,
+        data_dir / "training_trace.csv",
+        config.training_trace_params,
     )
     logistic_models = LogisticModelStore.ensure(
-        data_dir / "logistic_fits.csv", all_models,
+        data_dir / "logistic_fits.csv",
+        all_models,
         {s.model_label: s for s in config.data_sources},
-        mlenergy_data_dir=config.mlenergy_data_dir, plot=False,
+        mlenergy_data_dir=config.mlenergy_data_dir,
+        plot=False,
     )
 
     # Build tap schedule from config (if present)
     tap_schedule = None
     if config.tap_schedule:
-        from sweep_dc_locations import _taps_dict_to_position as _tdtp, TAP_STEP
+        from sweep_dc_locations import TAP_STEP
+
         entries = []
         for entry in config.tap_schedule:
             t = entry.t
             extras = entry.model_extra or {}
-            tap_pos = TapPosition(regulators={
-                k: (1.0 + int(v) * TAP_STEP if isinstance(v, str) else float(v))
-                for k, v in extras.items()
-            })
+            tap_pos = TapPosition(
+                regulators={k: (1.0 + int(v) * TAP_STEP if isinstance(v, str) else float(v)) for k, v in extras.items()}
+            )
             entries.append((t, tap_pos))
         if entries:
             tap_schedule = TapSchedule(tuple(entries))
@@ -475,32 +495,36 @@ def main(
     logger.info("=" * 80)
     logger.info(
         "%-15s %12s %12s %12s %12s",
-        "Mode", "Viol(s)", "Integral", "Worst Vmin", "Worst Vmax",
+        "Mode",
+        "Viol(s)",
+        "Integral",
+        "Worst Vmin",
+        "Worst Vmax",
     )
     logger.info("-" * 80)
     for mode in modes:
         s = all_stats[mode]
         logger.info(
             "%-15s %12.1f %12.4f %12.4f %12.4f",
-            mode, s.violation_time_s, s.integral_violation_pu_s,
-            s.worst_vmin, s.worst_vmax,
+            mode,
+            s.violation_time_s,
+            s.integral_violation_pu_s,
+            s.worst_vmin,
+            s.worst_vmax,
         )
 
     # ── Save results CSV ──
     csv_path = save_dir / f"results_{system}.csv"
     with open(csv_path, "w", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(["mode", "violation_time_s", "integral_violation_pu_s",
-                         "worst_vmin", "worst_vmax"])
+        writer.writerow(["mode", "violation_time_s", "integral_violation_pu_s", "worst_vmin", "worst_vmax"])
         for mode in modes:
             s = all_stats[mode]
-            writer.writerow([mode, s.violation_time_s, s.integral_violation_pu_s,
-                             s.worst_vmin, s.worst_vmax])
+            writer.writerow([mode, s.violation_time_s, s.integral_violation_pu_s, s.worst_vmin, s.worst_vmax])
     logger.info("Results CSV: %s", csv_path)
 
     # ── Plots ──
-    plot_voltage_comparison(all_logs, save_dir, v_min=sim.v_min, v_max=sim.v_max,
-                            exclude_buses=exclude_buses)
+    plot_voltage_comparison(all_logs, save_dir, v_min=sim.v_min, v_max=sim.v_max, exclude_buses=exclude_buses)
     plot_batch_comparison(all_logs, save_dir)
     plot_summary_bar(all_stats, save_dir)
 

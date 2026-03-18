@@ -118,9 +118,7 @@ class OpenDSSGrid(GridBackend[GridState]):
         if dc_loads is not None:
             self._dc_loads = dict(dc_loads)
         elif dc_bus is not None and dc_bus_kv is not None:
-            self._dc_loads = {
-                "_default": DCLoadSpec(bus=dc_bus, bus_kv=dc_bus_kv, connection_type=connection_type)
-            }
+            self._dc_loads = {"_default": DCLoadSpec(bus=dc_bus, bus_kv=dc_bus_kv, connection_type=connection_type)}
         else:
             raise ValueError("Must provide either dc_loads or (dc_bus, dc_bus_kv).")
 
@@ -192,7 +190,7 @@ class OpenDSSGrid(GridBackend[GridState]):
         else:
             samples = power_samples_w
 
-        for site_id, spec in self._dc_loads.items():
+        for site_id, _spec in self._dc_loads.items():
             site_samples = samples.get(site_id, [])
             if not site_samples:
                 if site_id not in self._prev_power:
@@ -341,8 +339,7 @@ class OpenDSSGrid(GridBackend[GridState]):
                 raise ValueError(f"Unsupported connection_type: {conn_type!r}")
             for ph, nm in zip(_PHASES, self._site_load_names[site_id], strict=True):
                 dss.Text.Command(
-                    f"New Load.{nm} bus1={spec.bus}.{ph} phases=1 "
-                    f"conn={conn_type} kV={load_kv:.6f} kW=0 kvar=0 model=1"
+                    f"New Load.{nm} bus1={spec.bus}.{ph} phases=1 conn={conn_type} kV={load_kv:.6f} kW=0 kvar=0 model=1"
                 )
 
         dss.Text.Command("Reset")
@@ -463,7 +460,8 @@ class OpenDSSGrid(GridBackend[GridState]):
                     phase = 1
                     logger.info(
                         "RegControl '%s' is 3-phase (buses=%s); treating as phase A.",
-                        rc_name, bus_names,
+                        rc_name,
+                        bus_names,
                     )
 
             if phase not in (1, 2, 3):
@@ -548,6 +546,8 @@ class OpenDSSGrid(GridBackend[GridState]):
                 phase_taps[attr] = tap_val
 
         return TapPosition(
-            a=phase_taps["a"], b=phase_taps["b"], c=phase_taps["c"],
+            a=phase_taps["a"],
+            b=phase_taps["b"],
+            c=phase_taps["c"],
             regulators=regulators,
         )

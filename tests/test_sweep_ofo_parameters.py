@@ -9,7 +9,6 @@ is not available or crashes, the entire test module is skipped.
 
 from __future__ import annotations
 
-import json
 import sys
 from pathlib import Path
 
@@ -23,11 +22,9 @@ if str(_examples_dir) not in sys.path:
 
 try:
     from sweep_ofo_parameters import (
-        DCSiteConfig,
-        OFOParams,
-        SimulationParams,
-        SweepConfig,
         TAP_STEP,
+        DCSiteConfig,
+        SweepConfig,
         _compute_sweep_values,
         _parse_fraction,
         _parse_tap,
@@ -35,13 +32,13 @@ try:
         _run_id,
         _run_id_2d,
         _smooth_bump,
-        _taps_dict_to_position,
         build_sweep_grid,
         build_sweep_grid_2d,
         eval_profile,
         load_profile_kw,
         pv_profile_kw,
     )
+
     from openg2g.controller.ofo import OFOConfig
 
     CAN_IMPORT = True
@@ -183,7 +180,8 @@ class TestBuildSweepGrid2D:
     def test_two_sites(self):
         baseline = OFOConfig(primal_step_size=0.1)
         runs = build_sweep_grid_2d(
-            baseline, ["upstream", "downstream"],
+            baseline,
+            ["upstream", "downstream"],
             {"primal_step_size": [0.5, 1.0, 2.0]},
         )
         # 3 values × 3 values = 9 combinations
@@ -192,7 +190,8 @@ class TestBuildSweepGrid2D:
     def test_returns_per_site_configs(self):
         baseline = OFOConfig(primal_step_size=0.1)
         runs = build_sweep_grid_2d(
-            baseline, ["site_a", "site_b"],
+            baseline,
+            ["site_a", "site_b"],
             {"primal_step_size": [1.0, 2.0]},
         )
         for param_name, site_values, site_configs in runs:
@@ -207,7 +206,8 @@ class TestBuildSweepGrid2D:
     def test_independent_values(self):
         baseline = OFOConfig(primal_step_size=0.1)
         runs = build_sweep_grid_2d(
-            baseline, ["A", "B"],
+            baseline,
+            ["A", "B"],
             {"primal_step_size": [1.0, 2.0]},
         )
         # Should have (0.1, 0.1), (0.1, 0.2), (0.2, 0.1), (0.2, 0.2)
@@ -218,7 +218,8 @@ class TestBuildSweepGrid2D:
     def test_configs_match_values(self):
         baseline = OFOConfig(voltage_dual_step_size=10.0)
         runs = build_sweep_grid_2d(
-            baseline, ["up", "down"],
+            baseline,
+            ["up", "down"],
             {"voltage_dual_step_size": [0.5, 2.0]},
         )
         for _, site_values, site_configs in runs:
@@ -228,7 +229,8 @@ class TestBuildSweepGrid2D:
     def test_multiple_params(self):
         baseline = OFOConfig(primal_step_size=0.1, w_switch=1.0)
         runs = build_sweep_grid_2d(
-            baseline, ["A", "B"],
+            baseline,
+            ["A", "B"],
             {"primal_step_size": [1.0, 2.0], "w_switch": [0.5, 1.0]},
         )
         # primal: 2×2=4, w_switch: 2×2=4, total=8
@@ -240,7 +242,8 @@ class TestBuildSweepGrid2D:
     def test_three_sites(self):
         baseline = OFOConfig(primal_step_size=0.1)
         runs = build_sweep_grid_2d(
-            baseline, ["A", "B", "C"],
+            baseline,
+            ["A", "B", "C"],
             {"primal_step_size": [1.0, 2.0]},
         )
         # 2^3 = 8 combinations
@@ -289,8 +292,24 @@ class TestResolveModels:
         from openg2g.datacenter.config import InferenceModelSpec
 
         models = (
-            InferenceModelSpec(model_label="A", model_id="a", gpus_per_replica=1, initial_num_replicas=1, initial_batch_size=8, itl_deadline_s=0.1, feasible_batch_sizes=[8]),
-            InferenceModelSpec(model_label="B", model_id="b", gpus_per_replica=1, initial_num_replicas=1, initial_batch_size=8, itl_deadline_s=0.1, feasible_batch_sizes=[8]),
+            InferenceModelSpec(
+                model_label="A",
+                model_id="a",
+                gpus_per_replica=1,
+                initial_num_replicas=1,
+                initial_batch_size=8,
+                itl_deadline_s=0.1,
+                feasible_batch_sizes=[8],
+            ),
+            InferenceModelSpec(
+                model_label="B",
+                model_id="b",
+                gpus_per_replica=1,
+                initial_num_replicas=1,
+                initial_batch_size=8,
+                itl_deadline_s=0.1,
+                feasible_batch_sizes=[8],
+            ),
         )
         site = DCSiteConfig(bus="x", models=None)
         assert _resolve_models_for_site(site, models) == models
@@ -299,8 +318,24 @@ class TestResolveModels:
         from openg2g.datacenter.config import InferenceModelSpec
 
         models = (
-            InferenceModelSpec(model_label="A", model_id="a", gpus_per_replica=1, initial_num_replicas=1, initial_batch_size=8, itl_deadline_s=0.1, feasible_batch_sizes=[8]),
-            InferenceModelSpec(model_label="B", model_id="b", gpus_per_replica=1, initial_num_replicas=1, initial_batch_size=8, itl_deadline_s=0.1, feasible_batch_sizes=[8]),
+            InferenceModelSpec(
+                model_label="A",
+                model_id="a",
+                gpus_per_replica=1,
+                initial_num_replicas=1,
+                initial_batch_size=8,
+                itl_deadline_s=0.1,
+                feasible_batch_sizes=[8],
+            ),
+            InferenceModelSpec(
+                model_label="B",
+                model_id="b",
+                gpus_per_replica=1,
+                initial_num_replicas=1,
+                initial_batch_size=8,
+                itl_deadline_s=0.1,
+                feasible_batch_sizes=[8],
+            ),
         )
         site = DCSiteConfig(bus="x", models=["B"])
         result = _resolve_models_for_site(site, models)
@@ -311,7 +346,15 @@ class TestResolveModels:
         from openg2g.datacenter.config import InferenceModelSpec
 
         models = (
-            InferenceModelSpec(model_label="A", model_id="a", gpus_per_replica=1, initial_num_replicas=1, initial_batch_size=8, itl_deadline_s=0.1, feasible_batch_sizes=[8]),
+            InferenceModelSpec(
+                model_label="A",
+                model_id="a",
+                gpus_per_replica=1,
+                initial_num_replicas=1,
+                initial_batch_size=8,
+                itl_deadline_s=0.1,
+                feasible_batch_sizes=[8],
+            ),
         )
         site = DCSiteConfig(bus="x", models=["Z"])
         with pytest.raises(ValueError, match="unknown model labels"):

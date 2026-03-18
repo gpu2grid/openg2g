@@ -124,7 +124,7 @@ class TestInferenceRamp:
 
     def test_invalid_target_low(self) -> None:
         """Negative target fraction should raise ValueError."""
-        with pytest.raises(ValueError, match="target must be >= 0.0"):
+        with pytest.raises(ValueError, match=r"target must be >= 0\.0"):
             InferenceRamp(target=-0.1)
 
     def test_target_above_one_is_valid(self) -> None:

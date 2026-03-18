@@ -274,10 +274,7 @@ class InferenceRampSchedule:
         An entry applies if its ``model`` is ``None`` (all models) or matches
         *model_label* exactly.
         """
-        filtered = tuple(
-            e for e in self._entries
-            if e[0].model is None or e[0].model == model_label
-        )
+        filtered = tuple(e for e in self._entries if e[0].model is None or e[0].model == model_label)
         return InferenceRampSchedule(filtered)
 
     def max_target(self) -> float:

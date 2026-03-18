@@ -12,32 +12,25 @@ Usage:
 
 from __future__ import annotations
 
-import copy
-import json
 import logging
 import math
-from collections import defaultdict
-from fractions import Fraction
 from pathlib import Path
 from typing import Any
 
 import matplotlib
+
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
-
+from run_ofo import run_mode
 from sweep_dc_locations import (
     SweepConfig,
-    ScenarioOpenDSSGrid,
     _parse_fraction,
-    _resolve_models_for_site,
-    _taps_dict_to_position,
 )
-from run_ofo import run_mode, _build_tap_schedule
-from openg2g.datacenter.command import ShiftReplicas
-from openg2g.datacenter.config import InferenceModelSpec
-from openg2g.datacenter.workloads.inference import InferenceData
+
 from openg2g.controller.ofo import LogisticModelStore
+from openg2g.datacenter.command import ShiftReplicas
+from openg2g.datacenter.workloads.inference import InferenceData
 from openg2g.metrics.voltage import VoltageStats
 
 logger = logging.getLogger("load_shift_comparison")
@@ -56,12 +49,10 @@ def _extract_shift_timeseries(
     """
     # Build time axis from grid states
     time_s = np.array(log.time_s)
-    n_steps = len(time_s)
+    len(time_s)
 
     # Initialize offset tracking
-    offsets: dict[str, dict[str, int]] = {
-        sid: {m: 0 for m in models} for sid, models in models_by_site.items()
-    }
+    {sid: {m: 0 for m in models} for sid, models in models_by_site.items()}
 
     # Collect all ShiftReplicas commands with their approximate time
     shift_events: list[tuple[float, str, str, int]] = []  # (time, site, model, delta)
@@ -73,9 +64,7 @@ def _extract_shift_timeseries(
         cmd_time += dt_ctrl_s / 2  # rough estimate
 
     # Build timeseries by replaying shifts
-    result: dict[str, dict[str, list[int]]] = {
-        sid: {m: [] for m in models} for sid, models in models_by_site.items()
-    }
+    result: dict[str, dict[str, list[int]]] = {sid: {m: [] for m in models} for sid, models in models_by_site.items()}
 
     # Use DC states timestamps for time axis
     dc_times: dict[str, list[float]] = {}
@@ -138,8 +127,10 @@ def plot_load_shift_comparison(
         ax.axhline(0.95, color="red", linestyle="--", alpha=0.6, linewidth=1)
         ax.axhline(1.05, color="red", linestyle="--", alpha=0.6, linewidth=1)
         ax.set_ylabel("Voltage (pu)", fontsize=12)
-        ax.set_title(f"{label}  |  Viol={stats.violation_time_s:.0f}s, Integral={stats.integral_violation_pu_s:.2f} pu·s",
-                      fontsize=13)
+        ax.set_title(
+            f"{label}  |  Viol={stats.violation_time_s:.0f}s, Integral={stats.integral_violation_pu_s:.2f} pu·s",
+            fontsize=13,
+        )
         ax.legend(loc="upper right", fontsize=9)
         ax.set_ylim(0.93, 1.06)
         ax.grid(True, alpha=0.2)
@@ -187,8 +178,7 @@ def plot_load_shift_comparison(
                 if np.any(delta != 0):
                     any_nonzero = True
 
-                ax.plot(t[::step] / 60, delta[::step], color=model_color[m],
-                        linewidth=1.8, label=model_short[m])
+                ax.plot(t[::step] / 60, delta[::step], color=model_color[m], linewidth=1.8, label=model_short[m])
 
             ax.axhline(0, color="gray", linewidth=0.8, linestyle="-")
             ax.set_ylabel("Net Shift\n(replicas)", fontsize=10)
@@ -236,11 +226,13 @@ def plot_load_shift_comparison(
     step_ws = max(1, len(t_ws) // 500)
 
     if len(t_no) > 0:
-        ax.plot(t_no[::step_no] / 60, p_no[::step_no],
-                color="steelblue", linewidth=1.5, alpha=0.8, label="OFO (no shift)")
+        ax.plot(
+            t_no[::step_no] / 60, p_no[::step_no], color="steelblue", linewidth=1.5, alpha=0.8, label="OFO (no shift)"
+        )
     if len(t_ws) > 0:
-        ax.plot(t_ws[::step_ws] / 60, p_ws[::step_ws],
-                color="coral", linewidth=1.5, alpha=0.9, label="OFO + Load Shift")
+        ax.plot(
+            t_ws[::step_ws] / 60, p_ws[::step_ws], color="coral", linewidth=1.5, alpha=0.9, label="OFO + Load Shift"
+        )
 
     ax.set_xlabel("Time (min)", fontsize=12)
     ax.set_ylabel("Total DC Load (kW per phase)", fontsize=12)
@@ -323,8 +315,8 @@ def plot_load_shift_comparison(
     print("-" * 80)
     vt1, vt2 = stats_no_shift.violation_time_s, stats_with_shift.violation_time_s
     iv1, iv2 = stats_no_shift.integral_violation_pu_s, stats_with_shift.integral_violation_pu_s
-    print(f"{'Violation time (s)':<30s} {vt1:>15.1f} {vt2:>15.1f} {(1-vt2/vt1)*100 if vt1 else 0:>14.0f}%")
-    print(f"{'Integral violation (pu·s)':<30s} {iv1:>15.2f} {iv2:>15.2f} {(1-iv2/iv1)*100 if iv1 else 0:>14.0f}%")
+    print(f"{'Violation time (s)':<30s} {vt1:>15.1f} {vt2:>15.1f} {(1 - vt2 / vt1) * 100 if vt1 else 0:>14.0f}%")
+    print(f"{'Integral violation (pu·s)':<30s} {iv1:>15.2f} {iv2:>15.2f} {(1 - iv2 / iv1) * 100 if iv1 else 0:>14.0f}%")
     print(f"{'Worst Vmin (pu)':<30s} {stats_no_shift.worst_vmin:>15.4f} {stats_with_shift.worst_vmin:>15.4f}")
     print(f"{'Worst Vmax (pu)':<30s} {stats_no_shift.worst_vmax:>15.4f} {stats_with_shift.worst_vmax:>15.4f}")
     print(f"{'Load shift events':<30s} {'—':>15s} {n_shifts:>15d}")
@@ -350,20 +342,29 @@ def main(*, config_path: Path, system: str = "ieee123") -> None:
 
     logger.info("Loading inference data...")
     inference_data = InferenceData.ensure(
-        data_dir, all_models, data_sources,
-        mlenergy_data_dir=config.mlenergy_data_dir, plot=False, dt_s=float(dt_dc),
+        data_dir,
+        all_models,
+        data_sources,
+        mlenergy_data_dir=config.mlenergy_data_dir,
+        plot=False,
+        dt_s=float(dt_dc),
     )
     logistic_models = LogisticModelStore.ensure(
-        data_dir / "logistic_fits.csv", all_models, data_sources,
-        mlenergy_data_dir=config.mlenergy_data_dir, plot=False,
+        data_dir / "logistic_fits.csv",
+        all_models,
+        data_sources,
+        mlenergy_data_dir=config.mlenergy_data_dir,
+        plot=False,
     )
 
     save_dir = Path(__file__).resolve().parent / "outputs" / system / "load_shift_comparison"
     save_dir.mkdir(parents=True, exist_ok=True)
 
     from openg2g.datacenter.workloads.training import TrainingTrace
+
     training_trace = TrainingTrace.ensure(
-        data_dir / "training_trace.csv", config.training_trace_params,
+        data_dir / "training_trace.csv",
+        config.training_trace_params,
     )
 
     shared = dict(
@@ -372,7 +373,9 @@ def main(*, config_path: Path, system: str = "ieee123") -> None:
         inference_data=inference_data,
         training_trace=training_trace,
         logistic_models=logistic_models,
-        dt_dc=dt_dc, dt_grid=dt_grid, dt_ctrl=dt_ctrl,
+        dt_dc=dt_dc,
+        dt_grid=dt_grid,
+        dt_ctrl=dt_ctrl,
         save_dir=save_dir,
     )
 
@@ -400,17 +403,22 @@ def main(*, config_path: Path, system: str = "ieee123") -> None:
     gpus_per_replica = {m.model_label: m.gpus_per_replica for m in all_models}
 
     plot_load_shift_comparison(
-        log_no_shift, log_with_shift,
-        stats_no_shift, stats_with_shift,
-        site_ids, models_by_site, gpus_per_replica,
+        log_no_shift,
+        log_with_shift,
+        stats_no_shift,
+        stats_with_shift,
+        site_ids,
+        models_by_site,
+        gpus_per_replica,
         save_dir,
         exclude_buses=tuple(config.exclude_buses),
     )
 
 
 if __name__ == "__main__":
-    import tyro
     from dataclasses import dataclass
+
+    import tyro
 
     @dataclass
     class Args:
