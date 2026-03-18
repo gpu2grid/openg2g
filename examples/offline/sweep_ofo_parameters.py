@@ -883,11 +883,7 @@ def _setup(
         save_dir = Path(output_dir).resolve()
     else:
         save_dir = Path(__file__).resolve().parent / "outputs" / system / "sweep_ofo_parameters"
-    save_dir.mkdir(parents=True, exist_ok=True)
-
-    file_handler = logging.FileHandler(save_dir / "sweep.log", mode="w")
-    file_handler.setFormatter(logging.Formatter("%(asctime)s %(name)s %(levelname)s %(message)s", datefmt="%H:%M:%S"))
-    logging.getLogger().addHandler(file_handler)
+    # Don't mkdir yet — main() may append _1d/_2d suffix before creating
 
     # ── Load shared data (done once) ─────────────────────────────────────
 
@@ -1239,9 +1235,8 @@ def main(
     # Append _1d or _2d to output directory if using default path
     if output_dir is None:
         suffix = "_2d" if use_2d else "_1d"
-        new_save_dir = ctx["save_dir"].parent / (ctx["save_dir"].name + suffix)
-        new_save_dir.mkdir(parents=True, exist_ok=True)
-        ctx["save_dir"] = new_save_dir
+        ctx["save_dir"] = ctx["save_dir"].parent / (ctx["save_dir"].name + suffix)
+    ctx["save_dir"].mkdir(parents=True, exist_ok=True)
 
     if use_2d:
         logger.info("%d DC sites, sweep mode: 2-D (independent parameters per site)", n_sites)

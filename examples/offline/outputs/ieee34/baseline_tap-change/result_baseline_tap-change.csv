@@ -1,0 +1,2 @@
+case,violation_time_s,integral_violation_pu_s,worst_vmin,worst_vmax
+baseline_tap-change,568.399999999483,2.817856313762066,0.9393008459217734,1.0505660839805542

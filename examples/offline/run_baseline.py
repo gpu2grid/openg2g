@@ -3,18 +3,33 @@
 Runs without batch-size control (fixed batch sizes). Optionally applies
 a tap schedule from the config.
 
+Modes:
+    no-tap       Baseline without tap schedule (1 case, default).
+    tap-change   Baseline with tap schedule from config (1 case).
+    both         Baseline with and without tap schedule (2 cases).
+
+Default outputs per case folder (same as run_ofo.py):
+    allbus_voltages_phase_{A,B,C}.png   Per-phase voltage trajectories
+    tap_positions.png                   Regulator tap positions over time
+    power_latency_{site}.png            Per-site 3-phase power + ITL
+    pv_load_profiles.png                PV and time-varying load curves
+    result_{case}.csv                   Voltage violation summary
+
 Usage:
-    # IEEE 13 (single DC, no tap changes)
+    # IEEE 13 — baseline, no tap schedule
     python run_baseline.py --config config_ieee13.json --system ieee13
 
-    # IEEE 34 (two DCs)
+    # IEEE 34 — baseline, no tap schedule
     python run_baseline.py --config config_ieee34.json --system ieee34
 
-    # IEEE 123 (four DCs)
+    # IEEE 123 — baseline, no tap schedule
     python run_baseline.py --config config_ieee123.json --system ieee123
 
-    # With tap schedule changes
-    python run_baseline.py --config config_ieee13.json --system ieee13 --mode tap-change
+    # Baseline with tap schedule
+    python run_baseline.py --config config_ieee34.json --system ieee34 --mode tap-change
+
+    # Baseline with and without tap schedule
+    python run_baseline.py --config config_ieee34.json --system ieee34 --mode both
 """
 
 from __future__ import annotations
@@ -40,17 +55,6 @@ from openg2g.metrics.voltage import VoltageStats
 
 logger = logging.getLogger("run_baseline")
 
-<<<<<<< HEAD
-# fmt: off
-TAP_STEP = 0.00625
-INITIAL_TAPS = TapPosition(a=1.0 + 14 * TAP_STEP, b=1.0 + 6 * TAP_STEP, c=1.0 + 15 * TAP_STEP)
-TAP_CHANGE_SCHEDULE = (
-    TapPosition(a=1.0 + 16 * TAP_STEP, b=1.0 + 6 * TAP_STEP, c=1.0 + 17 * TAP_STEP).at(t=25 * 60)
-    | TapPosition(a=1.0 + 10 * TAP_STEP, b=1.0 + 6 * TAP_STEP, c=1.0 + 10 * TAP_STEP).at(t=55 * 60)
-)
-# fmt: on
-=======
->>>>>>> f03cf6c (Add multi-datacenter architecture: Coordinator accepts multiple DCs. Add functions to sweep ofo parameters, sweep DC locations, find DC hosting capacity, and optimize PV locations and capacities. Add IEEE 13, 34, 123 test feeders and example scripts. Include simulation outputs for IEEE 13, 34, 123 under multiple scenarios.)
 
 def main(*, config_path: Path, system: str, mode: str = "no-tap") -> None:
     config_path = config_path.resolve()
@@ -63,9 +67,6 @@ def main(*, config_path: Path, system: str, mode: str = "no-tap") -> None:
     data_dir = config.data_dir or Path("data/offline") / config.data_hash
     data_dir = (config_dir / data_dir).resolve() if not data_dir.is_absolute() else data_dir
 
-<<<<<<< HEAD
-    save_dir = (Path("outputs") / f"baseline_{mode}").resolve()
-=======
     dt_dc = _parse_fraction(sim.dt_dc)
     dt_grid = _parse_fraction(sim.dt_grid)
     dt_ctrl = _parse_fraction(sim.dt_ctrl)
@@ -95,46 +96,53 @@ def main(*, config_path: Path, system: str, mode: str = "no-tap") -> None:
         if has_tap_schedule else None
     )
 
-    # Determine folder name
-    if mode == "tap-change" and has_tap_schedule:
-        folder = "baseline_tap-change"
-        sched = tap_sched
-    else:
-        folder = "baseline_no-tap"
-        sched = None
-
-    if mode == "tap-change" and not has_tap_schedule:
-        logger.warning("No tap_schedule in config; running no-tap baseline.")
+    # Build cases based on mode
+    cases: list[tuple[str, TapSchedule | None]] = []
+    if mode in ("no-tap", "both"):
+        cases.append(("baseline_no-tap", None))
+    if mode in ("tap-change", "both") and has_tap_schedule:
+        cases.append(("baseline_tap-change", tap_sched))
+    if not cases:
+        if mode == "tap-change" and not has_tap_schedule:
+            logger.warning("No tap_schedule in config; running no-tap baseline.")
+            cases.append(("baseline_no-tap", None))
+        else:
+            logger.warning("No cases to run (mode=%s, has_tap_schedule=%s).", mode, has_tap_schedule)
+            return
 
     save_dir = Path(__file__).resolve().parent / "outputs" / system
->>>>>>> f03cf6c (Add multi-datacenter architecture: Coordinator accepts multiple DCs. Add functions to sweep ofo parameters, sweep DC locations, find DC hosting capacity, and optimize PV locations and capacities. Add IEEE 13, 34, 123 test feeders and example scripts. Include simulation outputs for IEEE 13, 34, 123 under multiple scenarios.)
     save_dir.mkdir(parents=True, exist_ok=True)
 
-    logger.info("Running %s baseline (%s)...", system, folder)
-
-    stats, log = run_mode(
-        "baseline",
-        config=config,
-        all_models=all_models,
-        inference_data=inference_data,
-        training_trace=training_trace,
-        logistic_models=logistic_models,
-        dt_dc=dt_dc, dt_grid=dt_grid, dt_ctrl=dt_ctrl,
-        save_dir=save_dir,
-        tap_schedule=sched,
-        folder_name=folder,
-    )
+    results: dict[str, VoltageStats] = {}
+    for folder, sched in cases:
+        logger.info("Running %s baseline (%s)...", system, folder)
+        stats, log = run_mode(
+            "baseline",
+            config=config,
+            all_models=all_models,
+            inference_data=inference_data,
+            training_trace=training_trace,
+            logistic_models=logistic_models,
+            dt_dc=dt_dc, dt_grid=dt_grid, dt_ctrl=dt_ctrl,
+            save_dir=save_dir,
+            tap_schedule=sched,
+            folder_name=folder,
+        )
+        results[folder] = stats
 
     # Summary
     logger.info("")
     logger.info("=" * 70)
-    logger.info("%s BASELINE (%s)", system.upper(), folder)
+    logger.info("%s BASELINE SUMMARY", system.upper())
     logger.info("=" * 70)
-    logger.info("  Violation time:  %.1f s", stats.violation_time_s)
-    logger.info("  Worst Vmin:      %.4f pu", stats.worst_vmin)
-    logger.info("  Worst Vmax:      %.4f pu", stats.worst_vmax)
-    logger.info("  Integral:        %.4f pu*s", stats.integral_violation_pu_s)
-    logger.info("  Outputs: %s", save_dir / folder)
+    logger.info("%-25s %10s %10s %10s %14s", "Mode", "Viol(s)", "Vmin", "Vmax", "Integral")
+    logger.info("-" * 70)
+    for folder, s in results.items():
+        logger.info("%-25s %10.1f %10.4f %10.4f %14.4f",
+                    folder, s.violation_time_s, s.worst_vmin, s.worst_vmax,
+                    s.integral_violation_pu_s)
+    logger.info("-" * 70)
+    logger.info("Outputs: %s", save_dir)
 
 
 if __name__ == "__main__":
@@ -149,7 +157,7 @@ if __name__ == "__main__":
         system: str = "ieee13"
         """System name (ieee13, ieee34, ieee123) for output directory."""
         mode: str = "no-tap"
-        """Run mode: 'no-tap' (default) or 'tap-change'."""
+        """Run mode: 'no-tap' (default), 'tap-change', or 'both' (w/ and w/o tap)."""
         log_level: str = "INFO"
         """Logging verbosity (DEBUG, INFO, WARNING)."""
 

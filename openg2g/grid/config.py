@@ -3,36 +3,52 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Literal
+
+
+@dataclass(frozen=True)
+class DCLoadSpec:
+    """Specification for a datacenter load connection point on the grid.
+
+    Args:
+        bus: Bus name where the datacenter is connected.
+        bus_kv: Line-to-line voltage (kV) at the datacenter bus.
+        connection_type: Connection type for DC loads (default ``"wye"``).
+    """
+
+    bus: str
+    bus_kv: float
+    connection_type: Literal["wye", "delta"] = "wye"
 
 
 @dataclass(frozen=True)
 class TapPosition:
-    """Regulator tap position per phase, as per-unit tap ratios.
+    """Regulator tap position, supporting both per-phase and named-regulator modes.
 
-    Each field is the tap ratio for the corresponding phase regulator.
-    Phases set to `None` are left unchanged when applied.  At least
-    one phase must be specified.
-
-    Combine with [`at`][.at] and `|` to build a [`TapSchedule`][..TapSchedule]:
+    **Per-phase mode** (legacy, single regulator bank):
 
     ```python
-    TAP_STEP = 0.00625  # standard 5/8% tap step
-    schedule = (
-        TapPosition(a=1.0 + 14 * TAP_STEP, b=1.0 + 6 * TAP_STEP, c=1.0 + 15 * TAP_STEP).at(t=0)
-        | TapPosition(a=1.1).at(t=1500)
-        | TapPosition(a=1.0625, c=1.0625).at(t=3300)
-    )
+    TapPosition(a=1.075, b=1.05, c=1.075)
     ```
+
+    **Named-regulator mode** (multi-bank systems like IEEE 34/123):
+
+    ```python
+    TapPosition(regulators={"creg1a": 1.075, "creg1b": 1.05, "creg2a": 1.0})
+    ```
+
+    At least one of ``a``, ``b``, ``c``, or ``regulators`` must be specified.
     """
 
     a: float | None = None
     b: float | None = None
     c: float | None = None
+    regulators: dict[str, float] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        if self.a is None and self.b is None and self.c is None:
-            raise ValueError("TapPosition requires at least one phase (a, b, or c).")
+        if self.a is None and self.b is None and self.c is None and not self.regulators:
+            raise ValueError("TapPosition requires at least one phase (a, b, or c) or regulators dict.")
 
     def at(self, t: float) -> TapSchedule:
         """Schedule this position at time `t` seconds."""
@@ -42,7 +58,7 @@ class TapPosition:
 class TapSchedule:
     """Ordered sequence of scheduled tap positions.
 
-    Build using [`TapPosition.at`][..TapPosition.at] and the `|` operator:
+    Build using [`TapPosition.at`][..TapPosition.at] and the ``|`` operator:
 
     ```python
     TAP_STEP = 0.00625  # standard 5/8% tap step
@@ -88,5 +104,7 @@ class TapSchedule:
                 fields.append(f"b={p.b}")
             if p.c is not None:
                 fields.append(f"c={p.c}")
+            if p.regulators:
+                fields.append(f"regulators={p.regulators}")
             parts.append(f"TapPosition({', '.join(fields)}).at(t={t})")
         return " | ".join(parts)

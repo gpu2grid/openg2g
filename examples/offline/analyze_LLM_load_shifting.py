@@ -150,94 +150,143 @@ def plot_load_shift_comparison(
     plt.close(fig)
     logger.info("Saved: %s", save_dir / "voltage_comparison.png")
 
-    # --- Plot 2: Per-site active replicas (with load shift) ---
-    # Count ShiftReplicas commands
+    # --- Plot 2: Net replica shift per site per model ---
+    # Only generated when ShiftReplicas commands were issued
     n_shift_cmds = sum(1 for c in log_with_shift.commands if isinstance(c, ShiftReplicas))
     if n_shift_cmds == 0:
-        logger.info("No ShiftReplicas commands found — skipping replica plot")
-        return
+        logger.info("No ShiftReplicas commands found — skipping replica shift plot")
+    else:
+        # Compute delta = active_replicas(with_shift) - active_replicas(no_shift)
+        all_model_labels = sorted(set(m for ms in models_by_site.values() for m in ms))
+        model_short = {m: m.replace("Llama-3.1-", "L").replace("Qwen3-", "Q") for m in all_model_labels}
+        colors_models = plt.cm.tab10(np.linspace(0, 1, 10))
+        model_color = {m: colors_models[i % len(colors_models)] for i, m in enumerate(all_model_labels)}
 
-    # --- Plot 2: Net replica shift per site per model ---
-    # Compute delta = active_replicas(with_shift) - active_replicas(no_shift)
-    all_model_labels = sorted(set(m for ms in models_by_site.values() for m in ms))
-    model_short = {m: m.replace("Llama-3.1-", "L").replace("Qwen3-", "Q") for m in all_model_labels}
-    colors_models = plt.cm.tab10(np.linspace(0, 1, 10))
-    model_color = {m: colors_models[i % len(colors_models)] for i, m in enumerate(all_model_labels)}
+        fig, axes = plt.subplots(len(site_ids), 1, figsize=(14, 2.5 * len(site_ids)), sharex=True)
+        if len(site_ids) == 1:
+            axes = [axes]
 
-    fig, axes = plt.subplots(len(site_ids), 1, figsize=(14, 2.5 * len(site_ids)), sharex=True)
-    if len(site_ids) == 1:
-        axes = [axes]
+        for ax_idx, sid in enumerate(site_ids):
+            ax = axes[ax_idx]
+            states_no = log_no_shift.dc_states_by_site.get(sid, [])
+            states_ws = log_with_shift.dc_states_by_site.get(sid, [])
+            site_models = models_by_site.get(sid, [])
 
-    for ax_idx, sid in enumerate(site_ids):
-        ax = axes[ax_idx]
-        states_no = log_no_shift.dc_states_by_site.get(sid, [])
-        states_ws = log_with_shift.dc_states_by_site.get(sid, [])
-        site_models = models_by_site.get(sid, [])
+            n = min(len(states_no), len(states_ws))
+            if n == 0:
+                continue
+            step = max(1, n // 360)
 
-        n = min(len(states_no), len(states_ws))
-        if n == 0:
-            continue
-        step = max(1, n // 360)
+            any_nonzero = False
+            for m in site_models:
+                r_no = np.array([s.active_replicas_by_model.get(m, 0) for s in states_no[:n]])
+                r_ws = np.array([s.active_replicas_by_model.get(m, 0) for s in states_ws[:n]])
+                delta = r_ws - r_no
+                t = np.array([s.time_s for s in states_no[:n]])
 
-        any_nonzero = False
-        for m in site_models:
-            r_no = np.array([s.active_replicas_by_model.get(m, 0) for s in states_no[:n]])
-            r_ws = np.array([s.active_replicas_by_model.get(m, 0) for s in states_ws[:n]])
-            delta = r_ws - r_no
-            t = np.array([s.time_s for s in states_no[:n]])
+                if np.any(delta != 0):
+                    any_nonzero = True
 
-            if np.any(delta != 0):
-                any_nonzero = True
+                ax.plot(t[::step] / 60, delta[::step], color=model_color[m],
+                        linewidth=1.8, label=model_short[m])
 
-            ax.plot(t[::step] / 60, delta[::step], color=model_color[m],
-                    linewidth=1.8, label=model_short[m])
+            ax.axhline(0, color="gray", linewidth=0.8, linestyle="-")
+            ax.set_ylabel("Net Shift\n(replicas)", fontsize=10)
+            ax.set_title(f"Site {sid}", fontsize=12)
+            if any_nonzero:
+                ax.legend(loc="upper right", fontsize=8, ncol=len(site_models))
+            ax.grid(True, alpha=0.2)
 
-        ax.axhline(0, color="gray", linewidth=0.8, linestyle="-")
-        ax.set_ylabel("Net Shift\n(replicas)", fontsize=10)
-        ax.set_title(f"Site {sid}", fontsize=12)
-        if any_nonzero:
-            ax.legend(loc="upper right", fontsize=8, ncol=len(site_models))
-        ax.grid(True, alpha=0.2)
+        axes[-1].set_xlabel("Time (min)", fontsize=12)
+        fig.suptitle("Net Replica Shift per Site (with shift − without shift)", fontsize=14, y=1.01)
+        fig.tight_layout()
+        fig.savefig(save_dir / "net_replica_shift.png", dpi=150, bbox_inches="tight")
+        plt.close(fig)
+        logger.info("Saved: %s", save_dir / "net_replica_shift.png")
 
-    axes[-1].set_xlabel("Time (min)", fontsize=12)
-    fig.suptitle("Net Replica Shift per Site (with shift − without shift)", fontsize=14, y=1.01)
+    # --- Plot 3: DC load with and without load shifting (combined) ---
+    fig, ax = plt.subplots(figsize=(14, 5))
+
+    # Aggregate total DC load across all sites
+    def _total_dc_load(log, site_ids):
+        """Return (time_min, total_kw_per_phase) arrays."""
+        all_t = None
+        total_p = None
+        for sid in site_ids:
+            states = log.dc_states_by_site.get(sid, [])
+            if not states:
+                continue
+            t = np.array([s.time_s for s in states])
+            p = np.array([(s.power_w.a + s.power_w.b + s.power_w.c) / 3e3 for s in states])
+            if all_t is None:
+                all_t = t
+                total_p = p
+            else:
+                n = min(len(all_t), len(t))
+                all_t = all_t[:n]
+                total_p = total_p[:n] + p[:n]
+        if all_t is None:
+            return np.array([]), np.array([])
+        return all_t, total_p
+
+    t_no, p_no = _total_dc_load(log_no_shift, site_ids)
+    t_ws, p_ws = _total_dc_load(log_with_shift, site_ids)
+
+    step_no = max(1, len(t_no) // 500)
+    step_ws = max(1, len(t_ws) // 500)
+
+    if len(t_no) > 0:
+        ax.plot(t_no[::step_no] / 60, p_no[::step_no],
+                color="steelblue", linewidth=1.5, alpha=0.8, label="OFO (no shift)")
+    if len(t_ws) > 0:
+        ax.plot(t_ws[::step_ws] / 60, p_ws[::step_ws],
+                color="coral", linewidth=1.5, alpha=0.9, label="OFO + Load Shift")
+
+    ax.set_xlabel("Time (min)", fontsize=12)
+    ax.set_ylabel("Total DC Load (kW per phase)", fontsize=12)
+    ax.set_title("Aggregate DC Load: With vs Without Load Shifting", fontsize=14)
+    ax.legend(fontsize=11)
+    ax.grid(True, alpha=0.2)
     fig.tight_layout()
-    fig.savefig(save_dir / "net_replica_shift.png", dpi=150, bbox_inches="tight")
+    fig.savefig(save_dir / "dc_load_comparison.png", dpi=150, bbox_inches="tight")
     plt.close(fig)
-    logger.info("Saved: %s", save_dir / "net_replica_shift.png")
+    logger.info("Saved: %s", save_dir / "dc_load_comparison.png")
 
-    # --- Plot 3: Per-site power comparison ---
-    fig, axes = plt.subplots(len(site_ids), 1, figsize=(14, 3 * len(site_ids)), sharex=True)
+    # --- Plot 5: Per-site DC load with and without load shifting ---
+    fig, axes_dc = plt.subplots(len(site_ids), 1, figsize=(14, 3 * len(site_ids)), sharex=True)
     if len(site_ids) == 1:
-        axes = [axes]
+        axes_dc = [axes_dc]
 
     for ax_idx, sid in enumerate(site_ids):
-        ax = axes[ax_idx]
+        ax = axes_dc[ax_idx]
         states_no = log_no_shift.dc_states_by_site.get(sid, [])
         states_ws = log_with_shift.dc_states_by_site.get(sid, [])
 
-        step = max(1, len(states_no) // 360)
+        if states_no:
+            step = max(1, len(states_no) // 500)
+            t = np.array([s.time_s for s in states_no])[::step]
+            p = np.array([(s.power_w.a + s.power_w.b + s.power_w.c) / 3e3 for s in states_no])[::step]
+            ax.plot(t / 60, p, color="steelblue", linewidth=1.2, alpha=0.8, label="No shift")
 
-        t_no = np.array([s.time_s for s in states_no])[::step]
-        p_no = np.array([(s.power_w.a + s.power_w.b + s.power_w.c) / 3e3 for s in states_no])[::step]
-        t_ws = np.array([s.time_s for s in states_ws])[::step]
-        p_ws = np.array([(s.power_w.a + s.power_w.b + s.power_w.c) / 3e3 for s in states_ws])[::step]
+        if states_ws:
+            step = max(1, len(states_ws) // 500)
+            t = np.array([s.time_s for s in states_ws])[::step]
+            p = np.array([(s.power_w.a + s.power_w.b + s.power_w.c) / 3e3 for s in states_ws])[::step]
+            ax.plot(t / 60, p, color="coral", linewidth=1.2, alpha=0.9, label="With shift")
 
-        ax.plot(t_no / 60, p_no, color="steelblue", linewidth=1.2, alpha=0.7, label="No shift")
-        ax.plot(t_ws / 60, p_ws, color="coral", linewidth=1.2, alpha=0.9, label="With shift")
-        ax.set_ylabel("Power (kW/phase)", fontsize=11)
-        ax.set_title(f"Site {sid} @ bus {sid}", fontsize=12)
+        ax.set_ylabel("kW/phase", fontsize=10)
+        ax.set_title(f"Site {sid}", fontsize=12)
         ax.legend(loc="upper right", fontsize=9)
         ax.grid(True, alpha=0.2)
 
-    axes[-1].set_xlabel("Time (min)", fontsize=12)
-    fig.suptitle("DC Power per Site: OFO vs OFO + Load Shift", fontsize=14, y=1.01)
+    axes_dc[-1].set_xlabel("Time (min)", fontsize=12)
+    fig.suptitle("Per-Site DC Load: With vs Without Load Shifting", fontsize=14, y=1.01)
     fig.tight_layout()
-    fig.savefig(save_dir / "power_comparison.png", dpi=150, bbox_inches="tight")
+    fig.savefig(save_dir / "dc_load_per_site.png", dpi=150, bbox_inches="tight")
     plt.close(fig)
-    logger.info("Saved: %s", save_dir / "power_comparison.png")
+    logger.info("Saved: %s", save_dir / "dc_load_per_site.png")
 
-    # --- Plot 4: Summary bar chart ---
+    # --- Plot 6: Summary bar chart ---
     fig, axes = plt.subplots(1, 3, figsize=(14, 5))
     labels = ["OFO", "OFO + Load Shift"]
     colors = ["#4C72B0", "#DD8452"]

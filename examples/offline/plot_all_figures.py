@@ -135,6 +135,7 @@ def plot_power_and_itl_2panel(
     t_ramp_start_s: float = 2500.0,
     t_ramp_end_s: float = 3600.0,
     ramp_label: str = "Less active GPUs",
+    show_regimes: bool = True,
     figsize: tuple[float, float] = (7.2, 3.6),
     dpi: int = 300,
     save_path: Path | str | None = None,
@@ -188,9 +189,10 @@ def plot_power_and_itl_2panel(
     ax.plot(t_min, np.asarray(kW_B) / 1e3, lw=lw_main, color=phase_colors["B"], label="Phase B")
     ax.plot(t_min, np.asarray(kW_C) / 1e3, lw=lw_main, color=phase_colors["C"], label="Phase C")
 
-    ax.axvspan(t_train_start_min, t_train_end_min, color="tab:blue", alpha=0.10, zorder=0)
-    ax.axvline(t_train_start_min, ls="--", lw=1.0, color="tab:blue", alpha=0.9)
-    ax.axvline(t_train_end_min, ls="--", lw=1.0, color="tab:blue", alpha=0.9)
+    if show_regimes:
+        ax.axvspan(t_train_start_min, t_train_end_min, color="tab:blue", alpha=0.10, zorder=0)
+        ax.axvline(t_train_start_min, ls="--", lw=1.0, color="tab:blue", alpha=0.9)
+        ax.axvline(t_train_end_min, ls="--", lw=1.0, color="tab:blue", alpha=0.9)
 
     ax.set_ylabel("Power (MW)", fontsize=label_fs)
     ax.set_title("(a) Synthetic three-phase data center power demand", pad=title_pad)
@@ -198,8 +200,9 @@ def plot_power_and_itl_2panel(
     ax.tick_params(labelsize=tick_fs, labelbottom=False, bottom=True)
 
     handles, labels = ax.get_legend_handles_labels()
-    handles.append(Patch(facecolor="tab:blue", alpha=0.10, edgecolor="none"))
-    labels.append("Training window")
+    if show_regimes:
+        handles.append(Patch(facecolor="tab:blue", alpha=0.10, edgecolor="none"))
+        labels.append("Training window")
     ax.legend(handles, labels, fontsize=legend_fs, ncol=4, loc="best", framealpha=0.9)
 
     # (b) Per-model average ITL
@@ -207,16 +210,17 @@ def plot_power_and_itl_2panel(
     for model, lat in avg_itl_by_model.items():
         ax.plot(t_itl_min, np.asarray(lat), lw=lw_lat, label=model)
 
-    ax.axvspan(
-        t_ramp_start_min,
-        t_ramp_end_min,
-        color="tab:orange",
-        alpha=0.12,
-        zorder=0,
-        label=ramp_label,
-    )
-    ax.axvline(t_ramp_start_min, ls="--", lw=1.0, color="tab:orange", alpha=0.9)
-    ax.axvline(t_ramp_end_min, ls="--", lw=1.0, color="tab:orange", alpha=0.9)
+    if show_regimes:
+        ax.axvspan(
+            t_ramp_start_min,
+            t_ramp_end_min,
+            color="tab:orange",
+            alpha=0.12,
+            zorder=0,
+            label=ramp_label,
+        )
+        ax.axvline(t_ramp_start_min, ls="--", lw=1.0, color="tab:orange", alpha=0.9)
+        ax.axvline(t_ramp_end_min, ls="--", lw=1.0, color="tab:orange", alpha=0.9)
 
     ax.set_ylim(0.0, 0.11)
     ax.set_ylabel("Avg ITL (s)", fontsize=label_fs)
@@ -258,6 +262,7 @@ def plot_allbus_voltages_per_phase(
     title_template: str = "Voltage trajectories (Phase {label})",
     shared_legend_phase: str = "B",
     filename_template: str = "allbus_voltages_phase_{label}.png",
+    show_taps: bool = False,
 ) -> None:
     """Per-phase all-bus voltage plots with bus-specific colors and shared legend.
 
@@ -271,12 +276,24 @@ def plot_allbus_voltages_per_phase(
         bus_color_map: {bus_name: color}. Defaults to ``BUS_COLOR_MAP``.
     """
     if bus_color_map is None:
-        bus_color_map = BUS_COLOR_MAP
+        bus_color_map = dict(BUS_COLOR_MAP)
 
     save_dir = Path(save_dir)
     t_min = np.asarray(time_s) / 60.0
 
     drop_set = {str(b).strip().lower() for b in drop_buses}
+
+    # Auto-assign colors for buses not in the color map
+    all_plot_buses = set()
+    for snap in grid_states[: min(10, len(grid_states))]:
+        for bus in snap.voltages.buses():
+            if bus.lower() not in drop_set:
+                all_plot_buses.add(bus)
+    missing = [b for b in sorted(all_plot_buses, key=_bus_sort_key) if b not in bus_color_map and b.lower() not in bus_color_map]
+    if missing:
+        auto_cmap = plt.colormaps.get_cmap("tab20")
+        for i, b in enumerate(missing):
+            bus_color_map[b] = auto_cmap(i / max(len(missing) - 1, 1))
     reg_bus_lc = str(reg_bus).strip().lower()
 
     PHASE_MAP = {"A": 1, "B": 2, "C": 3}
@@ -363,6 +380,37 @@ def plot_allbus_voltages_per_phase(
 
         ax.axhline(v_min, linestyle="--", linewidth=2.0, alpha=0.9)
         ax.axhline(v_max, linestyle="--", linewidth=2.0, alpha=0.9)
+
+        # Overlay regulator tap positions as bold step lines on secondary y-axis
+        if show_taps and grid_states and grid_states[0].tap_positions is not None:
+            TAP_STEP = 0.00625
+            ax2 = ax.twinx()
+            tap_colors = plt.colormaps.get_cmap("Set1")
+            phase_lc = phase_letter.lower()
+
+            # Collect all regulator names that match this phase
+            all_reg_names = list(grid_states[0].tap_positions.regulators.keys())
+            phase_regs = [r for r in all_reg_names if r.lower().endswith(phase_lc)]
+            # If no phase-specific regs (e.g. ieee13 with reg1/reg2/reg3), show all
+            if not phase_regs:
+                phase_regs = all_reg_names
+
+            for r_idx, reg_name in enumerate(phase_regs):
+                tap_pu = np.array([
+                    gs.tap_positions.regulators.get(reg_name, 1.0)
+                    if gs.tap_positions else 1.0
+                    for gs in grid_states
+                ])
+                tap_int = np.round((tap_pu - 1.0) / TAP_STEP).astype(int)
+                ax2.step(t_min, tap_int, where="post",
+                         color=tap_colors(r_idx % 10), linewidth=2.5,
+                         alpha=0.7, label=reg_name, zorder=8)
+
+            ax2.set_ylabel("Tap Position (steps)", fontsize=8)
+            ax2.tick_params(labelsize=7)
+            ax2.legend(loc="lower right", fontsize=6, ncol=max(1, len(phase_regs) // 2),
+                       framealpha=0.85, title="Taps", title_fontsize=6)
+
         ax.set_ylim(y_lo, y_hi)
 
         ax.set_xlabel("Time (minutes)")
@@ -438,6 +486,7 @@ def plot_zone_voltage_envelope(
     dpi: int = 150,
     fill_alpha: float = 0.25,
     y_limits: tuple[float, float] | None = None,
+    show_taps: bool = False,
 ) -> None:
     """Per-phase voltage envelope plot showing min/max per zone.
 
@@ -513,6 +562,34 @@ def plot_zone_voltage_envelope(
 
         ax.axhline(v_min, color="red", linestyle=":", linewidth=2.0, alpha=0.8, label="V limits")
         ax.axhline(v_max, color="red", linestyle=":", linewidth=2.0, alpha=0.8)
+
+        # Overlay regulator tap positions on secondary y-axis
+        if show_taps and grid_states and grid_states[0].tap_positions is not None:
+            TAP_STEP = 0.00625
+            ax2 = ax.twinx()
+            tap_cmap = plt.colormaps.get_cmap("Set1")
+            phase_lc = phase_letter.lower()
+
+            all_reg_names = list(grid_states[0].tap_positions.regulators.keys())
+            phase_regs = [r for r in all_reg_names if r.lower().endswith(phase_lc)]
+            if not phase_regs:
+                phase_regs = all_reg_names
+
+            for r_idx, reg_name in enumerate(phase_regs):
+                tap_pu = np.array([
+                    gs.tap_positions.regulators.get(reg_name, 1.0)
+                    if gs.tap_positions else 1.0
+                    for gs in grid_states
+                ])
+                tap_int = np.round((tap_pu - 1.0) / TAP_STEP).astype(int)
+                ax2.step(t_min, tap_int, where="post",
+                         color=tap_cmap(r_idx % 10), linewidth=2.5,
+                         alpha=0.7, label=reg_name, zorder=8)
+
+            ax2.set_ylabel("Tap Position (steps)", fontsize=10)
+            ax2.tick_params(labelsize=9)
+            ax2.legend(loc="lower right", fontsize=7, ncol=max(1, len(phase_regs) // 2),
+                       framealpha=0.85, title="Taps", title_fontsize=7)
 
         if y_limits is not None:
             ax.set_ylim(*y_limits)

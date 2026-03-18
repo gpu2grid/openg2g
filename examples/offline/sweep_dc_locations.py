@@ -8,15 +8,20 @@ Automatically selects sweep mode based on the config:
   - N DC sites with zones → zone-constrained sweep (3 phases):
       Phase 1 (Screening):  Sweep each zone independently while holding other
                             zones at default buses.  Keep top-K per zone.
-      Phase 2 (Combination): Cartesian product of top-K per zone.
+                            Uses coarse dt (default 60 s) over the full
+                            simulation duration (e.g. 3600 s) for fast ranking.
+      Phase 2 (Combination): Cartesian product of top-K per zone.  Uses native
+                            config resolution (e.g. dt=0.1 s) but only 60 s
+                            duration as a stress test with full DC capacity.
       Phase 3 (Refinement):  Optional (--refine).  Iteratively re-sweep each
-                            zone from the Phase 2 winner.
+                            zone from the Phase 2 winner.  Uses native config
+                            resolution over the full simulation duration.
 
 Usage:
     python sweep_dc_locations.py --config config_ieee13.json --system ieee13
     python sweep_dc_locations.py --config config_ieee34.json --system ieee34
-    python sweep_dc_locations.py --config config_ieee123.json --system ieee123 --dt 60
-    python sweep_dc_locations.py --config config_ieee123.json --system ieee123 --dt 60 --top-k 6 --refine
+    python sweep_dc_locations.py --config config_ieee123.json --system ieee123
+    python sweep_dc_locations.py --config config_ieee123.json --system ieee123 --top-k 6 --refine
 """
 
 from __future__ import annotations
@@ -73,22 +78,52 @@ def _smooth_bump(t: float, t_center: float, half_width: float) -> float:
     return (1 - x * x) ** 2
 
 
+def _irregular_fluct(t: float, seed: float = 0.0) -> float:
+    """Irregular fluctuation via superposition of incommensurate frequencies.
+
+    Returns a value centred around 1.0 with ~±15% variation.
+    The use of irrational-ratio periods avoids visible periodicity.
+    """
+    s = seed
+    f1 = 0.06 * math.sin(2 * math.pi * t / 173.0 + s)
+    f2 = 0.05 * math.sin(2 * math.pi * t / 97.3 + s * 2.3)
+    f3 = 0.04 * math.sin(2 * math.pi * t / 251.7 + s * 0.7)
+    f4 = 0.03 * math.sin(2 * math.pi * t / 41.9 + s * 4.1)
+    f5 = 0.02 * math.sin(2 * math.pi * t / 317.3 + s * 1.9)
+    return 1.0 + f1 + f2 + f3 + f4 + f5
+
+
 def pv_profile_kw(t: float, peak_kw: float, site_idx: int = 0) -> float:
+    """Solar PV output (kW per phase) with per-site cloud patterns.
+
+    Each site has a distinct profile with different cloud events, trends, and
+    fluctuation seeds so the curves are visually distinguishable.
+    """
     T = T_TOTAL_S
     if site_idx == 0:
+        # Site 0: Declining afternoon output with two cloud dips
         trend = 0.85 - 0.30 * (t / T)
         cloud = 1.0
-        cloud -= 0.55 * _smooth_bump(t, 0.17 * T, 0.033 * T)
-        cloud -= 0.40 * _smooth_bump(t, 0.58 * T, 0.050 * T)
-        fluct = 1.0 + 0.10 * math.sin(2 * math.pi * t / 300.0 + 0.3)
-        fluct += 0.05 * math.sin(2 * math.pi * t / 90.0 + 1.7)
+        cloud -= 0.55 * _smooth_bump(t, 600, 120)
+        cloud -= 0.40 * _smooth_bump(t, 2100, 180)
+        fluct = _irregular_fluct(t, seed=0.3)
         return max(0.0, peak_kw * trend * max(cloud, 0.05) * fluct)
-    else:
+    elif site_idx == 1:
+        # Site 1: Midday peak with passing cloud bank
         ramp = 0.55 + 0.40 * _smooth_bump(t, 1200, 900)
         cloud = 1.0
         cloud -= 0.60 * _smooth_bump(t, 1680, 240)
-        fluct = 1.0 + 0.08 * math.sin(2 * math.pi * t / 200.0 + 2.1)
-        fluct += 0.04 * math.sin(2 * math.pi * t / 70.0 + 0.5)
+        cloud -= 0.25 * _smooth_bump(t, 2400, 150)
+        fluct = _irregular_fluct(t, seed=2.1)
+        return max(0.0, peak_kw * ramp * max(cloud, 0.05) * fluct)
+    else:
+        # Site 2+: Morning ramp, sustained high, late cloud event
+        # Seed varies by site_idx so additional PV sites get distinct curves
+        ramp = 0.30 + 0.65 * min(1.0, t / 900.0)
+        cloud = 1.0
+        cloud -= 0.70 * _smooth_bump(t, 2700, 300)
+        cloud -= 0.30 * _smooth_bump(t, 1200, 100)
+        fluct = _irregular_fluct(t, seed=2.0 + site_idx * 3.7)
         return max(0.0, peak_kw * ramp * max(cloud, 0.05) * fluct)
 
 
@@ -245,6 +280,7 @@ class SweepConfig(BaseModel):
     ofo: OFOParams = OFOParams()
     training: TrainingConfig | None = None
     inference_ramp: InferenceRampConfig | None = None
+    load_shift: dict | None = None
     simulation: SimulationParams = SimulationParams()
     power_augmentation: PowerAugmentationConfig = PowerAugmentationConfig(
         amplitude_scale_range=(0.98, 1.02), noise_fraction=0.005,
@@ -890,9 +926,6 @@ def main_1d(*, config: SweepConfig, system: str, buses: list[str] | None = None,
     save_dir = output_dir if output_dir else (Path(__file__).resolve().parent / "outputs" / system / "sweep_dc_locations_1d")
     save_dir.mkdir(parents=True, exist_ok=True)
 
-    file_handler = logging.FileHandler(save_dir / "console_output.txt", mode="w")
-    file_handler.setFormatter(logging.Formatter("%(asctime)s %(name)s %(levelname)s %(message)s", datefmt="%H:%M:%S"))
-    logging.getLogger().addHandler(file_handler)
 
     assert config.dc_sites is not None
     default_site = next(iter(config.dc_sites.values()))
@@ -1158,10 +1191,6 @@ def main_2d(*, config: SweepConfig, system: str, dt_override: str | None = None,
 
     save_dir = output_dir if output_dir else (Path(__file__).resolve().parent / "outputs" / system / "sweep_dc_locations_2d")
     save_dir.mkdir(parents=True, exist_ok=True)
-
-    file_handler = logging.FileHandler(save_dir / "sweep.log", mode="w")
-    file_handler.setFormatter(logging.Formatter("%(asctime)s %(name)s %(levelname)s %(message)s", datefmt="%H:%M:%S"))
-    logging.getLogger().addHandler(file_handler)
 
     inference_data, training_trace, logistic_models = _load_shared_data(
         config, all_models, data_dir, data_dt,
@@ -1624,13 +1653,18 @@ def main_zoned(*, config: SweepConfig, system: str, dt_override: str | None = No
                refine: bool = False) -> None:
     """Zone-constrained sweep with screening + combination + optional refinement.
 
+    Three-phase design with different resolution/duration per phase:
+
     Phase 1 (Screening): Sweep each zone independently while holding other zones
-        at their default config buses. Rank by violation metric, keep top-K per zone.
-        Uses dt_screening resolution if provided, otherwise falls back to dt_override
-        or the config's native resolution.
-    Phase 2 (Combination): Cartesian product of top-K per zone, full multi-DC sim.
-    Phase 3 (Refinement, optional): Starting from the Phase 2 winner, re-sweep each
-        zone one at a time (holding others at best) to catch missed interactions.
+        at their default config buses.  Uses coarse resolution (``dt_screening``,
+        default 60 s) over the full simulation duration (typically 3600 s) for
+        fast ranking.  Keep top-K per zone.
+    Phase 2 (Combination): Cartesian product of top-K per zone.  Uses native
+        config resolution (typically dt=0.1 s) but only 60 s duration as a
+        stress test with full DC capacity and constant PV.
+    Phase 3 (Refinement, optional): Starting from the Phase 2 winner, re-sweep
+        each zone one at a time (holding others at best).  Uses native config
+        resolution over the full simulation duration for accurate evaluation.
     """
     sim = config.simulation
     ofo_params = config.ofo
@@ -1639,34 +1673,27 @@ def main_zoned(*, config: SweepConfig, system: str, dt_override: str | None = No
 
     data_dt = float(_parse_fraction(sim.dt_dc))
 
-    # Full-resolution dt (for Phase 2 & 3)
-    if dt_override is not None:
-        dt_dc = dt_grid = dt_ctrl = _parse_fraction(dt_override)
-        logger.info("Time resolution override: dt = %s s for all components", dt_override)
-    else:
-        dt_dc = _parse_fraction(sim.dt_dc)
-        dt_grid = _parse_fraction(sim.dt_grid)
-        dt_ctrl = _parse_fraction(sim.dt_ctrl)
+    # Full-resolution dt (for Phase 2 & 3): always use config native resolution
+    dt_dc = _parse_fraction(sim.dt_dc)
+    dt_grid = _parse_fraction(sim.dt_grid)
+    dt_ctrl = _parse_fraction(sim.dt_ctrl)
+    logger.info("Phase 2/3 resolution: dt_dc=%s, dt_grid=%s, dt_ctrl=%s",
+                dt_dc, dt_grid, dt_ctrl)
 
-    # Screening dt (for Phase 1 only)
+    # Screening dt (Phase 1): coarse resolution for fast ranking
     if dt_screening is not None:
         dt_dc_screen = dt_grid_screen = dt_ctrl_screen = _parse_fraction(dt_screening)
-        logger.info("Screening resolution: dt = %s s (Phase 1 only)", dt_screening)
+    elif dt_override is not None:
+        dt_dc_screen = dt_grid_screen = dt_ctrl_screen = _parse_fraction(dt_override)
     else:
-        dt_dc_screen = dt_dc
-        dt_grid_screen = dt_grid
-        dt_ctrl_screen = dt_ctrl
+        # Default: 60 s for screening (coarse but fast)
+        dt_dc_screen = dt_grid_screen = dt_ctrl_screen = Fraction(60)
+    logger.info("Phase 1 screening resolution: dt = %s s", dt_dc_screen)
 
     save_dir = output_dir if output_dir else (
         Path(__file__).resolve().parent / "outputs" / system / "sweep_dc_locations_zoned"
     )
     save_dir.mkdir(parents=True, exist_ok=True)
-
-    file_handler = logging.FileHandler(save_dir / "sweep.log", mode="w")
-    file_handler.setFormatter(logging.Formatter(
-        "%(asctime)s %(name)s %(levelname)s %(message)s", datefmt="%H:%M:%S",
-    ))
-    logging.getLogger().addHandler(file_handler)
 
     inference_data, training_trace, logistic_models = _load_shared_data(
         config, all_models, data_dir, data_dt,

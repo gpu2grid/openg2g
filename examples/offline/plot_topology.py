@@ -267,6 +267,7 @@ def plot_topology(
     config_path: Path,
     system: str,
     output_dir: Path | None = None,
+    large_font: bool = False,
 ) -> Path:
     """Plot system topology and return the output file path."""
     config_path = config_path.resolve()
@@ -310,8 +311,12 @@ def plot_topology(
         for b in buses:
             bus_zone[b.lower()] = zid
 
+    # ── Font scale ──
+    fs = 2.5 if large_font else 1.0  # font scale factor
+
     # ── Plot ──
-    fig, ax = plt.subplots(figsize=(20, 15))
+    # fig, ax = plt.subplots(figsize=(20, 15))
+    fig, ax = plt.subplots(figsize=(30, 10))
 
     # Draw edges
     for a, b in edges:
@@ -323,7 +328,8 @@ def plot_topology(
                 color, alpha = zone_colors[za], 0.5
             else:
                 color, alpha = "#BDBDBD", 0.7
-            ax.plot(x, y, "-", color=color, linewidth=1.2, alpha=alpha, zorder=1)
+            # ax.plot(x, y, "-", color=color, linewidth=1.2, alpha=alpha, zorder=1)
+            ax.plot(x, y, "-", color=color, linewidth=3.0, alpha=alpha, zorder=1)
 
     # Draw buses
     exclude_labels = {b.lower() for b in cfg.get("exclude_buses", [])}
@@ -334,11 +340,15 @@ def plot_topology(
 
         if is_dc:
             color = zone_colors.get(zid, "#999999")
-            ax.plot(x, y, "*", color=color, markersize=24, markeredgecolor="black",
-                    markeredgewidth=1.5, zorder=5)
+            # ax.plot(x, y, "*", color=color, markersize=24, markeredgecolor="black",
+            #         markeredgewidth=1.5, zorder=5)
+            ax.plot(x, y, "*", color=color, markersize=48, markeredgecolor="black",
+                    markeredgewidth=2.0, zorder=5)
         elif is_pv:
-            ax.plot(x, y, "^", color="#FFD600", markersize=14, markeredgecolor="black",
-                    markeredgewidth=1.2, zorder=5)
+            # ax.plot(x, y, "^", color="#FFD600", markersize=14, markeredgecolor="black",
+            #         markeredgewidth=1.2, zorder=5)
+            ax.plot(x, y, "^", color="#FFD600", markersize=28, markeredgecolor="black",
+                    markeredgewidth=1.8, zorder=5)
         elif zid:
             ax.plot(x, y, "o", color=zone_colors[zid], markersize=6,
                     markeredgecolor="black", markeredgewidth=0.4, zorder=3)
@@ -346,34 +356,34 @@ def plot_topology(
             ax.plot(x, y, "s", color="#CCCCCC", markersize=5,
                     markeredgecolor="#888", markeredgewidth=0.3, zorder=2)
 
-        fontsize = 9 if (is_dc or is_pv) else 6
+        fontsize = (9 if (is_dc or is_pv) else 6) * fs
         fontweight = "bold" if (is_dc or is_pv) else "normal"
         ax.annotate(bus_name, (x, y), textcoords="offset points",
-                    xytext=(0, 8 if (is_dc or is_pv) else 5), ha="center",
+                    xytext=(0, (8 if (is_dc or is_pv) else 5) * fs), ha="center",
                     fontsize=fontsize, fontweight=fontweight, zorder=6)
 
-    # Draw regulators
-    for i, reg in enumerate(regulators):
-        fb, tb = reg.from_bus, reg.to_bus
-        if fb in coords and tb in coords:
-            mx = (coords[fb][0] + coords[tb][0]) / 2
-            my = (coords[fb][1] + coords[tb][1]) / 2
-            ax.plot(mx, my, "D", color="red", markersize=14, markeredgecolor="darkred",
-                    markeredgewidth=2, zorder=10)
-            # Alternate annotation placement
-            angle = 45 + (i % 4) * 90
-            import math
-            ox = 20 * math.cos(math.radians(angle))
-            oy = 20 * math.sin(math.radians(angle))
-            ax.annotate(
-                f"{reg.name}\n({reg.ctrl_name}, {reg.phases})",
-                (mx, my), textcoords="offset points",
-                xytext=(ox, oy), ha="left", fontsize=8, fontweight="bold",
-                color="darkred", zorder=11,
-                bbox=dict(boxstyle="round,pad=0.3", facecolor="lightyellow",
-                          edgecolor="darkred", alpha=0.9),
-                arrowprops=dict(arrowstyle="->", color="darkred", lw=1.5),
-            )
+    # Draw regulators (temporarily disabled)
+    # for i, reg in enumerate(regulators):
+    #     fb, tb = reg.from_bus, reg.to_bus
+    #     if fb in coords and tb in coords:
+    #         mx = (coords[fb][0] + coords[tb][0]) / 2
+    #         my = (coords[fb][1] + coords[tb][1]) / 2
+    #         ax.plot(mx, my, "D", color="red", markersize=14, markeredgecolor="darkred",
+    #                 markeredgewidth=2, zorder=10)
+    #         # Alternate annotation placement
+    #         angle = 45 + (i % 4) * 90
+    #         import math
+    #         ox = 20 * math.cos(math.radians(angle))
+    #         oy = 20 * math.sin(math.radians(angle))
+    #         ax.annotate(
+    #             f"{reg.name}\n({reg.ctrl_name}, {reg.phases})",
+    #             (mx, my), textcoords="offset points",
+    #             xytext=(ox, oy), ha="left", fontsize=8 * fs, fontweight="bold",
+    #             color="darkred", zorder=11,
+    #             bbox=dict(boxstyle="round,pad=0.3", facecolor="lightyellow",
+    #                       edgecolor="darkred", alpha=0.9),
+    #             arrowprops=dict(arrowstyle="->", color="darkred", lw=1.5),
+    #         )
 
     # Legend
     handles = []
@@ -395,16 +405,20 @@ def plot_topology(
     if pv_buses:
         handles.append(plt.Line2D([0], [0], marker="^", color="w", markerfacecolor="#FFD600",
                        markersize=12, markeredgecolor="black", label="PV System"))
-    handles.append(plt.Line2D([0], [0], marker="D", color="w", markerfacecolor="red",
-                   markersize=10, markeredgecolor="darkred", label="Voltage Regulator"))
+    # handles.append(plt.Line2D([0], [0], marker="D", color="w", markerfacecolor="red",
+    #                markersize=10, markeredgecolor="darkred", label="Voltage Regulator"))
     handles.append(mpatches.Patch(color="#CCCCCC", label="Unzoned / Source"))
-    ax.legend(handles=handles, loc="best", fontsize=11, framealpha=0.9)
+    # ax.legend(handles=handles, loc="best", fontsize=11 * fs, framealpha=0.9)
+    # ax.legend(handles=handles, loc="lower right", fontsize=11 * fs, framealpha=0.9)
+    ax.legend(handles=handles, loc="center left", bbox_to_anchor=(1.02, 0.5),
+              fontsize=11 * fs, framealpha=0.9, borderaxespad=0)
 
     system_upper = system.upper().replace("IEEE", "IEEE ")
-    ax.set_title(f"{system_upper} Topology with DCs, PV Systems, and Regulators",
-                 fontsize=18, fontweight="bold")
-    ax.set_xlabel("X coordinate", fontsize=13)
-    ax.set_ylabel("Y coordinate", fontsize=13)
+    # ax.set_title(f"{system_upper} Topology with DCs, PV Systems, and Regulators",
+    #              fontsize=18 * fs, fontweight="bold")
+    ax.set_xlabel("X coordinate", fontsize=13 * fs)
+    ax.set_ylabel("Y coordinate", fontsize=13 * fs)
+    ax.tick_params(labelsize=10 * fs)
     ax.set_aspect("equal")
     ax.grid(True, alpha=0.15)
 
@@ -431,7 +445,10 @@ if __name__ == "__main__":
         """System name (e.g., ieee13, ieee34, ieee123)."""
         output_dir: str | None = None
         """Override output directory."""
+        large_font: bool = False
+        """Use very large fonts for all text on the plot."""
 
     args = tyro.cli(Args)
     out_dir = Path(args.output_dir) if args.output_dir else None
-    plot_topology(config_path=Path(args.config), system=args.system, output_dir=out_dir)
+    plot_topology(config_path=Path(args.config), system=args.system, output_dir=out_dir,
+                  large_font=args.large_font)

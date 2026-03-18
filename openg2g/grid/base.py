@@ -119,7 +119,7 @@ class GridBackend(Generic[GridStateT], ABC):
     def do_step(
         self,
         clock: SimulationClock,
-        power_samples_w: list[ThreePhase],
+        power_samples_w: dict[str, list[ThreePhase]] | list[ThreePhase],
         events: EventEmitter,
     ) -> GridStateT:
         """Call `step`, record the state, and return it.
@@ -136,7 +136,7 @@ class GridBackend(Generic[GridStateT], ABC):
     def step(
         self,
         clock: SimulationClock,
-        power_samples_w: list[ThreePhase],
+        power_samples_w: dict[str, list[ThreePhase]] | list[ThreePhase],
         events: EventEmitter,
     ) -> GridStateT:
         """Advance one native timestep and return state for this step."""

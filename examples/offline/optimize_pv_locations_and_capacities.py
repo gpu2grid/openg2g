@@ -1342,6 +1342,107 @@ def plot_sensitivity_heatmap(
     logger.info("Sensitivity heatmap saved: %s", save_dir / f"pv_sensitivity_{system}.png")
 
 
+def plot_scenario_profiles(
+    scenarios: list[Scenario],
+    save_dir: Path,
+    system: str,
+    dc_sites_info: list[tuple[str, float, float, str]] | None = None,
+    dc_demand_kw: np.ndarray | None = None,
+    dc_site_ids: list[str] | None = None,
+) -> None:
+    """Plot PV profiles, load profiles, DC demand profiles, and TOU prices.
+
+    Generates a single figure with four subplots showing all scenario
+    curves, so the user can visually inspect the inputs to the optimisation.
+
+    DC demand can be supplied in two ways (checked in order):
+      1. ``dc_demand_kw`` + ``dc_site_ids`` — precomputed array of shape
+         (n_sites, T, n_scenarios) in kW per phase.
+      2. ``dc_sites_info`` — list of (bus, peak_kw, base_kw, site_id) tuples;
+         demand is reconstructed from the scenario load profiles.
+    """
+    import matplotlib.pyplot as plt
+
+    fig, axes = plt.subplots(2, 2, figsize=(16, 10), sharex=True)
+
+    cmap = plt.colormaps.get_cmap("tab10").resampled(max(len(scenarios), 1))
+
+    # ── PV profiles ──
+    ax = axes[0, 0]
+    for i, sc in enumerate(scenarios):
+        ax.plot(sc.hours, sc.pv_profile, label=sc.name, color=cmap(i), linewidth=1.5)
+    ax.set_ylabel("Normalised PV Output")
+    ax.set_title("PV Generation Profiles")
+    ax.legend(fontsize=8)
+    ax.grid(True, alpha=0.3)
+    ax.set_ylim(bottom=0)
+
+    # ── TOU prices ──
+    ax = axes[0, 1]
+    # All scenarios share the same price profile
+    ax.step(scenarios[0].hours, scenarios[0].price_per_kwh, where="post",
+            color="#4C72B0", linewidth=2)
+    ax.set_ylabel("Price ($/kWh)")
+    ax.set_title("Time-of-Use Electricity Price")
+    ax.grid(True, alpha=0.3)
+    ax.set_ylim(bottom=0)
+
+    # ── Time-varying load profiles (non-DC buses) ──
+    ax = axes[1, 0]
+    dc_buses: set[str] = set()
+    if dc_sites_info:
+        dc_buses = {info[0] for info in dc_sites_info}
+    sc0 = scenarios[0]  # Use first scenario as representative
+    load_buses_plotted = []
+    for bus in sc0.load_kw_per_bus:
+        if bus not in dc_buses:
+            load_buses_plotted.append(bus)
+    if load_buses_plotted:
+        load_cmap = plt.colormaps.get_cmap("Set2").resampled(max(len(load_buses_plotted), 1))
+        for j, bus in enumerate(load_buses_plotted):
+            ax.plot(sc0.hours, sc0.load_kw_per_bus[bus],
+                    label=bus, color=load_cmap(j), linewidth=1.5)
+        ax.legend(fontsize=8)
+    ax.set_xlabel("Hour of Day")
+    ax.set_ylabel("Load (kW per phase)")
+    ax.set_title(f"Time-Varying Load Profiles ({sc0.name})")
+    ax.grid(True, alpha=0.3)
+
+    # ── DC demand profiles ──
+    ax = axes[1, 1]
+    if dc_demand_kw is not None and dc_site_ids is not None:
+        # Precomputed demand arrays (from co-opt path)
+        dc_cmap = plt.colormaps.get_cmap("Dark2").resampled(max(len(dc_site_ids), 1))
+        for k, site_id in enumerate(dc_site_ids):
+            # Plot first scenario (sc_idx=0); shape is (T,)
+            ax.plot(sc0.hours, dc_demand_kw[k, :, 0],
+                    label=site_id, color=dc_cmap(k), linewidth=1.5)
+        ax.legend(fontsize=8)
+    elif dc_sites_info:
+        # Reconstruct from scenario load profiles
+        dc_cmap = plt.colormaps.get_cmap("Dark2").resampled(max(len(dc_sites_info), 1))
+        for k, (dc_bus, dc_peak, dc_base, site_id) in enumerate(dc_sites_info):
+            # Plot the actual demand (not the deviation from base)
+            if dc_bus in sc0.load_kw_per_bus:
+                actual = sc0.load_kw_per_bus[dc_bus] + dc_base
+            else:
+                actual = np.full_like(sc0.hours, dc_base)
+            ax.plot(sc0.hours, actual,
+                    label=f"{site_id} ({dc_bus})", color=dc_cmap(k), linewidth=1.5)
+        ax.legend(fontsize=8)
+    ax.set_xlabel("Hour of Day")
+    ax.set_ylabel("DC Load (kW per phase)")
+    ax.set_title(f"DC Demand Profiles ({sc0.name})")
+    ax.grid(True, alpha=0.3)
+
+    fig.suptitle(f"Scenario Profiles — {system}", fontsize=14)
+    fig.tight_layout()
+    save_path = save_dir / f"scenario_profiles_{system}.png"
+    fig.savefig(save_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    logger.info("Scenario profiles saved: %s", save_path)
+
+
 # ── OFO comparison ────────────────────────────────────────────────────────
 
 
@@ -1704,9 +1805,6 @@ def main(
     save_dir = Path(__file__).resolve().parent / "outputs" / system / "pv_expansion"
     save_dir.mkdir(parents=True, exist_ok=True)
 
-    file_handler = logging.FileHandler(save_dir / "console_output.txt", mode="w")
-    file_handler.setFormatter(logging.Formatter("%(asctime)s %(name)s %(levelname)s %(message)s", datefmt="%H:%M:%S"))
-    logging.getLogger().addHandler(file_handler)
 
     # Discover candidate buses
     if buses:
@@ -1810,6 +1908,8 @@ def main(
                     int(sc.weight * 365),
                     sc.pv_profile.max(),
                     len(sc.load_kw_per_bus))
+
+    plot_scenario_profiles(scenarios, save_dir, system, dc_sites_info=dc_sites_info or None)
 
     current_tap_pu = dict(tap_pu)  # pu values for sensitivity computation
     current_tap_ints = dict(initial_tap_ints)  # integer positions for MILP center
@@ -2016,6 +2116,30 @@ def main(
         json.dump(summary, f, indent=2)
 
     plot_results(candidate_buses, result, save_dir, system)
+
+    # ── Plot optimised topology ──
+    try:
+        import json as _json
+        from plot_topology import plot_topology
+
+        cfg_dict = _json.loads(config_path.read_bytes())
+        cfg_dict["pv_systems"] = [
+            {"bus": bus, "bus_kv": default_site.bus_kv,
+             "peak_kw": cap / 3.0, "power_factor": 1.0}
+            for bus, cap in zip(result.pv_locations, result.pv_capacities_kw)
+        ]
+        cfg_dict["ieee_case_dir"] = str(config.ieee_case_dir)
+        tmp_config = save_dir / f"_optimized_config_{system}.json"
+        tmp_config.write_text(_json.dumps(cfg_dict, indent=2))
+        plot_topology(config_path=tmp_config, system=system, output_dir=save_dir)
+        topo_default = save_dir / f"{system}_topology.png"
+        topo_final = save_dir / f"optimized_topology_{system}.png"
+        if topo_default.exists():
+            topo_default.replace(topo_final)
+            logger.info("Topology plot: %s", topo_final)
+        tmp_config.unlink(missing_ok=True)
+    except Exception as e:
+        logger.warning("Topology plot failed: %s", e)
 
     # ── Step 4: Validate with full OpenDSS simulation ──
     # For validation, use each scenario's median-hour tap setting

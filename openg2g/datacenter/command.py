@@ -25,10 +25,13 @@ class SetBatchSize(DatacenterCommand):
         batch_size_by_model: Mapping of model label to target batch size.
         ramp_up_rate_by_model: Per-model requests/second ramp-up rate.
             Models not present get immediate changes (rate 0).
+        target_site_id: Site this command targets. The coordinator uses
+            this to route the command to the correct datacenter.
     """
 
     batch_size_by_model: dict[str, int]
     ramp_up_rate_by_model: dict[str, float] = field(default_factory=dict)
+    target_site_id: str | None = None
 
 
 @dataclass(frozen=True)

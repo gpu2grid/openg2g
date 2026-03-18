@@ -70,6 +70,7 @@ from optimize_pv_locations_and_capacities import (
     compute_pv_sensitivities,
     compute_tap_sensitivities,
     generate_scenarios,
+    plot_scenario_profiles,
     plot_sensitivity_heatmap,
     precompute_load_v_shift,
     validate_with_opendss,
@@ -719,8 +720,16 @@ def plot_coopt_results(
     result: CoOptMILPResult,
     save_dir: Path,
     system: str,
+    dc_demand_kw: np.ndarray | None = None,
+    dc_site_ids: list[str] | None = None,
 ) -> None:
-    """Bar chart of PV capacities + DC assignment annotations."""
+    """Bar chart of PV capacities + DC load bar chart with assignment labels.
+
+    Args:
+        dc_demand_kw: shape (n_sites, T, n_scenarios), kW per phase.
+            If provided, shows peak DC load at each assigned bus.
+        dc_site_ids: ordered site IDs matching dc_demand_kw axis 0.
+    """
     import matplotlib.pyplot as plt
     from matplotlib.patches import Patch
 
@@ -745,29 +754,41 @@ def plot_coopt_results(
         Patch(color="#4C72B0", label="Not selected"),
     ])
 
-    # DC assignments
+    # DC assignments — show peak load (kW per phase) at each candidate bus
     ax = axes[1]
-    # Show which buses got DC sites
     assigned_buses = set(result.dc_assignments.values())
+
+    # Build per-bus peak demand from dc_demand_kw
+    bus_peak_kw: dict[str, float] = {}
+    bus_site_label: dict[str, str] = {}
+    if dc_demand_kw is not None and dc_site_ids is not None:
+        for site_id, bus in result.dc_assignments.items():
+            if site_id in dc_site_ids:
+                k = dc_site_ids.index(site_id)
+                peak = float(dc_demand_kw[k].max())  # max over T and scenarios
+                bus_peak_kw[bus] = bus_peak_kw.get(bus, 0.0) + peak
+                bus_site_label[bus] = site_id
+
+    bar_vals = [bus_peak_kw.get(b, 0.0) for b in dc_candidate_buses]
     dc_colors = [
         "#55A868" if b in assigned_buses else "#CCCCCC"
         for b in dc_candidate_buses
     ]
     xd = np.arange(len(dc_candidate_buses))
-    ax.bar(xd, [1 if b in assigned_buses else 0.1 for b in dc_candidate_buses],
-           color=dc_colors)
+    ax.bar(xd, bar_vals, color=dc_colors)
     ax.set_xlabel("Bus")
-    ax.set_ylabel("DC Assigned")
+    ax.set_ylabel("DC Peak Load (kW per phase)")
     ax.set_title(f"DC Assignments — {system}")
     ax.set_xticks(xd)
     ax.set_xticklabels(dc_candidate_buses, rotation=45, ha="right", fontsize=8)
 
-    # Annotate with site IDs
+    # Annotate with site IDs above assigned bars
     for site_id, bus in result.dc_assignments.items():
         if bus in dc_candidate_buses:
             idx = dc_candidate_buses.index(bus)
+            y_val = bus_peak_kw.get(bus, 0.0)
             ax.annotate(
-                site_id, (idx, 1.05), ha="center", va="bottom",
+                site_id, (idx, y_val), ha="center", va="bottom",
                 fontsize=8, fontweight="bold",
             )
 
@@ -831,13 +852,6 @@ def main(
     save_dir = Path(__file__).resolve().parent / "outputs" / system / "pv_dc_coopt"
     save_dir.mkdir(parents=True, exist_ok=True)
 
-    file_handler = logging.FileHandler(save_dir / "console_output.txt", mode="w")
-    file_handler.setFormatter(
-        logging.Formatter(
-            "%(asctime)s %(name)s %(levelname)s %(message)s", datefmt="%H:%M:%S"
-        )
-    )
-    logging.getLogger().addHandler(file_handler)
 
     # ── Step 1: Discover PV candidate buses ──
     logger.info("")
@@ -981,6 +995,8 @@ def main(
             len(sc.load_kw_per_bus),
         )
 
+    # (scenario profile plot deferred to after DC demand computation)
+
     # ── Step 5: Compute sensitivities on bare circuit (no DC) ──
     logger.info("")
     logger.info("=" * 70)
@@ -1091,6 +1107,11 @@ def main(
             dc_demand_kw[k].min(),
             dc_demand_kw[k].max(),
         )
+
+    plot_scenario_profiles(
+        scenarios, save_dir, system,
+        dc_demand_kw=dc_demand_kw, dc_site_ids=site_ids_ordered,
+    )
 
     # ── Step 7: Solve MILP ──
     logger.info("")
@@ -1291,7 +1312,8 @@ def main(
 
     # Plots
     plot_coopt_results(
-        pv_candidate_buses, dc_candidate_buses, result, save_dir, system
+        pv_candidate_buses, dc_candidate_buses, result, save_dir, system,
+        dc_demand_kw=dc_demand_kw, dc_site_ids=site_ids_ordered,
     )
 
     # ── Plot optimized topology ──

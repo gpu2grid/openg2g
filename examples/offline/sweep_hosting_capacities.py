@@ -1,10 +1,16 @@
-"""Hosting capacity analysis: find max GPUs per bus without voltage violations.
+"""Hosting capacity analysis: find max GPUs per bus within voltage violation budget.
+
+Feasibility is defined by the *integral* of voltage violation (pu * s)
+across all bus-phase pairs: a replica count is feasible when
+``integral_violation_pu_s <= max_integral``.  This captures both the
+duration and severity of out-of-bounds voltage, giving OFO credit for
+reducing deviation magnitude (not just duration).
 
 For each candidate bus and each LLM model, binary-searches on num_replicas
 using load steps at 20%, 40%, 60%, 80%, 100% activation.  Each step is
 tested independently with its own optimised tap position (per-phase,
-range -16 to +16, ``dss_controls=False``).  If *any* step still has
-violations after tap optimisation, that replica count is infeasible.
+range -16 to +16, ``dss_controls=False``).  If *any* step exceeds the
+integral threshold after tap optimisation, that replica count is infeasible.
 
 A second pass (OFO + tap change) runs the full staircase with OFO
 batch-size control and a per-step tap schedule, reporting higher capacity
@@ -302,11 +308,11 @@ def optimize_taps_for_step(
             config, dc_buses, model_spec, num_replicas, inference_data, fraction, tap_pos,
         )
 
-        if best_stats is None or stats.violation_time_s < best_stats.violation_time_s:
+        if best_stats is None or stats.integral_violation_pu_s < best_stats.integral_violation_pu_s:
             best_stats = stats
             best_tap_pos = tap_pos
 
-        if stats.violation_time_s == 0.0:
+        if stats.integral_violation_pu_s == 0.0:
             return stats, tap_pos
 
         voltages = extract_all_voltages(grid_states, exclude_buses=tuple(config.exclude_buses))
@@ -375,9 +381,12 @@ def check_all_steps(
     num_replicas: int,
     inference_data: InferenceData,
     initial_taps: TapPosition,
-    violation_threshold_s: float = 0.0,
+    integral_threshold: float = 0.0,
 ) -> PerStepResult:
     """Optimise taps independently for each load step and check feasibility.
+
+    A step is feasible when its integral voltage violation (pu * s) is at
+    or below ``integral_threshold``.
 
     Returns a PerStepResult: feasible=True only if every step passes.
     """
@@ -392,7 +401,7 @@ def check_all_steps(
         stats, taps = optimize_taps_for_step(
             config, dc_buses, model_spec, num_replicas, inference_data, frac, initial_taps,
         )
-        feasible = stats.violation_time_s <= violation_threshold_s
+        feasible = stats.integral_violation_pu_s <= integral_threshold
         steps.append(StepResult(fraction=frac, stats=stats, taps=taps, feasible=feasible))
 
         worst_vmin = min(worst_vmin, stats.worst_vmin)
@@ -573,12 +582,14 @@ def find_max_replicas(
     max_replicas_upper: int,
     initial_taps: TapPosition,
     search_tol: int = 5,
-    violation_threshold_s: float = 0.0,
+    integral_threshold: float = 0.0,
 ) -> tuple[int, PerStepResult, int]:
     """Binary search for the maximum num_replicas (tap-only, no OFO).
 
     Args:
         dc_buses: List of bus names. Each bus gets an identical DC.
+        integral_threshold: Maximum allowed integral violation (pu * s)
+            per load step.
 
     Handles pre-existing overvoltage: DC load pulls voltage down, so adding
     replicas can *help* at overvoltage buses.  If the initial midpoint fails,
@@ -602,7 +613,7 @@ def find_max_replicas(
         )
         result = check_all_steps(
             config, dc_buses, model_spec, n, inference_data, initial_taps,
-            violation_threshold_s=violation_threshold_s,
+            integral_threshold=integral_threshold,
         )
         for sr in result.steps:
             status = "OK" if sr.feasible else "VIOL"
@@ -671,12 +682,14 @@ def find_max_replicas_ofo(
     base_max_replicas: int,
     base_steps: list[StepResult],
     search_tol: int = 5,
-    violation_threshold_s: float = 0.0,
+    integral_threshold: float = 0.0,
 ) -> tuple[int, VoltageStats, int]:
     """Binary search for max num_replicas with OFO + tap schedule.
 
     Args:
         dc_buses: List of bus names. Each bus gets an identical DC with OFO.
+        integral_threshold: Maximum allowed integral violation (pu * s)
+            for the full staircase simulation.
 
     Starts from the base (tap-only) result. For each candidate, first
     optimises per-step taps, then runs the full 360 s staircase with OFO
@@ -717,9 +730,9 @@ def find_max_replicas_ofo(
             tap_schedule=tap_schedule, initial_taps=initial_step_taps,
         )
 
-        if stats.violation_time_s > violation_threshold_s:
-            logger.info("      -> VIOLATION: %.1fs, vmin=%.4f, vmax=%.4f",
-                        stats.violation_time_s, stats.worst_vmin, stats.worst_vmax)
+        if stats.integral_violation_pu_s > integral_threshold:
+            logger.info("      -> VIOLATION: integral=%.4f pu·s, vmin=%.4f, vmax=%.4f",
+                        stats.integral_violation_pu_s, stats.worst_vmin, stats.worst_vmax)
             hi = mid
         else:
             logger.info("      -> OK: vmin=%.4f, vmax=%.4f", stats.worst_vmin, stats.worst_vmax)
@@ -766,45 +779,45 @@ def _plot_hosting_capacity_combined(
     logger.info("Plot saved to: %s", save_path)
 
 
-def _plot_violation_fraction_comparison(
+def _plot_integral_threshold_comparison(
     all_results: dict[float, tuple[list[dict], list[dict]]],
     save_path: Path,
     system: str,
 ) -> None:
-    """Line plot comparing hosting capacity across violation fractions.
+    """Line plot comparing hosting capacity across integral thresholds.
 
     Args:
-        all_results: {fraction: (wo_ofo_summary_rows, w_ofo_summary_rows)}
+        all_results: {threshold_pu_s: (wo_ofo_summary_rows, w_ofo_summary_rows)}
     """
     import matplotlib.pyplot as plt
 
-    fractions = sorted(all_results.keys())
+    thresholds = sorted(all_results.keys())
     buses = [r["dc_bus"] for r in next(iter(all_results.values()))[0]]
 
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6), sharey=True)
     cmap = plt.colormaps.get_cmap("tab10").resampled(max(len(buses), 1))
 
-    pct_labels = [f"{f*100:.0f}%" for f in fractions]
+    threshold_labels = [f"{t:.2f}" for t in thresholds]
 
     for i, bus in enumerate(buses):
-        wo_vals = [all_results[f][0][i]["hosting_capacity_MW"] for f in fractions]
-        w_vals = [all_results[f][1][i]["hosting_capacity_MW"] for f in fractions]
+        wo_vals = [all_results[t][0][i]["hosting_capacity_MW"] for t in thresholds]
+        w_vals = [all_results[t][1][i]["hosting_capacity_MW"] for t in thresholds]
         color = cmap(i)
-        ax1.plot(pct_labels, wo_vals, "o-", color=color, label=bus)
-        ax2.plot(pct_labels, w_vals, "s--", color=color, label=bus)
+        ax1.plot(threshold_labels, wo_vals, "o-", color=color, label=bus)
+        ax2.plot(threshold_labels, w_vals, "s--", color=color, label=bus)
 
     ax1.set_title("Tap Only (W/O OFO)")
-    ax1.set_xlabel("Violation Fraction")
+    ax1.set_xlabel("Max Integral Violation (pu·s)")
     ax1.set_ylabel("Hosting Capacity (MW)")
     ax1.legend(title="Bus", fontsize=8)
     ax1.grid(True, alpha=0.3)
 
     ax2.set_title("OFO + Tap Change")
-    ax2.set_xlabel("Violation Fraction")
+    ax2.set_xlabel("Max Integral Violation (pu·s)")
     ax2.legend(title="Bus", fontsize=8)
     ax2.grid(True, alpha=0.3)
 
-    fig.suptitle(f"Hosting Capacity vs. Violation Fraction — {system}", fontsize=14)
+    fig.suptitle(f"Hosting Capacity vs. Integral Threshold — {system}", fontsize=14)
     fig.tight_layout()
     fig.savefig(save_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
@@ -847,7 +860,7 @@ def _run_pass1(
     initial_taps: TapPosition,
     max_power_mw: float,
     search_tol: int,
-    step_violation_threshold_s: float,
+    integral_threshold: float,
 ) -> tuple[list[dict], list[dict], dict[tuple[str, str], tuple[int, list[StepResult]]]]:
     """Pass 1: tap-only binary search. Returns (rows, summary, base_results)."""
     base_rows: list[dict] = []
@@ -871,7 +884,7 @@ def _run_pass1(
                     max_replicas_upper=upper,
                     initial_taps=initial_taps,
                     search_tol=search_tol,
-                    violation_threshold_s=step_violation_threshold_s,
+                    integral_threshold=integral_threshold,
                 )
             except Exception as e:
                 logger.error("    FAILED: %s", e)
@@ -925,7 +938,7 @@ def _run_pass2(
     initial_taps: TapPosition,
     max_power_mw: float,
     search_tol: int,
-    staircase_violation_threshold_s: float,
+    integral_threshold: float,
     base_results: dict[tuple[str, str], tuple[int, list[StepResult]]],
 ) -> tuple[list[dict], list[dict]]:
     """Pass 2: OFO + tap change binary search. Returns (rows, summary)."""
@@ -957,7 +970,7 @@ def _run_pass2(
                         base_max_replicas=base_max,
                         base_steps=base_steps,
                         search_tol=search_tol,
-                        violation_threshold_s=staircase_violation_threshold_s,
+                        integral_threshold=integral_threshold,
                     )
                 except Exception as e:
                     logger.error("    FAILED: %s", e)
@@ -1000,10 +1013,10 @@ def main(
     buses: list[str] | None = None,
     max_power_mw: float = DEFAULT_MAX_POWER_MW,
     search_tol: int = 5,
-    violation_fractions: list[float] | None = None,
+    max_integrals: list[float] | None = None,
 ) -> None:
-    if violation_fractions is None:
-        violation_fractions = [0.1]
+    if max_integrals is None:
+        max_integrals = [1.0]
 
     config_path = config_path.resolve()
     config = SweepConfig.model_validate_json(config_path.read_bytes())
@@ -1024,9 +1037,6 @@ def main(
     save_dir = (Path(__file__).resolve().parent / "outputs" / system / "hosting_capacity_1d")
     save_dir.mkdir(parents=True, exist_ok=True)
 
-    file_handler = logging.FileHandler(save_dir / "console_output.txt", mode="w")
-    file_handler.setFormatter(logging.Formatter("%(asctime)s %(name)s %(levelname)s %(message)s", datefmt="%H:%M:%S"))
-    logging.getLogger().addHandler(file_handler)
 
     assert config.dc_sites is not None
     default_site = next(iter(config.dc_sites.values()))
@@ -1070,70 +1080,67 @@ def main(
     logger.info("HOSTING CAPACITY ANALYSIS")
     logger.info("Models: %s", [m.model_label for m in all_models])
     logger.info("Buses: %s", candidate_buses)
-    logger.info("Violation fractions: %s", [f"{f*100:.0f}%" for f in violation_fractions])
+    logger.info("Max integral violations (pu·s): %s", max_integrals)
     logger.info("PV peak_kw: 0.0 (disabled), Time-varying load peak_kw: 0.0 (disabled)")
     logger.info("Max power ceiling: %.1f MW, Search tolerance: %d replicas", max_power_mw, search_tol)
     logger.info("Tap range: %+d to %+d, dss_controls=False", MIN_TAP, MAX_TAP)
     logger.info("=" * 70)
 
-    # Collect results across all violation fractions for comparison plot
-    all_fraction_results: dict[float, tuple[list[dict], list[dict]]] = {}
+    # Collect results across all integral thresholds for comparison plot
+    all_threshold_results: dict[float, tuple[list[dict], list[dict]]] = {}
 
-    for vf in violation_fractions:
-        step_viol_s = vf * STEP_DURATION_S
-        staircase_viol_s = vf * STAIRCASE_DURATION_S
-        pct_tag = f"{vf*100:.0f}pct"
+    for mi in max_integrals:
+        tag = f"int{mi:.2f}"
 
         logger.info("")
         logger.info("=" * 70)
-        logger.info("VIOLATION FRACTION: %.0f%% (step: %.1fs / %ds, staircase: %.1fs / %ds)",
-                    vf * 100, step_viol_s, STEP_DURATION_S, staircase_viol_s, STAIRCASE_DURATION_S)
+        logger.info("MAX INTEGRAL VIOLATION: %.4f pu·s", mi)
         logger.info("=" * 70)
 
         # ── Pass 1: tap-only ──────────────────────────────────────────────
         logger.info("")
-        logger.info("=== PASS 1: Tap-only (no OFO) — %s ===", pct_tag)
+        logger.info("=== PASS 1: Tap-only (no OFO) — %s ===", tag)
         t0 = time.time()
 
         base_rows, base_summary, base_results = _run_pass1(
             config, candidate_buses, all_models, inference_data,
-            initial_taps, max_power_mw, search_tol, step_viol_s,
+            initial_taps, max_power_mw, search_tol, mi,
         )
         logger.info("Pass 1 complete in %.1f s", time.time() - t0)
 
-        _save_csv(base_rows, save_dir / f"results_{system}_hosting_capacity_WO_OFO_{pct_tag}.csv")
-        _save_csv(base_summary, save_dir / f"summary_{system}_hosting_capacity_WO_OFO_{pct_tag}.csv")
-        _log_summary(base_summary, f"Tap Only ({pct_tag})")
+        _save_csv(base_rows, save_dir / f"results_{system}_hosting_capacity_WO_OFO_{tag}.csv")
+        _save_csv(base_summary, save_dir / f"summary_{system}_hosting_capacity_WO_OFO_{tag}.csv")
+        _log_summary(base_summary, f"Tap Only ({tag})")
 
         # ── Pass 2: OFO + tap change ─────────────────────────────────────
         logger.info("")
-        logger.info("=== PASS 2: OFO + Tap Change — %s ===", pct_tag)
+        logger.info("=== PASS 2: OFO + Tap Change — %s ===", tag)
         t0 = time.time()
 
         ofo_rows, ofo_summary = _run_pass2(
             config, candidate_buses, all_models, inference_data,
             logistic_models, initial_taps, max_power_mw, search_tol,
-            staircase_viol_s, base_results,
+            mi, base_results,
         )
         logger.info("Pass 2 complete in %.1f s", time.time() - t0)
 
-        _save_csv(ofo_rows, save_dir / f"results_{system}_hosting_capacity_W_OFO_{pct_tag}.csv")
-        _save_csv(ofo_summary, save_dir / f"summary_{system}_hosting_capacity_W_OFO_{pct_tag}.csv")
-        _log_summary(ofo_summary, f"OFO + Tap Change ({pct_tag})")
+        _save_csv(ofo_rows, save_dir / f"results_{system}_hosting_capacity_W_OFO_{tag}.csv")
+        _save_csv(ofo_summary, save_dir / f"summary_{system}_hosting_capacity_W_OFO_{tag}.csv")
+        _log_summary(ofo_summary, f"OFO + Tap Change ({tag})")
 
-        # Combined plot for this violation fraction
+        # Combined plot for this threshold
         _plot_hosting_capacity_combined(
             base_summary, ofo_summary,
-            save_dir / f"hosting_capacity_{system}_{pct_tag}.png",
-            title=f"Hosting Capacity — {pct_tag} Violation Tolerance",
+            save_dir / f"hosting_capacity_{system}_{tag}.png",
+            title=f"Hosting Capacity — max integral {mi:.2f} pu·s",
         )
 
-        all_fraction_results[vf] = (base_summary, ofo_summary)
+        all_threshold_results[mi] = (base_summary, ofo_summary)
 
-    # Comparison plot across all violation fractions
-    if len(violation_fractions) > 1:
-        _plot_violation_fraction_comparison(
-            all_fraction_results,
+    # Comparison plot across all thresholds
+    if len(max_integrals) > 1:
+        _plot_integral_threshold_comparison(
+            all_threshold_results,
             save_dir / f"hosting_capacity_{system}_comparison.png",
             system=system,
         )
@@ -1153,7 +1160,7 @@ def _run_pass1_2d(
     initial_taps: TapPosition,
     max_power_mw: float,
     search_tol: int,
-    step_violation_threshold_s: float,
+    integral_threshold: float,
 ) -> tuple[list[dict], dict[str, float]]:
     """Pass 1 (tap-only) for all bus pairs. Returns (rows, {pair_key: capacity_MW})."""
     rows: list[dict] = []
@@ -1178,7 +1185,7 @@ def _run_pass1_2d(
                     max_replicas_upper=upper,
                     initial_taps=initial_taps,
                     search_tol=search_tol,
-                    violation_threshold_s=step_violation_threshold_s,
+                    integral_threshold=integral_threshold,
                 )
             except Exception as e:
                 logger.error("    FAILED: %s", e)
@@ -1216,7 +1223,7 @@ def _run_pass2_2d(
     initial_taps: TapPosition,
     max_power_mw: float,
     search_tol: int,
-    staircase_violation_threshold_s: float,
+    integral_threshold: float,
     base_pair_rows: list[dict],
 ) -> tuple[list[dict], dict[str, float]]:
     """Pass 2 (OFO + tap) for all bus pairs."""
@@ -1257,7 +1264,7 @@ def _run_pass2_2d(
                         base_max_replicas=base_max,
                         base_steps=base_step_result.steps,
                         search_tol=search_tol,
-                        violation_threshold_s=staircase_violation_threshold_s,
+                        integral_threshold=integral_threshold,
                     )
                 except Exception as e:
                     logger.error("    FAILED: %s", e)
@@ -1337,11 +1344,11 @@ def main_2d(
     buses: list[str] | None = None,
     max_power_mw: float = DEFAULT_MAX_POWER_MW,
     search_tol: int = 5,
-    violation_fractions: list[float] | None = None,
+    max_integrals: list[float] | None = None,
 ) -> None:
     """2-D hosting capacity: sweep all bus pairs with identical DCs at both."""
-    if violation_fractions is None:
-        violation_fractions = [0.1]
+    if max_integrals is None:
+        max_integrals = [1.0]
 
     config_path = config_path.resolve()
     config = SweepConfig.model_validate_json(config_path.read_bytes())
@@ -1361,9 +1368,6 @@ def main_2d(
     save_dir = Path(__file__).resolve().parent / "outputs" / system / "hosting_capacity_2d"
     save_dir.mkdir(parents=True, exist_ok=True)
 
-    file_handler = logging.FileHandler(save_dir / "console_output.txt", mode="w")
-    file_handler.setFormatter(logging.Formatter("%(asctime)s %(name)s %(levelname)s %(message)s", datefmt="%H:%M:%S"))
-    logging.getLogger().addHandler(file_handler)
 
     assert config.dc_sites is not None
     default_site = next(iter(config.dc_sites.values()))
@@ -1408,42 +1412,40 @@ def main_2d(
     logger.info("Max power ceiling: %.1f MW", max_power_mw)
     logger.info("=" * 70)
 
-    for vf in violation_fractions:
-        step_viol_s = vf * STEP_DURATION_S
-        staircase_viol_s = vf * STAIRCASE_DURATION_S
-        pct_tag = f"{vf*100:.0f}pct"
+    for mi in max_integrals:
+        tag = f"int{mi:.2f}"
 
         logger.info("")
-        logger.info("=== PASS 1 (tap-only) -- %s ===", pct_tag)
+        logger.info("=== PASS 1 (tap-only) -- %s ===", tag)
         t0 = time.time()
         base_rows, base_cap = _run_pass1_2d(
             config, candidate_buses, all_models, inference_data,
-            initial_taps, max_power_mw, search_tol, step_viol_s,
+            initial_taps, max_power_mw, search_tol, mi,
         )
         logger.info("Pass 1 complete in %.1f s", time.time() - t0)
 
-        _save_csv(base_rows, save_dir / f"results_2d_{system}_WO_OFO_{pct_tag}.csv")
+        _save_csv(base_rows, save_dir / f"results_2d_{system}_WO_OFO_{tag}.csv")
         _plot_hosting_heatmap(
             base_cap, candidate_buses,
-            save_dir / f"heatmap_2d_{system}_WO_OFO_{pct_tag}.png",
-            title=f"Pairwise Hosting Capacity - Tap Only ({pct_tag})",
+            save_dir / f"heatmap_2d_{system}_WO_OFO_{tag}.png",
+            title=f"Pairwise Hosting Capacity - Tap Only ({tag})",
         )
 
         logger.info("")
-        logger.info("=== PASS 2 (OFO + tap) -- %s ===", pct_tag)
+        logger.info("=== PASS 2 (OFO + tap) -- %s ===", tag)
         t0 = time.time()
         ofo_rows, ofo_cap = _run_pass2_2d(
             config, candidate_buses, all_models, inference_data,
             logistic_models, initial_taps, max_power_mw, search_tol,
-            staircase_viol_s, base_rows,
+            mi, base_rows,
         )
         logger.info("Pass 2 complete in %.1f s", time.time() - t0)
 
-        _save_csv(ofo_rows, save_dir / f"results_2d_{system}_W_OFO_{pct_tag}.csv")
+        _save_csv(ofo_rows, save_dir / f"results_2d_{system}_W_OFO_{tag}.csv")
         _plot_hosting_heatmap(
             ofo_cap, candidate_buses,
-            save_dir / f"heatmap_2d_{system}_W_OFO_{pct_tag}.png",
-            title=f"Pairwise Hosting Capacity - OFO + Tap ({pct_tag})",
+            save_dir / f"heatmap_2d_{system}_W_OFO_{tag}.png",
+            title=f"Pairwise Hosting Capacity - OFO + Tap ({tag})",
         )
 
     logger.info("")
@@ -1468,8 +1470,8 @@ if __name__ == "__main__":
         """Power ceiling (MW) for binary-search upper bound."""
         search_tol: int = 5
         """Binary search tolerance in replicas."""
-        violation_fractions: str = "0.1"
-        """Comma-separated violation fractions (e.g. '0.01,0.05,0.1,0.2')."""
+        max_integrals: str = "1.0"
+        """Comma-separated max integral violation thresholds in pu·s (e.g. '0.5,1.0,2.0')."""
         log_level: str = "INFO"
         """Logging verbosity (DEBUG, INFO, WARNING)."""
 
@@ -1484,7 +1486,7 @@ if __name__ == "__main__":
     logging.getLogger("openg2g.controller.ofo").setLevel(logging.WARNING)
 
     bus_list = [b.strip() for b in args.buses.split(",")] if args.buses else None
-    vf_list = [float(v.strip()) for v in args.violation_fractions.split(",")]
+    mi_list = [float(v.strip()) for v in args.max_integrals.split(",")]
 
     if args.mode == "2d":
         main_2d(
@@ -1493,7 +1495,7 @@ if __name__ == "__main__":
             buses=bus_list,
             max_power_mw=args.max_power_mw,
             search_tol=args.search_tol,
-            violation_fractions=vf_list,
+            max_integrals=mi_list,
         )
     else:
         main(
@@ -1502,5 +1504,5 @@ if __name__ == "__main__":
             buses=bus_list,
             max_power_mw=args.max_power_mw,
             search_tol=args.search_tol,
-            violation_fractions=vf_list,
+            max_integrals=mi_list,
         )
