@@ -272,14 +272,17 @@ class TestSweepConfig:
         assert config.tap_schedule[0].t == 1500
         assert config.tap_schedule[1].t == 3300
 
-    def test_ieee34_no_tap_schedule(self):
+    def test_ieee34_has_tap_schedule(self):
         config = SweepConfig.model_validate_json(CONFIG_IEEE34.read_bytes())
-        assert len(config.tap_schedule) == 0
+        assert len(config.tap_schedule) == 1
+        assert config.tap_schedule[0].t == 1800
 
-    def test_ieee13_has_training_and_ramp(self):
+    def test_ieee13_has_training_and_site_ramps(self):
         config = SweepConfig.model_validate_json(CONFIG_IEEE13.read_bytes())
         assert config.training is not None
-        assert config.inference_ramp is not None
+        # Inference ramps are per-site, not top-level
+        site = config.dc_sites["default"]
+        assert len(site.inference_ramps) > 0
 
     def test_ieee34_no_training(self):
         config = SweepConfig.model_validate_json(CONFIG_IEEE34.read_bytes())
@@ -307,7 +310,6 @@ class TestExtractScenarioBaseTaps:
         bases = _extract_scenario_base_taps(config, initial)
         assert "inference" in bases
         assert "training" in bases
-        assert "low_load" in bases
 
 
 class TestBuildOFOConfig:

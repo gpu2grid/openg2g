@@ -124,13 +124,13 @@ class TestInferenceRamp:
 
     def test_invalid_target_low(self) -> None:
         """Negative target fraction should raise ValueError."""
-        with pytest.raises(ValueError, match="target must be in"):
+        with pytest.raises(ValueError, match="target must be >= 0.0"):
             InferenceRamp(target=-0.1)
 
-    def test_invalid_target_high(self) -> None:
-        """Target fraction above 1.0 should raise ValueError."""
-        with pytest.raises(ValueError, match="target must be in"):
-            InferenceRamp(target=1.5)
+    def test_target_above_one_is_valid(self) -> None:
+        """Target above 1.0 is valid (scale out)."""
+        r = InferenceRamp(target=1.5)
+        assert r.target == 1.5
 
     def test_at_returns_schedule(self) -> None:
         """Calling .at() should wrap in a single-entry InferenceRampSchedule."""
