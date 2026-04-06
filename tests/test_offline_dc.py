@@ -24,7 +24,9 @@ from openg2g.datacenter.workloads.inference import (
 from openg2g.events import EventEmitter
 
 MODEL = InferenceModelSpec(
-    model_label="TestModel", gpus_per_replica=1, itl_deadline_s=0.1,
+    model_label="TestModel",
+    gpus_per_replica=1,
+    itl_deadline_s=0.1,
     feasible_batch_sizes=(64, 128),
 )
 _REPLICA_COUNTS = {"TestModel": 10}
@@ -137,7 +139,9 @@ def test_offline_datacenter_emits_observed_itl_when_latency_fits_is_set():
         scale_stall=0.1,
     )
     latency_fits = ITLFitStore({"TestModel": {128: fake_params}})
-    dc = OfflineDatacenter(DC_CFG, _make_workload(store, itl_fits=latency_fits), dt_s=Fraction(1, 10), total_gpu_capacity=10)
+    dc = OfflineDatacenter(
+        DC_CFG, _make_workload(store, itl_fits=latency_fits), dt_s=Fraction(1, 10), total_gpu_capacity=10
+    )
 
     state = dc.step(SimulationClock(tick_s=Fraction(1, 10)), _EVENTS)
     assert "TestModel" in state.observed_itl_s_by_model

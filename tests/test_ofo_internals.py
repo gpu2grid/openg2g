@@ -34,9 +34,7 @@ def _make_primal(
         feasible_batch_sizes = [8, 16, 32, 64, 128]
     if config is None:
         config = OFOConfig()
-    model = InferenceModelSpec(
-        model_label="M", gpus_per_replica=1, itl_deadline_s=0.1, feasible_batch_sizes=(64, 128)
-    )
+    model = InferenceModelSpec(model_label="M", gpus_per_replica=1, itl_deadline_s=0.1, feasible_batch_sizes=(64, 128))
     fit = _trivial_logistic()
     return PrimalBatchOptimizer(
         models=[model],

@@ -36,8 +36,6 @@ try:
     )
     from systems import tap
 
-    from openg2g.grid.config import TapPosition
-
     CAN_IMPORT = True
 except Exception:
     CAN_IMPORT = False
@@ -136,7 +134,7 @@ class TestExperimentDefinitions:
         import tempfile
 
         with tempfile.NamedTemporaryFile(suffix=".csv", delete=False, mode="w") as f:
-            f.write("time_s,power_W\n0,100\n1,200\n")
+            f.write("t_s,power_W\n0,100\n1,200\n")
             tmp_path = Path(f.name)
 
         try:

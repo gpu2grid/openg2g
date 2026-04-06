@@ -50,21 +50,20 @@ from plot_all_figures import (
 )
 from sweep_dc_locations import ScenarioOpenDSSGrid
 from systems import (
-    SYSTEMS,
-    DCSite,
     DT_CTRL,
     DT_DC,
     DT_GRID,
     POWER_AUG,
-    PVSystemSpec,
+    SYSTEMS,
     TOTAL_DURATION_S,
-    TimeVaryingLoadSpec,
     V_MAX,
     V_MIN,
+    DCSite,
+    PVSystemSpec,
+    TimeVaryingLoadSpec,
     all_model_specs,
     deploy,
     load_data_sources,
-    model_spec,
 )
 
 from openg2g.controller.ofo import (
@@ -584,21 +583,33 @@ def _experiment_ieee13(
 
     dc_sites = {
         "default": DCSite(
-            bus="671", bus_kv=sys["bus_kv"], base_kw_per_phase=500.0,
-            models=models, seed=0, total_gpu_capacity=7200,
+            bus="671",
+            bus_kv=sys["bus_kv"],
+            base_kw_per_phase=500.0,
+            models=models,
+            seed=0,
+            total_gpu_capacity=7200,
             inference_ramps=inference_ramps,
         ),
     }
 
     training = TrainingRun(
-        n_gpus=2400, trace=training_trace, target_peak_W_per_gpu=400.0,
+        n_gpus=2400,
+        trace=training_trace,
+        target_peak_W_per_gpu=400.0,
     ).at(t_start=1000.0, t_end=2000.0)
 
     baseline_ofo = OFOConfig(
-        primal_step_size=0.1, w_throughput=0.001, w_switch=1.0,
-        voltage_gradient_scale=1e6, v_min=V_MIN, v_max=V_MAX,
-        voltage_dual_step_size=1.0, latency_dual_step_size=1.0,
-        sensitivity_update_interval=3600, sensitivity_perturbation_kw=100.0,
+        primal_step_size=0.1,
+        w_throughput=0.001,
+        w_switch=1.0,
+        voltage_gradient_scale=1e6,
+        v_min=V_MIN,
+        v_max=V_MAX,
+        voltage_dual_step_size=1.0,
+        latency_dual_step_size=1.0,
+        sensitivity_update_interval=3600,
+        sensitivity_perturbation_kw=100.0,
     )
 
     pv_systems = [PVSystemSpec(bus="675", bus_kv=4.16, peak_kw=10.0)]
@@ -632,20 +643,34 @@ def _experiment_ieee34(
 
     dc_sites = {
         "upstream": DCSite(
-            bus="850", bus_kv=sys["bus_kv"], base_kw_per_phase=120.0,
-            models=upstream_models, seed=0, total_gpu_capacity=520,
+            bus="850",
+            bus_kv=sys["bus_kv"],
+            base_kw_per_phase=120.0,
+            models=upstream_models,
+            seed=0,
+            total_gpu_capacity=520,
         ),
         "downstream": DCSite(
-            bus="834", bus_kv=sys["bus_kv"], base_kw_per_phase=80.0,
-            models=downstream_models, seed=42, total_gpu_capacity=600,
+            bus="834",
+            bus_kv=sys["bus_kv"],
+            base_kw_per_phase=80.0,
+            models=downstream_models,
+            seed=42,
+            total_gpu_capacity=600,
         ),
     }
 
     baseline_ofo = OFOConfig(
-        primal_step_size=0.05, w_throughput=0.001, w_switch=1.0,
-        voltage_gradient_scale=1e6, v_min=V_MIN, v_max=V_MAX,
-        voltage_dual_step_size=20.0, latency_dual_step_size=1.0,
-        sensitivity_update_interval=3600, sensitivity_perturbation_kw=10.0,
+        primal_step_size=0.05,
+        w_throughput=0.001,
+        w_switch=1.0,
+        voltage_gradient_scale=1e6,
+        v_min=V_MIN,
+        v_max=V_MAX,
+        voltage_dual_step_size=20.0,
+        latency_dual_step_size=1.0,
+        sensitivity_update_interval=3600,
+        sensitivity_perturbation_kw=10.0,
     )
 
     pv_systems = [
@@ -678,35 +703,57 @@ def _experiment_ieee123(
     """IEEE 123-bus: four DC zones with per-site ramps."""
     dc_sites = {
         "z1_sw": DCSite(
-            bus="8", bus_kv=sys["bus_kv"], base_kw_per_phase=310.0,
-            models=(deploy("Llama-3.1-8B", 120),), seed=0, total_gpu_capacity=120,
+            bus="8",
+            bus_kv=sys["bus_kv"],
+            base_kw_per_phase=310.0,
+            models=(deploy("Llama-3.1-8B", 120),),
+            seed=0,
+            total_gpu_capacity=120,
             inference_ramps=InferenceRamp(target=180, model="Llama-3.1-8B").at(t_start=500, t_end=1000),
         ),
         "z2_nw": DCSite(
-            bus="23", bus_kv=sys["bus_kv"], base_kw_per_phase=265.0,
-            models=(deploy("Qwen2.5-32B", 80),), seed=17, total_gpu_capacity=160,
+            bus="23",
+            bus_kv=sys["bus_kv"],
+            base_kw_per_phase=265.0,
+            models=(deploy("Qwen2.5-32B", 80),),
+            seed=17,
+            total_gpu_capacity=160,
             inference_ramps=InferenceRamp(target=104, model="Qwen2.5-32B").at(t_start=1500, t_end=2500),
         ),
         "z3_se": DCSite(
-            bus="60", bus_kv=sys["bus_kv"], base_kw_per_phase=295.0,
-            models=(deploy("Llama-3.1-70B", 30), deploy("Llama-3.1-405B", 35)), seed=34, total_gpu_capacity=400,
+            bus="60",
+            bus_kv=sys["bus_kv"],
+            base_kw_per_phase=295.0,
+            models=(deploy("Llama-3.1-70B", 30), deploy("Llama-3.1-405B", 35)),
+            seed=34,
+            total_gpu_capacity=400,
             inference_ramps=(
                 InferenceRamp(target=45, model="Llama-3.1-70B").at(t_start=700, t_end=1100)
                 | InferenceRamp(target=52, model="Llama-3.1-405B").at(t_start=700, t_end=1100)
             ),
         ),
         "z4_ne": DCSite(
-            bus="105", bus_kv=sys["bus_kv"], base_kw_per_phase=325.0,
-            models=(deploy("Qwen2.5-235B-A22B", 55),), seed=51, total_gpu_capacity=440,
+            bus="105",
+            bus_kv=sys["bus_kv"],
+            base_kw_per_phase=325.0,
+            models=(deploy("Qwen2.5-235B-A22B", 55),),
+            seed=51,
+            total_gpu_capacity=440,
             inference_ramps=InferenceRamp(target=27, model="Qwen2.5-235B-A22B").at(t_start=2000, t_end=2500),
         ),
     }
 
     baseline_ofo = OFOConfig(
-        primal_step_size=0.05, w_throughput=0.001, w_switch=1.0,
-        voltage_gradient_scale=1e6, v_min=V_MIN, v_max=V_MAX,
-        voltage_dual_step_size=0.3, latency_dual_step_size=1.0,
-        sensitivity_update_interval=3600, sensitivity_perturbation_kw=10.0,
+        primal_step_size=0.05,
+        w_throughput=0.001,
+        w_switch=1.0,
+        voltage_gradient_scale=1e6,
+        v_min=V_MIN,
+        v_max=V_MAX,
+        voltage_dual_step_size=0.3,
+        latency_dual_step_size=1.0,
+        sensitivity_update_interval=3600,
+        sensitivity_perturbation_kw=10.0,
     )
 
     pv_systems = [

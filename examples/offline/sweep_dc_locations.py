@@ -37,22 +37,21 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 from systems import (
-    DCSite,
     DT_CTRL,
     DT_DC,
     DT_GRID,
     POWER_AUG,
     SYSTEMS,
+    TAP_STEP,
     TOTAL_DURATION_S,
     V_MAX,
     V_MIN,
-    TAP_STEP,
+    DCSite,
     PVSystemSpec,
     TimeVaryingLoadSpec,
     all_model_specs,
     deploy,
     load_data_sources,
-    model_spec,
     tap,
 )
 
@@ -68,7 +67,6 @@ from openg2g.datacenter.config import (
     InferenceModelSpec,
     InferenceRamp,
     InferenceRampSchedule,
-    ModelDeployment,
     PowerAugmentationConfig,
     TrainingRun,
 )
@@ -913,7 +911,9 @@ def main_1d(
             t_low = ramp_t_end + 120 if ramp_t_end > 0 else total_duration_s
             bus_tap_schedule_entries.append((t_low, bus_taps["low_load"]))
 
-        bus_tap_schedule = TapSchedule(()) if not bus_tap_schedule_entries else TapSchedule(tuple(bus_tap_schedule_entries))
+        bus_tap_schedule = (
+            TapSchedule(()) if not bus_tap_schedule_entries else TapSchedule(tuple(bus_tap_schedule_entries))
+        )
 
         cases = [
             ("baseline_no_tap", False, False),
@@ -1347,9 +1347,7 @@ def _run_multi_dc_case(
                 ramp_schedule: InferenceRampSchedule | None = None
                 for md in site.models:
                     abs_target = round(scale * md.num_replicas)
-                    entry = InferenceRamp(target=abs_target, model=md.spec.model_label).at(
-                        t_start=0, t_end=1
-                    )
+                    entry = InferenceRamp(target=abs_target, model=md.spec.model_label).at(t_start=0, t_end=1)
                     ramp_schedule = entry if ramp_schedule is None else (ramp_schedule | entry)
                 if ramp_schedule is not None:
                     wl_kwargs["inference_ramps"] = ramp_schedule
@@ -2131,21 +2129,37 @@ def _experiment_ieee13(sys_const, training_trace):
 
     dc_sites = {
         "default": DCSite(
-            bus="671", bus_kv=sys_const["bus_kv"], base_kw_per_phase=500.0,
-            models=models, seed=0, total_gpu_capacity=7200,
+            bus="671",
+            bus_kv=sys_const["bus_kv"],
+            base_kw_per_phase=500.0,
+            models=models,
+            seed=0,
+            total_gpu_capacity=7200,
             inference_ramps=inference_ramps,
         ),
     }
 
-    training = TrainingRun(
-        n_gpus=2400, trace=training_trace, target_peak_W_per_gpu=400.0,
-    ).at(t_start=1000.0, t_end=2000.0)
+    training = (
+        TrainingRun(
+            n_gpus=2400,
+            trace=training_trace,
+            target_peak_W_per_gpu=400.0,
+        ).at(t_start=1000.0, t_end=2000.0)
+        if training_trace is not None
+        else None
+    )
 
     ofo_config = OFOConfig(
-        primal_step_size=0.1, w_throughput=0.001, w_switch=1.0,
-        voltage_gradient_scale=1e6, v_min=V_MIN, v_max=V_MAX,
-        voltage_dual_step_size=1.0, latency_dual_step_size=1.0,
-        sensitivity_update_interval=3600, sensitivity_perturbation_kw=100.0,
+        primal_step_size=0.1,
+        w_throughput=0.001,
+        w_switch=1.0,
+        voltage_gradient_scale=1e6,
+        v_min=V_MIN,
+        v_max=V_MAX,
+        voltage_dual_step_size=1.0,
+        latency_dual_step_size=1.0,
+        sensitivity_update_interval=3600,
+        sensitivity_perturbation_kw=100.0,
     )
 
     tap_schedule_entries = [
@@ -2157,10 +2171,15 @@ def _experiment_ieee13(sys_const, training_trace):
     time_varying_loads = [TimeVaryingLoadSpec(bus="680", bus_kv=4.16, peak_kw=10.0)]
 
     return dict(
-        dc_sites=dc_sites, training=training, ofo_config=ofo_config,
+        dc_sites=dc_sites,
+        training=training,
+        ofo_config=ofo_config,
         tap_schedule_entries=tap_schedule_entries,
-        training_t_start=1000.0, training_t_end=2000.0, ramp_t_end=3000.0,
-        pv_systems=pv_systems, time_varying_loads=time_varying_loads,
+        training_t_start=1000.0,
+        training_t_end=2000.0,
+        ramp_t_end=3000.0,
+        pv_systems=pv_systems,
+        time_varying_loads=time_varying_loads,
     )
 
 
@@ -2178,20 +2197,34 @@ def _experiment_ieee34(sys_const, training_trace):
 
     dc_sites = {
         "upstream": DCSite(
-            bus="850", bus_kv=sys_const["bus_kv"], base_kw_per_phase=120.0,
-            models=upstream_models, seed=0, total_gpu_capacity=520,
+            bus="850",
+            bus_kv=sys_const["bus_kv"],
+            base_kw_per_phase=120.0,
+            models=upstream_models,
+            seed=0,
+            total_gpu_capacity=520,
         ),
         "downstream": DCSite(
-            bus="834", bus_kv=sys_const["bus_kv"], base_kw_per_phase=80.0,
-            models=downstream_models, seed=42, total_gpu_capacity=600,
+            bus="834",
+            bus_kv=sys_const["bus_kv"],
+            base_kw_per_phase=80.0,
+            models=downstream_models,
+            seed=42,
+            total_gpu_capacity=600,
         ),
     }
 
     ofo_config = OFOConfig(
-        primal_step_size=0.05, w_throughput=0.001, w_switch=1.0,
-        voltage_gradient_scale=1e6, v_min=V_MIN, v_max=V_MAX,
-        voltage_dual_step_size=20.0, latency_dual_step_size=1.0,
-        sensitivity_update_interval=3600, sensitivity_perturbation_kw=10.0,
+        primal_step_size=0.05,
+        w_throughput=0.001,
+        w_switch=1.0,
+        voltage_gradient_scale=1e6,
+        v_min=V_MIN,
+        v_max=V_MAX,
+        voltage_dual_step_size=20.0,
+        latency_dual_step_size=1.0,
+        sensitivity_update_interval=3600,
+        sensitivity_perturbation_kw=10.0,
     )
 
     pv_systems = [
@@ -2207,8 +2240,11 @@ def _experiment_ieee34(sys_const, training_trace):
     ]
 
     return dict(
-        dc_sites=dc_sites, training=None, ofo_config=ofo_config,
-        pv_systems=pv_systems, time_varying_loads=time_varying_loads,
+        dc_sites=dc_sites,
+        training=None,
+        ofo_config=ofo_config,
+        pv_systems=pv_systems,
+        time_varying_loads=time_varying_loads,
     )
 
 
@@ -2216,21 +2252,32 @@ def _experiment_ieee123(sys_const, training_trace):
     """IEEE 123-bus: four DC zones with per-site ramps."""
     dc_sites = {
         "z1_sw": DCSite(
-            bus="8", bus_kv=sys_const["bus_kv"], base_kw_per_phase=310.0,
-            models=(deploy("Llama-3.1-8B", 120),), seed=0, total_gpu_capacity=120,
+            bus="8",
+            bus_kv=sys_const["bus_kv"],
+            base_kw_per_phase=310.0,
+            models=(deploy("Llama-3.1-8B", 120),),
+            seed=0,
+            total_gpu_capacity=120,
             # 8B: round(1.5 * 120) = 180
             inference_ramps=InferenceRamp(target=180, model="Llama-3.1-8B").at(t_start=500, t_end=1000),
         ),
         "z2_nw": DCSite(
-            bus="23", bus_kv=sys_const["bus_kv"], base_kw_per_phase=265.0,
-            models=(deploy("Qwen2.5-Coder-32B", 80),), seed=17, total_gpu_capacity=160,
+            bus="23",
+            bus_kv=sys_const["bus_kv"],
+            base_kw_per_phase=265.0,
+            models=(deploy("Qwen2.5-Coder-32B", 80),),
+            seed=17,
+            total_gpu_capacity=160,
             # 30B: round(1.3 * 80) = 104
             inference_ramps=InferenceRamp(target=104, model="Qwen2.5-Coder-32B").at(t_start=1500, t_end=2500),
         ),
         "z3_se": DCSite(
-            bus="60", bus_kv=sys_const["bus_kv"], base_kw_per_phase=295.0,
+            bus="60",
+            bus_kv=sys_const["bus_kv"],
+            base_kw_per_phase=295.0,
             models=(deploy("Llama-3.1-70B", 30), deploy("Llama-3.1-405B", 35)),
-            seed=34, total_gpu_capacity=400,
+            seed=34,
+            total_gpu_capacity=400,
             # 70B: round(1.5 * 30) = 45, 405B: round(1.5 * 35) = 52
             inference_ramps=(
                 InferenceRamp(target=45, model="Llama-3.1-70B").at(t_start=700, t_end=1100)
@@ -2238,18 +2285,28 @@ def _experiment_ieee123(sys_const, training_trace):
             ),
         ),
         "z4_ne": DCSite(
-            bus="105", bus_kv=sys_const["bus_kv"], base_kw_per_phase=325.0,
-            models=(deploy("Qwen2.5-72B", 55),), seed=51, total_gpu_capacity=440,
+            bus="105",
+            bus_kv=sys_const["bus_kv"],
+            base_kw_per_phase=325.0,
+            models=(deploy("Qwen2.5-72B", 55),),
+            seed=51,
+            total_gpu_capacity=440,
             # 235B: round(0.5 * 55) = 27
             inference_ramps=InferenceRamp(target=27, model="Qwen2.5-72B").at(t_start=2000, t_end=2500),
         ),
     }
 
     ofo_config = OFOConfig(
-        primal_step_size=0.05, w_throughput=0.001, w_switch=1.0,
-        voltage_gradient_scale=1e6, v_min=V_MIN, v_max=V_MAX,
-        voltage_dual_step_size=0.3, latency_dual_step_size=1.0,
-        sensitivity_update_interval=3600, sensitivity_perturbation_kw=10.0,
+        primal_step_size=0.05,
+        w_throughput=0.001,
+        w_switch=1.0,
+        voltage_gradient_scale=1e6,
+        v_min=V_MIN,
+        v_max=V_MAX,
+        voltage_dual_step_size=0.3,
+        latency_dual_step_size=1.0,
+        sensitivity_update_interval=3600,
+        sensitivity_perturbation_kw=10.0,
     )
 
     pv_systems = [
@@ -2259,8 +2316,11 @@ def _experiment_ieee123(sys_const, training_trace):
     ]
 
     return dict(
-        dc_sites=dc_sites, training=None, ofo_config=ofo_config,
-        pv_systems=pv_systems, time_varying_loads=[],
+        dc_sites=dc_sites,
+        training=None,
+        ofo_config=ofo_config,
+        pv_systems=pv_systems,
+        time_varying_loads=[],
         zones=sys_const.get("zones"),
     )
 
@@ -2297,11 +2357,18 @@ def main(
 
     logger.info("Loading data for %s...", system)
     inference_data = InferenceData.ensure(
-        data_dir, all_models, data_sources, plot=False, dt_s=float(DT_DC),
+        data_dir,
+        all_models,
+        data_sources,
+        plot=False,
+        dt_s=float(DT_DC),
     )
     training_trace = TrainingTrace.ensure(data_dir / "training_trace.csv", training_trace_params)
     logistic_models = LogisticModelStore.ensure(
-        data_dir / "logistic_fits.csv", all_models, data_sources, plot=False,
+        data_dir / "logistic_fits.csv",
+        all_models,
+        data_sources,
+        plot=False,
     )
 
     # Build experiment config

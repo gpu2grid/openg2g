@@ -200,7 +200,9 @@ class RuleBasedBatchSizeController(
             self._log2_batch[label] = new_log2
             new_batches[label] = best
 
-            if best != dc_state.batch_size_by_model.get(label, self._initial_batch_sizes.get(label, ms.feasible_batch_sizes[0])):
+            if best != dc_state.batch_size_by_model.get(
+                label, self._initial_batch_sizes.get(label, ms.feasible_batch_sizes[0])
+            ):
                 changed = True
 
         if not changed:

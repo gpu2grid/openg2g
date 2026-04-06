@@ -23,14 +23,18 @@ class TestInferenceModelSpec:
         """feasible_batch_sizes must not be empty."""
         with pytest.raises(ValueError, match="feasible_batch_sizes must not be empty"):
             InferenceModelSpec(
-                model_label="M", gpus_per_replica=1, itl_deadline_s=0.1,
+                model_label="M",
+                gpus_per_replica=1,
+                itl_deadline_s=0.1,
                 feasible_batch_sizes=(),
             )
 
     def test_itl_deadline(self) -> None:
         """ITL deadline should be stored as given."""
         m = InferenceModelSpec(
-            model_label="M", gpus_per_replica=1, itl_deadline_s=0.08,
+            model_label="M",
+            gpus_per_replica=1,
+            itl_deadline_s=0.08,
             feasible_batch_sizes=(128,),
         )
         assert m.itl_deadline_s == 0.08
@@ -39,7 +43,9 @@ class TestInferenceModelSpec:
         """Zero gpus_per_replica should raise ValueError."""
         with pytest.raises(ValueError, match="gpus_per_replica must be >= 1"):
             InferenceModelSpec(
-                model_label="M", gpus_per_replica=0, itl_deadline_s=0.1,
+                model_label="M",
+                gpus_per_replica=0,
+                itl_deadline_s=0.1,
                 feasible_batch_sizes=(128,),
             )
 
@@ -47,7 +53,9 @@ class TestInferenceModelSpec:
         """Zero itl_deadline_s should raise ValueError."""
         with pytest.raises(ValueError, match="itl_deadline_s must be > 0"):
             InferenceModelSpec(
-                model_label="M", gpus_per_replica=1, itl_deadline_s=0.0,
+                model_label="M",
+                gpus_per_replica=1,
+                itl_deadline_s=0.0,
                 feasible_batch_sizes=(128,),
             )
 
@@ -55,7 +63,9 @@ class TestInferenceModelSpec:
 class TestModelDeployment:
     def test_basic(self) -> None:
         spec = InferenceModelSpec(
-            model_label="M", gpus_per_replica=1, itl_deadline_s=0.1,
+            model_label="M",
+            gpus_per_replica=1,
+            itl_deadline_s=0.1,
             feasible_batch_sizes=(64, 128),
         )
         d = ModelDeployment(spec=spec, num_replicas=10, initial_batch_size=128)
@@ -65,7 +75,9 @@ class TestModelDeployment:
 
     def test_negative_replicas_raises(self) -> None:
         spec = InferenceModelSpec(
-            model_label="M", gpus_per_replica=1, itl_deadline_s=0.1,
+            model_label="M",
+            gpus_per_replica=1,
+            itl_deadline_s=0.1,
             feasible_batch_sizes=(128,),
         )
         with pytest.raises(ValueError, match="num_replicas must be >= 0"):
@@ -73,7 +85,9 @@ class TestModelDeployment:
 
     def test_zero_batch_size_raises(self) -> None:
         spec = InferenceModelSpec(
-            model_label="M", gpus_per_replica=1, itl_deadline_s=0.1,
+            model_label="M",
+            gpus_per_replica=1,
+            itl_deadline_s=0.1,
             feasible_batch_sizes=(128,),
         )
         with pytest.raises(ValueError, match="initial_batch_size must be > 0"):
@@ -81,7 +95,9 @@ class TestModelDeployment:
 
     def test_batch_size_not_in_feasible_raises(self) -> None:
         spec = InferenceModelSpec(
-            model_label="M", gpus_per_replica=1, itl_deadline_s=0.1,
+            model_label="M",
+            gpus_per_replica=1,
+            itl_deadline_s=0.1,
             feasible_batch_sizes=(8, 16, 32, 64),
         )
         with pytest.raises(ValueError, match=r"initial_batch_size.*must be in.*feasible_batch_sizes"):

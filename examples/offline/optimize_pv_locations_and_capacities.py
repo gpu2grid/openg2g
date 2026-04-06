@@ -57,8 +57,6 @@ from pathlib import Path
 
 import numpy as np
 
-from openg2g import PROJECT_ROOT
-
 logger = logging.getLogger("pv_expansion")
 
 
@@ -1492,18 +1490,13 @@ def compare_with_ofo(
     """
     from run_ofo import run_mode
     from systems import (
-        DCSite,
-        DT_CTRL,
         DT_DC,
-        DT_GRID,
-        POWER_AUG,
-        PVSystemSpec,
         TOTAL_DURATION_S,
         V_MAX,
         V_MIN,
+        PVSystemSpec,
         all_model_specs,
         load_data_sources,
-        tap,
     )
 
     from openg2g.controller.ofo import (
@@ -1526,11 +1519,18 @@ def compare_with_ofo(
 
     logger.info("  Loading inference data...")
     inference_data = InferenceData.ensure(
-        data_dir, all_models, data_sources, plot=False, dt_s=float(DT_DC),
+        data_dir,
+        all_models,
+        data_sources,
+        plot=False,
+        dt_s=float(DT_DC),
     )
     training_trace = TrainingTrace.ensure(data_dir / "training_trace.csv", training_trace_params)
     logistic_models = LogisticModelStore.ensure(
-        data_dir / "logistic_fits.csv", all_models, data_sources, plot=False,
+        data_dir / "logistic_fits.csv",
+        all_models,
+        data_sources,
+        plot=False,
     )
 
     # Add MILP-optimized PV systems
@@ -1556,10 +1556,16 @@ def compare_with_ofo(
 
     # OFO config (same defaults as run_ofo experiments)
     ofo_config = OFOConfig(
-        primal_step_size=0.05, w_throughput=0.001, w_switch=1.0,
-        voltage_gradient_scale=1e6, v_min=V_MIN, v_max=V_MAX,
-        voltage_dual_step_size=20.0, latency_dual_step_size=1.0,
-        sensitivity_update_interval=3600, sensitivity_perturbation_kw=10.0,
+        primal_step_size=0.05,
+        w_throughput=0.001,
+        w_switch=1.0,
+        voltage_gradient_scale=1e6,
+        v_min=V_MIN,
+        v_max=V_MAX,
+        voltage_dual_step_size=20.0,
+        latency_dual_step_size=1.0,
+        sensitivity_update_interval=3600,
+        sensitivity_perturbation_kw=10.0,
     )
 
     ofo_save_dir = save_dir / "ofo_comparison"
@@ -1724,11 +1730,8 @@ def main(
     from systems import (
         SYSTEMS,
         DCSite,
-        PVSystemSpec,
         TimeVaryingLoadSpec,
         deploy,
-        ieee34,
-        ieee123,
         tap,
     )
 
@@ -1743,10 +1746,16 @@ def main(
         # PV optimisation study: lower source voltage (1.05 vs base 1.09),
         # uniform initial taps (+8 all), no existing PV, different load set.
         sys["source_pu"] = 1.05  # override for PV optimization study
-        sys["initial_taps"] = TapPosition(regulators={
-            "creg1a": tap(8), "creg1b": tap(8), "creg1c": tap(8),
-            "creg2a": tap(8), "creg2b": tap(8), "creg2c": tap(8),
-        })
+        sys["initial_taps"] = TapPosition(
+            regulators={
+                "creg1a": tap(8),
+                "creg1b": tap(8),
+                "creg1c": tap(8),
+                "creg2a": tap(8),
+                "creg2b": tap(8),
+                "creg2c": tap(8),
+            }
+        )
 
         bus_kv = sys["bus_kv"]  # 24.9
         upstream_models = (deploy("Llama-3.1-8B", 720), deploy("Llama-3.1-70B", 180), deploy("Llama-3.1-405B", 90))
@@ -1754,12 +1763,20 @@ def main(
 
         dc_sites = {
             "upstream": DCSite(
-                bus="850", bus_kv=bus_kv, base_kw_per_phase=120.0,
-                models=upstream_models, seed=0, total_gpu_capacity=520,
+                bus="850",
+                bus_kv=bus_kv,
+                base_kw_per_phase=120.0,
+                models=upstream_models,
+                seed=0,
+                total_gpu_capacity=520,
             ),
             "downstream": DCSite(
-                bus="834", bus_kv=bus_kv, base_kw_per_phase=80.0,
-                models=downstream_models, seed=42, total_gpu_capacity=600,
+                bus="834",
+                bus_kv=bus_kv,
+                base_kw_per_phase=80.0,
+                models=downstream_models,
+                seed=42,
+                total_gpu_capacity=600,
             ),
         }
 
@@ -1776,20 +1793,36 @@ def main(
         bus_kv = sys["bus_kv"]  # 4.16
         dc_sites = {
             "z1_sw": DCSite(
-                bus="8", bus_kv=bus_kv, base_kw_per_phase=310.0,
-                models=(deploy("Llama-3.1-8B", 120),), seed=0, total_gpu_capacity=120,
+                bus="8",
+                bus_kv=bus_kv,
+                base_kw_per_phase=310.0,
+                models=(deploy("Llama-3.1-8B", 120),),
+                seed=0,
+                total_gpu_capacity=120,
             ),
             "z2_nw": DCSite(
-                bus="23", bus_kv=bus_kv, base_kw_per_phase=265.0,
-                models=(deploy("Qwen3-30B-A3B", 80),), seed=17, total_gpu_capacity=160,
+                bus="23",
+                bus_kv=bus_kv,
+                base_kw_per_phase=265.0,
+                models=(deploy("Qwen3-30B-A3B", 80),),
+                seed=17,
+                total_gpu_capacity=160,
             ),
             "z3_se": DCSite(
-                bus="60", bus_kv=bus_kv, base_kw_per_phase=295.0,
-                models=(deploy("Llama-3.1-70B", 30), deploy("Llama-3.1-405B", 35)), seed=34, total_gpu_capacity=400,
+                bus="60",
+                bus_kv=bus_kv,
+                base_kw_per_phase=295.0,
+                models=(deploy("Llama-3.1-70B", 30), deploy("Llama-3.1-405B", 35)),
+                seed=34,
+                total_gpu_capacity=400,
             ),
             "z4_ne": DCSite(
-                bus="105", bus_kv=bus_kv, base_kw_per_phase=325.0,
-                models=(deploy("Qwen3-235B-A22B", 55),), seed=51, total_gpu_capacity=440,
+                bus="105",
+                bus_kv=bus_kv,
+                base_kw_per_phase=325.0,
+                models=(deploy("Qwen3-235B-A22B", 55),),
+                seed=51,
+                total_gpu_capacity=440,
             ),
         }
         time_varying_loads = []
@@ -1852,7 +1885,12 @@ def main(
         }
         logger.info(
             "DC site %s@%s: %d GPUs, peak/base %.0f kW/ph (base %.0f + GPU %.0f)",
-            sid, site.bus, total_gpus, peak_kw_per_phase, site.base_kw_per_phase, gpu_kw_per_phase,
+            sid,
+            site.bus,
+            total_gpus,
+            peak_kw_per_phase,
+            site.base_kw_per_phase,
+            gpu_kw_per_phase,
         )
 
     # ── Build load_configs from time_varying_loads ──

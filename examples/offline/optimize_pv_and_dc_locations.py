@@ -833,8 +833,6 @@ def main(
         SYSTEMS,
         TimeVaryingLoadSpec,
         deploy,
-        ieee34,
-        ieee123,
         tap,
     )
 
@@ -847,25 +845,39 @@ def main(
     if system == "ieee34":
         # PV optimisation study: lower source voltage, uniform taps, no existing PV
         sys["source_pu"] = 1.05
-        sys["initial_taps"] = TapPosition(regulators={
-            "creg1a": tap(8), "creg1b": tap(8), "creg1c": tap(8),
-            "creg2a": tap(8), "creg2b": tap(8), "creg2c": tap(8),
-        })
+        sys["initial_taps"] = TapPosition(
+            regulators={
+                "creg1a": tap(8),
+                "creg1b": tap(8),
+                "creg1c": tap(8),
+                "creg2a": tap(8),
+                "creg2b": tap(8),
+                "creg2c": tap(8),
+            }
+        )
 
         bus_kv = sys["bus_kv"]  # 24.9
 
         # DC site descriptors (models referenced by label for GPU count estimation)
         all_models: tuple[ModelDeployment, ...] = (
-            deploy("Llama-3.1-8B", 720), deploy("Llama-3.1-70B", 180), deploy("Llama-3.1-405B", 90), deploy("Qwen3-30B-A3B", 480), deploy("Qwen3-235B-A22B", 210),
+            deploy("Llama-3.1-8B", 720),
+            deploy("Llama-3.1-70B", 180),
+            deploy("Llama-3.1-405B", 90),
+            deploy("Qwen3-30B-A3B", 480),
+            deploy("Qwen3-235B-A22B", 210),
         )
         dc_sites: dict[str, _DCSiteInfo] = {
             "upstream": _DCSiteInfo(
-                bus="850", bus_kv=bus_kv, base_kw_per_phase=120.0,
+                bus="850",
+                bus_kv=bus_kv,
+                base_kw_per_phase=120.0,
                 models=["Llama-3.1-8B", "Llama-3.1-70B", "Llama-3.1-405B"],
                 total_gpu_capacity=520,
             ),
             "downstream": _DCSiteInfo(
-                bus="834", bus_kv=bus_kv, base_kw_per_phase=80.0,
+                bus="834",
+                bus_kv=bus_kv,
+                base_kw_per_phase=80.0,
                 models=["Qwen3-30B-A3B", "Qwen3-235B-A22B"],
                 total_gpu_capacity=600,
             ),
@@ -884,24 +896,40 @@ def main(
         bus_kv = sys["bus_kv"]  # 4.16
 
         all_models = (
-            deploy("Llama-3.1-8B", 120), deploy("Llama-3.1-70B", 30), deploy("Llama-3.1-405B", 35), deploy("Qwen3-30B-A3B", 80), deploy("Qwen3-235B-A22B", 55),
+            deploy("Llama-3.1-8B", 120),
+            deploy("Llama-3.1-70B", 30),
+            deploy("Llama-3.1-405B", 35),
+            deploy("Qwen3-30B-A3B", 80),
+            deploy("Qwen3-235B-A22B", 55),
         )
         dc_sites = {
             "z1_sw": _DCSiteInfo(
-                bus="8", bus_kv=bus_kv, base_kw_per_phase=310.0,
-                models=["Llama-3.1-8B"], total_gpu_capacity=120,
+                bus="8",
+                bus_kv=bus_kv,
+                base_kw_per_phase=310.0,
+                models=["Llama-3.1-8B"],
+                total_gpu_capacity=120,
             ),
             "z2_nw": _DCSiteInfo(
-                bus="23", bus_kv=bus_kv, base_kw_per_phase=265.0,
-                models=["Qwen3-30B-A3B"], total_gpu_capacity=160,
+                bus="23",
+                bus_kv=bus_kv,
+                base_kw_per_phase=265.0,
+                models=["Qwen3-30B-A3B"],
+                total_gpu_capacity=160,
             ),
             "z3_se": _DCSiteInfo(
-                bus="60", bus_kv=bus_kv, base_kw_per_phase=295.0,
-                models=["Llama-3.1-70B", "Llama-3.1-405B"], total_gpu_capacity=400,
+                bus="60",
+                bus_kv=bus_kv,
+                base_kw_per_phase=295.0,
+                models=["Llama-3.1-70B", "Llama-3.1-405B"],
+                total_gpu_capacity=400,
             ),
             "z4_ne": _DCSiteInfo(
-                bus="105", bus_kv=bus_kv, base_kw_per_phase=325.0,
-                models=["Qwen3-235B-A22B"], total_gpu_capacity=440,
+                bus="105",
+                bus_kv=bus_kv,
+                base_kw_per_phase=325.0,
+                models=["Qwen3-235B-A22B"],
+                total_gpu_capacity=440,
             ),
         }
         time_varying_loads = []

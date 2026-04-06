@@ -50,23 +50,17 @@ from sweep_dc_locations import (
     find_violations,
 )
 from systems import (
-    SYSTEMS,
-    DCSite,
     DT_DC,
-    POWER_AUG,
+    SYSTEMS,
     TAP_STEP,
     V_MAX,
     V_MIN,
     PVSystemSpec,
     TimeVaryingLoadSpec,
-    all_model_specs,
     deploy,
     load_data_sources,
-    model_spec,
-    tap,
 )
 
-from openg2g import PROJECT_ROOT
 from openg2g.controller.ofo import (
     LogisticModelStore,
     OFOBatchSizeController,
@@ -239,7 +233,9 @@ def run_step_check(
 
     if len(dc_buses) == 1:
         ramps = InferenceRamp(target=abs_target, model=model_spec.model_label).at(t_start=0, t_end=0)
-        workload = OfflineWorkload(inference_data=single_inference, replica_counts=replica_counts, inference_ramps=ramps)
+        workload = OfflineWorkload(
+            inference_data=single_inference, replica_counts=replica_counts, inference_ramps=ramps
+        )
         dc = OfflineDatacenter(
             dc_config,
             workload,
@@ -248,9 +244,7 @@ def run_step_check(
             power_augmentation=PowerAugmentationConfig(),
             total_gpu_capacity=total_gpus,
         )
-        grid_kwargs.update(
-            dc_bus=dc_buses[0], dc_bus_kv=config.bus_kv, connection_type=config.connection_type
-        )
+        grid_kwargs.update(dc_bus=dc_buses[0], dc_bus_kv=config.bus_kv, connection_type=config.connection_type)
         grid = ScenarioOpenDSSGrid(**grid_kwargs)
         coord = Coordinator(
             datacenter=dc,
@@ -265,13 +259,16 @@ def run_step_check(
         for i, bus in enumerate(dc_buses):
             sid = f"site_{i}"
             ramps = InferenceRamp(target=abs_target, model=model_spec.model_label).at(t_start=0, t_end=0)
-            workload = OfflineWorkload(inference_data=single_inference, replica_counts=replica_counts, inference_ramps=ramps)
+            workload = OfflineWorkload(
+                inference_data=single_inference, replica_counts=replica_counts, inference_ramps=ramps
+            )
             datacenters[sid] = OfflineDatacenter(
                 dc_config,
                 workload,
                 dt_s=STEP_DT,
                 seed=0,
                 power_augmentation=PowerAugmentationConfig(),
+                total_gpu_capacity=total_gpus,
             )
             dc_loads[sid] = DCLoadSpec(
                 bus=bus,
@@ -583,7 +580,9 @@ def run_ofo_staircase(
 
     if len(dc_buses) == 1:
         ramps = _build_staircase_ramps(model_spec.model_label, num_replicas)
-        workload = OfflineWorkload(inference_data=single_inference, replica_counts=replica_counts, inference_ramps=ramps)
+        workload = OfflineWorkload(
+            inference_data=single_inference, replica_counts=replica_counts, inference_ramps=ramps
+        )
         dc = OfflineDatacenter(
             dc_config,
             workload,
@@ -593,14 +592,12 @@ def run_ofo_staircase(
             total_gpu_capacity=total_gpus,
         )
         ofo_ctrl = OFOBatchSizeController(
-            (single_model,),
+            (model_spec,),
             models=logistic_models,
             config=ofo_config,
             dt_s=STAIRCASE_DT,
         )
-        grid_kwargs.update(
-            dc_bus=dc_buses[0], dc_bus_kv=config.bus_kv, connection_type=config.connection_type
-        )
+        grid_kwargs.update(dc_bus=dc_buses[0], dc_bus_kv=config.bus_kv, connection_type=config.connection_type)
         grid = ScenarioOpenDSSGrid(**grid_kwargs)
         coord = Coordinator(
             datacenter=dc,
@@ -616,13 +613,16 @@ def run_ofo_staircase(
         for i, bus in enumerate(dc_buses):
             sid = f"site_{i}"
             ramps = _build_staircase_ramps(model_spec.model_label, num_replicas)
-            workload = OfflineWorkload(inference_data=single_inference, replica_counts=replica_counts, inference_ramps=ramps)
+            workload = OfflineWorkload(
+                inference_data=single_inference, replica_counts=replica_counts, inference_ramps=ramps
+            )
             datacenters[sid] = OfflineDatacenter(
                 dc_config,
                 workload,
                 dt_s=STAIRCASE_DT,
                 seed=0,
                 power_augmentation=PowerAugmentationConfig(),
+                total_gpu_capacity=total_gpus,
             )
             dc_loads[sid] = DCLoadSpec(
                 bus=bus,
@@ -631,7 +631,7 @@ def run_ofo_staircase(
             )
             controllers.append(
                 OFOBatchSizeController(
-                    (single_model,),
+                    (model_spec,),
                     models=logistic_models,
                     config=ofo_config,
                     dt_s=STAIRCASE_DT,

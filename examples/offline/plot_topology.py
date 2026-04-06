@@ -277,7 +277,7 @@ def plot_topology(
 ) -> Path:
     """Plot system topology and return the output file path."""
     from run_ofo import _EXPERIMENTS
-    from systems import SYSTEMS, DT_DC, load_data_sources
+    from systems import SYSTEMS
 
     sys = SYSTEMS[system]()
     dss_dir = sys["dss_case_dir"]

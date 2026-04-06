@@ -206,7 +206,13 @@ class TestOnlineAugmentationPipeline:
         phase_list = np.asarray(([0] * sA) + ([1] * sB) + ([2] * sC), dtype=int)
         rng.shuffle(phase_list)
 
-        policy = RampActivationPolicy(InferenceRampSchedule(), num_servers, rng)
+        policy = RampActivationPolicy(
+            InferenceRampSchedule(initial_count=num_replicas),
+            num_servers,
+            rng,
+            gpus_per_replica=gpus_per_replica,
+            gpus_per_server=gpus_per_server,
+        )
 
         stagger_offsets = rng.uniform(0.0, 10.0, size=num_servers)
         amplitude_scales = rng.uniform(

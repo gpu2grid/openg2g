@@ -23,21 +23,15 @@ import matplotlib.pyplot as plt
 import numpy as np
 from run_ofo import run_mode
 from systems import (
-    SYSTEMS,
-    DCSite,
-    DT_CTRL,
     DT_DC,
-    DT_GRID,
-    POWER_AUG,
-    V_MAX,
-    V_MIN,
+    DCSite,
     deploy,
     ieee123,
     load_data_sources,
     tap,
 )
 
-from openg2g.controller.ofo import LogisticModelStore, OFOConfig
+from openg2g.controller.ofo import LogisticModelStore
 from openg2g.datacenter.command import ShiftReplicas
 from openg2g.datacenter.workloads.inference import InferenceData
 from openg2g.datacenter.workloads.training import TrainingTrace
@@ -70,7 +64,12 @@ LOAD_SHIFT_DC_SITES: dict[str, DCSite] = {
         bus="76",
         bus_kv=4.16,
         base_kw_per_phase=215,
-        models=(deploy("Qwen3-30B-A3B", 120), deploy("Llama-3.1-70B", 120), deploy("Llama-3.1-405B", 40), deploy("Qwen3-235B-A22B", 40)),
+        models=(
+            deploy("Qwen3-30B-A3B", 120),
+            deploy("Llama-3.1-70B", 120),
+            deploy("Llama-3.1-405B", 40),
+            deploy("Qwen3-235B-A22B", 40),
+        ),
         total_gpu_capacity=1300,
         load_shift_headroom=0.3,
     ),
@@ -78,7 +77,12 @@ LOAD_SHIFT_DC_SITES: dict[str, DCSite] = {
         bus="108",
         bus_kv=4.16,
         base_kw_per_phase=235,
-        models=(deploy("Llama-3.1-8B", 120), deploy("Qwen3-30B-A3B", 120), deploy("Llama-3.1-405B", 40), deploy("Qwen3-235B-A22B", 40)),
+        models=(
+            deploy("Llama-3.1-8B", 120),
+            deploy("Qwen3-30B-A3B", 120),
+            deploy("Llama-3.1-405B", 40),
+            deploy("Qwen3-235B-A22B", 40),
+        ),
         total_gpu_capacity=1300,
         load_shift_headroom=0.3,
     ),
@@ -86,15 +90,17 @@ LOAD_SHIFT_DC_SITES: dict[str, DCSite] = {
 
 # Override initial taps: creg4a = +13 instead of the standard +14
 LOAD_SHIFT_SYS = ieee123()
-LOAD_SHIFT_SYS["initial_taps"] = TapPosition(regulators={
-    "creg1a": tap(9),
-    "creg2a": tap(5),
-    "creg3a": tap(5),
-    "creg3c": tap(5),
-    "creg4a": tap(13),
-    "creg4b": tap(1),
-    "creg4c": tap(4),
-})
+LOAD_SHIFT_SYS["initial_taps"] = TapPosition(
+    regulators={
+        "creg1a": tap(9),
+        "creg2a": tap(5),
+        "creg3a": tap(5),
+        "creg3c": tap(5),
+        "creg4a": tap(13),
+        "creg4b": tap(1),
+        "creg4c": tap(4),
+    }
+)
 
 LOAD_SHIFT_TAP_SCHEDULE = TapSchedule(((1800, TapPosition(regulators={"creg4a": tap(15)})),))
 

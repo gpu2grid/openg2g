@@ -296,7 +296,6 @@ class TestResolveModels:
                 model_label="A",
                 model_id="a",
                 gpus_per_replica=1,
-
                 itl_deadline_s=0.1,
                 feasible_batch_sizes=[8],
             ),
@@ -304,7 +303,6 @@ class TestResolveModels:
                 model_label="B",
                 model_id="b",
                 gpus_per_replica=1,
-
                 itl_deadline_s=0.1,
                 feasible_batch_sizes=[8],
             ),
@@ -320,7 +318,6 @@ class TestResolveModels:
                 model_label="A",
                 model_id="a",
                 gpus_per_replica=1,
-
                 itl_deadline_s=0.1,
                 feasible_batch_sizes=[8],
             ),
@@ -328,7 +325,6 @@ class TestResolveModels:
                 model_label="B",
                 model_id="b",
                 gpus_per_replica=1,
-
                 itl_deadline_s=0.1,
                 feasible_batch_sizes=[8],
             ),
@@ -346,7 +342,6 @@ class TestResolveModels:
                 model_label="A",
                 model_id="a",
                 gpus_per_replica=1,
-
                 itl_deadline_s=0.1,
                 feasible_batch_sizes=[8],
             ),

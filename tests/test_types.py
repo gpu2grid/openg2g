@@ -3,6 +3,8 @@ InferenceRampSchedule, ActivationPolicy, TrainingRun, TrainingSchedule."""
 
 from __future__ import annotations
 
+import typing
+
 import numpy as np
 import pytest
 
@@ -146,9 +148,8 @@ class TestInferenceRamp:
 
     def test_pipe_creates_schedule(self) -> None:
         """Piping two scheduled ramps should produce an InferenceRampSchedule."""
-        s = (
-            InferenceRamp(target=50, model="M").at(t_start=100, t_end=200)
-            | InferenceRamp(target=100, model="M").at(t_start=300, t_end=400)
+        s = InferenceRamp(target=50, model="M").at(t_start=100, t_end=200) | InferenceRamp(target=100, model="M").at(
+            t_start=300, t_end=400
         )
         assert isinstance(s, InferenceRampSchedule)
         assert len(s) == 2
@@ -167,9 +168,6 @@ class TestInferenceRamp:
 class TestInferenceRampSchedule:
     def test_count_before_first_ramp(self) -> None:
         """Before the first ramp starts, count should be initial_count."""
-        s = InferenceRampSchedule(
-            (InferenceRamp(target=50, model="M"), 1000.0, 2000.0),
-        )
         s = InferenceRamp(target=50, model="M").at(t_start=1000, t_end=2000)
         s = InferenceRampSchedule(s._entries, initial_count=100)
         assert s.count_at(0.0) == 100.0
@@ -196,9 +194,8 @@ class TestInferenceRampSchedule:
     def test_two_ramps(self) -> None:
         """Two sequential ramps: first ramps down to 20, second ramps back
         up to 100. The count should hold between ramps."""
-        s = (
-            InferenceRamp(target=20, model="M").at(t_start=1000, t_end=2000)
-            | InferenceRamp(target=100, model="M").at(t_start=3000, t_end=3500)
+        s = InferenceRamp(target=20, model="M").at(t_start=1000, t_end=2000) | InferenceRamp(target=100, model="M").at(
+            t_start=3000, t_end=3500
         )
         s = InferenceRampSchedule(s._entries, initial_count=100)
         assert s.count_at(0.0) == 100.0
@@ -230,9 +227,8 @@ class TestInferenceRampSchedule:
 
     def test_sorted_by_start(self) -> None:
         """Ramps piped in reverse order should still be sorted by t_start."""
-        s = (
-            InferenceRamp(target=100, model="M").at(t_start=3000, t_end=3500)
-            | InferenceRamp(target=20, model="M").at(t_start=1000, t_end=2000)
+        s = InferenceRamp(target=100, model="M").at(t_start=3000, t_end=3500) | InferenceRamp(target=20, model="M").at(
+            t_start=1000, t_end=2000
         )
         starts = [t_start for _, t_start, _ in s]
         assert starts == [1000, 3000]
@@ -366,7 +362,7 @@ class TestOnlineDatacenterState:
 
 class TestRampActivationPolicy:
     # 10 replicas, 1 GPU/replica, 8 GPUs/server → ceil(10/8) = 2 servers
-    _POLICY_KWARGS = dict(gpus_per_replica=1, gpus_per_server=8)
+    _POLICY_KWARGS: typing.ClassVar[dict[str, int]] = dict(gpus_per_replica=1, gpus_per_server=8)
 
     def test_all_active_before_ramp(self) -> None:
         """Before the first ramp, all servers should be active."""

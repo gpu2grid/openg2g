@@ -17,7 +17,6 @@ from openg2g.datacenter.command import DatacenterCommand, SetBatchSize, ShiftRep
 from openg2g.datacenter.config import (
     DatacenterConfig,
     InferenceRampSchedule,
-    ModelDeployment,
     PowerAugmentationConfig,
     TrainingSchedule,
 )
@@ -121,15 +120,9 @@ class OfflineDatacenter(LLMBatchSizeControlledDatacenter[OfflineDatacenterState]
         self._base_W_per_phase = float(datacenter.base_kw_per_phase) * 1e3
 
         # Validate: initial GPU usage must not exceed capacity
-        initial_usage = sum(
-            self._replica_counts.get(ms.model_label, 0) * ms.gpus_per_replica
-            for ms in self._models
-        )
+        initial_usage = sum(self._replica_counts.get(ms.model_label, 0) * ms.gpus_per_replica for ms in self._models)
         if initial_usage > total_gpu_capacity:
-            raise ValueError(
-                f"Initial GPU usage ({initial_usage}) exceeds total_gpu_capacity "
-                f"({total_gpu_capacity})."
-            )
+            raise ValueError(f"Initial GPU usage ({initial_usage}) exceeds total_gpu_capacity ({total_gpu_capacity}).")
 
         # Validate ramp schedule against GPU capacity
         self._validate_ramp_capacity()
@@ -331,8 +324,6 @@ class OfflineDatacenter(LLMBatchSizeControlledDatacenter[OfflineDatacenterState]
         initial = self._replica_counts.get(label, 0)
         if ms is None or initial <= 0:
             return
-        gpus_per_server = self._datacenter.gpus_per_server
-
         # Compute new effective replica count (clamped to >= 0)
         effective_replicas = max(0, initial + new_offset)
 

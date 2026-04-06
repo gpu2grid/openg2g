@@ -19,8 +19,8 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from run_ofo import _EXPERIMENTS, _plot_comparison, run_mode
-from systems import SYSTEMS, DT_DC, all_model_specs, load_data_sources
+from run_ofo import _EXPERIMENTS, run_mode
+from systems import DT_DC, SYSTEMS, all_model_specs, load_data_sources
 
 from openg2g.controller.ofo import LogisticModelStore
 from openg2g.datacenter.workloads.inference import InferenceData
@@ -41,7 +41,10 @@ def main(*, system: str, mode: str = "no-tap") -> None:
     inference_data = InferenceData.ensure(data_dir, all_models, data_sources, plot=False, dt_s=float(DT_DC))
     training_trace = TrainingTrace.ensure(data_dir / "training_trace.csv", training_trace_params)
     logistic_models = LogisticModelStore.ensure(
-        data_dir / "logistic_fits.csv", all_models, data_sources, plot=False,
+        data_dir / "logistic_fits.csv",
+        all_models,
+        data_sources,
+        plot=False,
     )
 
     experiment = _EXPERIMENTS[system](sys, inference_data, training_trace, logistic_models)
@@ -94,7 +97,11 @@ def main(*, system: str, mode: str = "no-tap") -> None:
     for folder, s in results.items():
         logger.info(
             "%-25s %10.1f %10.4f %10.4f %14.4f",
-            folder, s.violation_time_s, s.worst_vmin, s.worst_vmax, s.integral_violation_pu_s,
+            folder,
+            s.violation_time_s,
+            s.worst_vmin,
+            s.worst_vmax,
+            s.integral_violation_pu_s,
         )
     logger.info("-" * 70)
     logger.info("Outputs: %s", save_dir)

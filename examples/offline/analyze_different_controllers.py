@@ -23,16 +23,16 @@ import matplotlib.pyplot as plt
 import numpy as np
 from sweep_dc_locations import ScenarioOpenDSSGrid
 from systems import (
-    SYSTEMS,
-    DCSite,
     DT_CTRL,
     DT_DC,
     DT_GRID,
     POWER_AUG,
-    PVSystemSpec,
-    TimeVaryingLoadSpec,
+    SYSTEMS,
     V_MAX,
     V_MIN,
+    DCSite,
+    PVSystemSpec,
+    TimeVaryingLoadSpec,
     deploy,
     load_data_sources,
     tap,
@@ -111,11 +111,20 @@ def experiment_ieee34() -> dict:
             TimeVaryingLoadSpec(bus="858", bus_kv=24.9, peak_kw=50.0),
             TimeVaryingLoadSpec(bus="854", bus_kv=24.9, peak_kw=40.0),
         ],
-        tap_schedule=TapSchedule((
-            (1800, TapPosition(regulators={
-                "creg2a": tap(10), "creg2b": tap(10), "creg2c": tap(10),
-            })),
-        )),
+        tap_schedule=TapSchedule(
+            (
+                (
+                    1800,
+                    TapPosition(
+                        regulators={
+                            "creg2a": tap(10),
+                            "creg2b": tap(10),
+                            "creg2c": tap(10),
+                        }
+                    ),
+                ),
+            )
+        ),
     )
 
 
@@ -180,9 +189,7 @@ def experiment_ieee123() -> dict:
             PVSystemSpec(bus="99", bus_kv=4.16, peak_kw=333.3),
         ],
         time_varying_loads=[],
-        tap_schedule=TapSchedule((
-            (1800, TapPosition(regulators={"creg4a": tap(16)})),
-        )),
+        tap_schedule=TapSchedule(((1800, TapPosition(regulators={"creg4a": tap(16)})),)),
     )
 
 
