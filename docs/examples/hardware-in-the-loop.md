@@ -49,4 +49,4 @@ The online config specifies vLLM server endpoints, GPU-to-bus mapping, and the s
 
 ## Configuration
 
-See `examples/online/config.json` for the online config format. The grid and OFO sections are identical to offline configs; the datacenter section specifies live server endpoints instead of trace data.
+See `examples/online/config.json` for the online config format. The datacenter section specifies live server endpoints instead of trace data.

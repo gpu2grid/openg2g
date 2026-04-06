@@ -1,11 +1,11 @@
 """Unified DC location sweep: 1-D, 2-D, or zone-constrained.
 
-Automatically selects sweep mode based on the config:
-  - 1 DC site, no zones  → 1-D sweep: sweep single DC across candidate buses,
+Automatically selects sweep mode based on the system configuration:
+  - 1 DC site, no zones  -> 1-D sweep: sweep single DC across candidate buses,
                             with tap optimization and 4-case comparison
-  - 2+ DC sites, no zones → 2-D sweep: sweep all unordered pairs of candidate
+  - 2+ DC sites, no zones -> 2-D sweep: sweep all unordered pairs of candidate
                             buses, OFO control for each site, heatmap output
-  - N DC sites with zones → zone-constrained sweep (3 phases):
+  - N DC sites with zones -> zone-constrained sweep (3 phases):
       Phase 1 (Screening):  Sweep each zone independently while holding other
                             zones at default buses.  Keep top-K per zone.
                             Uses coarse dt (default 60 s) over the full
@@ -18,28 +18,43 @@ Automatically selects sweep mode based on the config:
                             resolution over the full simulation duration.
 
 Usage:
-    python sweep_dc_locations.py --config config_ieee13.json --system ieee13
-    python sweep_dc_locations.py --config config_ieee34.json --system ieee34
-    python sweep_dc_locations.py --config config_ieee123.json --system ieee123
-    python sweep_dc_locations.py --config config_ieee123.json --system ieee123 --top-k 6 --refine
+    python sweep_dc_locations.py --system ieee13
+    python sweep_dc_locations.py --system ieee34
+    python sweep_dc_locations.py --system ieee123
+    python sweep_dc_locations.py --system ieee123 --top-k 6 --refine
 """
 
 from __future__ import annotations
 
 import csv
-import hashlib
 import itertools
-import json
 import logging
 import math
 import time
 from fractions import Fraction
 from pathlib import Path
-from typing import Literal
 
 import numpy as np
 import pandas as pd
-from pydantic import BaseModel, ConfigDict, model_validator
+from systems import (
+    DCSite,
+    DT_CTRL,
+    DT_DC,
+    DT_GRID,
+    POWER_AUG,
+    SYSTEMS,
+    TOTAL_DURATION_S,
+    V_MAX,
+    V_MIN,
+    TAP_STEP,
+    PVSystemSpec,
+    TimeVaryingLoadSpec,
+    all_model_specs,
+    deploy,
+    load_data_sources,
+    model_spec,
+    tap,
+)
 
 from openg2g.controller.ofo import (
     LogisticModelStore,
@@ -52,12 +67,14 @@ from openg2g.datacenter.config import (
     DatacenterConfig,
     InferenceModelSpec,
     InferenceRamp,
+    InferenceRampSchedule,
+    ModelDeployment,
     PowerAugmentationConfig,
     TrainingRun,
 )
 from openg2g.datacenter.offline import OfflineDatacenter, OfflineWorkload
-from openg2g.datacenter.workloads.inference import InferenceData, MLEnergySource
-from openg2g.datacenter.workloads.training import TrainingTrace, TrainingTraceParams
+from openg2g.datacenter.workloads.inference import InferenceData
+from openg2g.datacenter.workloads.training import TrainingTrace
 from openg2g.grid.config import DCLoadSpec, TapPosition, TapSchedule
 from openg2g.grid.opendss import OpenDSSGrid
 from openg2g.metrics.voltage import compute_allbus_voltage_stats
@@ -65,6 +82,10 @@ from openg2g.metrics.voltage import compute_allbus_voltage_stats
 logger = logging.getLogger("sweep_dc_locations")
 
 T_TOTAL_S = 3600
+
+# Backward-compatible aliases (used by other scripts)
+PVSystemConfig = PVSystemSpec
+TimeVaryingLoadConfig = TimeVaryingLoadSpec
 
 
 # ── Profile generation helpers ───────────────────────────────────────────────
@@ -81,7 +102,7 @@ def _smooth_bump(t: float, t_center: float, half_width: float) -> float:
 def _irregular_fluct(t: float, seed: float = 0.0) -> float:
     """Irregular fluctuation via superposition of incommensurate frequencies.
 
-    Returns a value centred around 1.0 with ~±15% variation.
+    Returns a value centred around 1.0 with ~+-15% variation.
     The use of irrational-ratio periods avoids visible periodicity.
     """
     s = seed
@@ -164,149 +185,6 @@ def eval_profile(t, *, peak_kw, csv_data, profile_fn, site_idx):
     if csv_data is not None:
         return float(np.interp(t, csv_data[0], csv_data[1]))
     return profile_fn(t, peak_kw, site_idx)
-
-
-# ── Config models ────────────────────────────────────────────────────────────
-
-
-class InferenceRampConfig(BaseModel):
-    target: float = 0.2
-    t_start: float = 2500.0
-    t_end: float = 3000.0
-    model: str | None = None
-
-
-class DCSiteConfig(BaseModel):
-    bus: str
-    bus_kv: float = 4.16
-    base_kw_per_phase: float = 500.0
-    models: list[str] | None = None
-    connection_type: Literal["wye", "delta"] = "wye"
-    seed: int = 0
-    inference_ramps: list[InferenceRampConfig] = []
-    total_gpu_capacity: int | None = None
-
-
-class PVSystemConfig(BaseModel):
-    bus: str
-    bus_kv: float = 4.16
-    peak_kw: float = 1000.0
-    csv_path: Path | None = None
-    power_factor: float = 1.0
-
-
-class TimeVaryingLoadConfig(BaseModel):
-    bus: str
-    bus_kv: float = 4.16
-    peak_kw: float = 500.0
-    csv_path: Path | None = None
-    power_factor: float = 0.96
-
-
-TAP_STEP = 0.00625
-
-
-def _parse_tap(val: float | str | None) -> float | None:
-    if val is None:
-        return None
-    if isinstance(val, str):
-        return 1.0 + int(val) * TAP_STEP
-    return float(val)
-
-
-def _taps_dict_to_position(d: dict[str, float | str] | None) -> TapPosition | None:
-    if not d:
-        return None
-    return TapPosition(regulators={k: _parse_tap(v) for k, v in d.items()})
-
-
-class OFOParams(BaseModel):
-    primal_step_size: float = 0.1
-    w_throughput: float = 1e-3
-    w_switch: float = 1.0
-    voltage_gradient_scale: float = 1e6
-    voltage_dual_step_size: float = 1.0
-    latency_dual_step_size: float = 1.0
-    sensitivity_update_interval: int = 3600
-    sensitivity_perturbation_kw: float = 100.0
-
-
-class TrainingConfig(BaseModel):
-    dc_site: str | None = None
-    """DC site ID this training job runs on. ``None`` uses the first site."""
-    n_gpus: int = 2400
-    target_peak_W_per_gpu: float = 400.0
-    t_start: float = 1000.0
-    t_end: float = 2000.0
-
-
-class SimulationParams(BaseModel):
-    total_duration_s: int = 3600
-    dt_dc: str = "1/10"
-    dt_grid: str = "1/10"
-    dt_ctrl: str = "1"
-    v_min: float = 0.95
-    v_max: float = 1.05
-
-
-class TapScheduleEntry(BaseModel):
-    model_config = ConfigDict(extra="allow")
-    t: float
-
-
-class SweepConfig(BaseModel):
-    """Full configuration for DC location sweep (1-D or 2-D)."""
-
-    models: list[InferenceModelSpec]
-    data_sources: list[MLEnergySource]
-    training_trace_params: TrainingTraceParams = TrainingTraceParams()
-    data_dir: Path | None = None
-    ieee_case_dir: Path
-    dss_master_file: str = "IEEE13Nodeckt.dss"
-    mlenergy_data_dir: Path | None = None
-
-    source_pu: float | None = None
-
-    dc_sites: dict[str, DCSiteConfig] | None = None
-    pv_systems: list[PVSystemConfig] = []
-    time_varying_loads: list[TimeVaryingLoadConfig] = []
-    initial_taps: dict[str, float | str] | None = None
-    tap_schedule: list[TapScheduleEntry] = []
-    exclude_buses: list[str] = ["sourcebus", "650", "rg60"]
-
-    regulator_zones: dict[str, list[str]] | None = None
-    zones: dict[str, list[str]] | None = None
-
-    ofo: OFOParams = OFOParams()
-    training: TrainingConfig | None = None
-    inference_ramp: InferenceRampConfig | None = None
-    load_shift: dict | None = None
-    simulation: SimulationParams = SimulationParams()
-    power_augmentation: PowerAugmentationConfig = PowerAugmentationConfig(
-        amplitude_scale_range=(0.98, 1.02),
-        noise_fraction=0.005,
-    )
-
-    @model_validator(mode="after")
-    def _default_dc_site(self) -> SweepConfig:
-        if self.dc_sites is None:
-            self.dc_sites = {"default": DCSiteConfig(bus="671", bus_kv=4.16, base_kw_per_phase=500.0)}
-        return self
-
-    @property
-    def data_hash(self) -> str:
-        blob = json.dumps(
-            (
-                sorted([s.model_dump(mode="json") for s in self.data_sources], key=lambda s: s["model_label"]),
-                self.training_trace_params.model_dump(mode="json"),
-            ),
-            sort_keys=True,
-        ).encode()
-        return hashlib.sha256(blob).hexdigest()[:16]
-
-    @property
-    def num_dc_sites(self) -> int:
-        return len(self.dc_sites) if self.dc_sites else 0
 
 
 # ── Scenario Grid ────────────────────────────────────────────────────────────
@@ -393,78 +271,6 @@ class ScenarioOpenDSSGrid(OpenDSSGrid):
         return super().step(clock, power_samples_w, events)
 
 
-# ── Helpers ──────────────────────────────────────────────────────────────────
-
-
-def _parse_fraction(s: str) -> Fraction:
-    if "/" in s:
-        num, den = s.split("/", 1)
-        return Fraction(int(num), int(den))
-    return Fraction(int(s))
-
-
-def _resolve_models_for_site(site_cfg, all_models):
-    if site_cfg.models is None:
-        return all_models
-    label_set = set(site_cfg.models)
-    matched = tuple(m for m in all_models if m.model_label in label_set)
-    missing = label_set - {m.model_label for m in matched}
-    if missing:
-        raise ValueError(f"DC site references unknown model labels: {missing}")
-    return matched
-
-
-def _build_ofo_config(ofo_params: OFOParams, sim: SimulationParams) -> OFOConfig:
-    return OFOConfig(
-        primal_step_size=ofo_params.primal_step_size,
-        w_throughput=ofo_params.w_throughput,
-        w_switch=ofo_params.w_switch,
-        voltage_gradient_scale=ofo_params.voltage_gradient_scale,
-        v_min=sim.v_min,
-        v_max=sim.v_max,
-        voltage_dual_step_size=ofo_params.voltage_dual_step_size,
-        latency_dual_step_size=ofo_params.latency_dual_step_size,
-        sensitivity_update_interval=ofo_params.sensitivity_update_interval,
-        sensitivity_perturbation_kw=ofo_params.sensitivity_perturbation_kw,
-    )
-
-
-def _build_workload_kwargs(
-    config: SweepConfig,
-    inference_data: InferenceData,
-    training_trace: TrainingTrace,
-    *,
-    site_ramps: list[InferenceRampConfig] | None = None,
-) -> dict:
-    kwargs: dict = {"inference_data": inference_data}
-    if config.training is not None:
-        tc = config.training
-        kwargs["training"] = TrainingRun(
-            n_gpus=tc.n_gpus,
-            trace=training_trace,
-            target_peak_W_per_gpu=tc.target_peak_W_per_gpu,
-        ).at(t_start=tc.t_start, t_end=tc.t_end)
-    # Per-site inference ramps take precedence over config-level ramp
-    if site_ramps:
-        schedule = InferenceRamp(target=site_ramps[0].target, model=site_ramps[0].model).at(
-            t_start=site_ramps[0].t_start,
-            t_end=site_ramps[0].t_end,
-        )
-        for rc in site_ramps[1:]:
-            schedule = schedule | InferenceRamp(target=rc.target, model=rc.model).at(
-                t_start=rc.t_start,
-                t_end=rc.t_end,
-            )
-        kwargs["inference_ramps"] = schedule
-    elif config.inference_ramp is not None:
-        rc = config.inference_ramp
-        kwargs["inference_ramps"] = InferenceRamp(target=rc.target, model=rc.model).at(
-            t_start=rc.t_start,
-            t_end=rc.t_end,
-        )
-    return kwargs
-
-
 # ── Bus discovery ────────────────────────────────────────────────────────────
 
 
@@ -511,35 +317,6 @@ def discover_candidate_buses(
     return sorted(candidates)
 
 
-# ── Shared data loading ──────────────────────────────────────────────────────
-
-
-def _load_shared_data(config: SweepConfig, all_models, data_dir: Path, dt_dc: float):
-    logger.info("Loading inference data...")
-    inference_data = InferenceData.ensure(
-        data_dir,
-        all_models,
-        {s.model_label: s for s in config.data_sources},
-        mlenergy_data_dir=config.mlenergy_data_dir,
-        plot=False,
-        dt_s=dt_dc,
-    )
-
-    logger.info("Loading training trace...")
-    training_trace = TrainingTrace.ensure(data_dir / "training_trace.csv", config.training_trace_params)
-
-    logger.info("Loading logistic fits...")
-    logistic_models = LogisticModelStore.ensure(
-        data_dir / "logistic_fits.csv",
-        all_models,
-        {s.model_label: s for s in config.data_sources},
-        mlenergy_data_dir=config.mlenergy_data_dir,
-        plot=False,
-    )
-
-    return inference_data, training_trace, logistic_models
-
-
 # ══════════════════════════════════════════════════════════════════════════════
 # 1-D SWEEP (single DC site)
 # ══════════════════════════════════════════════════════════════════════════════
@@ -583,16 +360,25 @@ def find_violations(voltages_dict, v_min=0.95, v_max=1.05):
 
 def optimize_taps_for_bus(
     *,
-    config: SweepConfig,
+    sys: dict,
     dc_bus: str,
-    dc_site_cfg: DCSiteConfig,
+    bus_kv: float,
+    base_kw_per_phase: float,
+    connection_type: str,
     inference_data: InferenceData,
     training_trace: TrainingTrace,
+    training: TrainingRun | None,
+    inference_ramps: InferenceRampSchedule | None,
     initial_tap_position: TapPosition,
-    t_total_s: int,
-    t_analysis_start: int,
-    v_min: float,
-    v_max: float,
+    replica_counts: dict[str, int] | None = None,
+    total_gpu_capacity: int = 0,
+    pv_systems: list | None = None,
+    time_varying_loads: list | None = None,
+    power_augmentation: PowerAugmentationConfig = POWER_AUG,
+    t_total_s: int = T_TOTAL_S,
+    t_analysis_start: int = 0,
+    v_min: float = V_MIN,
+    v_max: float = V_MAX,
 ) -> TapPosition:
     regs = dict(initial_tap_position.regulators)
     reg_names = list(regs.keys())
@@ -607,8 +393,15 @@ def optimize_taps_for_bus(
             ", ".join(f"{k}=%.5f (%+d)" % (regs[k], round((regs[k] - 1.0) / TAP_STEP)) for k in reg_names),
         )
 
-        dc_config = DatacenterConfig(gpus_per_server=8, base_kw_per_phase=dc_site_cfg.base_kw_per_phase)
-        workload_kwargs = _build_workload_kwargs(config, inference_data, training_trace)
+        dc_config = DatacenterConfig(gpus_per_server=8, base_kw_per_phase=base_kw_per_phase)
+
+        workload_kwargs: dict = {"inference_data": inference_data}
+        if replica_counts is not None:
+            workload_kwargs["replica_counts"] = replica_counts
+        if training is not None:
+            workload_kwargs["training"] = training
+        if inference_ramps is not None:
+            workload_kwargs["inference_ramps"] = inference_ramps
         workload = OfflineWorkload(**workload_kwargs)
 
         dc = OfflineDatacenter(
@@ -616,20 +409,21 @@ def optimize_taps_for_bus(
             workload,
             dt_s=dt_coarse,
             seed=0,
-            power_augmentation=config.power_augmentation,
+            power_augmentation=power_augmentation,
+            total_gpu_capacity=total_gpu_capacity,
         )
 
         grid = ScenarioOpenDSSGrid(
-            pv_systems=config.pv_systems,
-            time_varying_loads=config.time_varying_loads,
-            source_pu=config.source_pu,
-            dss_case_dir=config.ieee_case_dir,
-            dss_master_file=config.dss_master_file,
+            pv_systems=pv_systems or [],
+            time_varying_loads=time_varying_loads or [],
+            source_pu=sys["source_pu"],
+            dss_case_dir=sys["dss_case_dir"],
+            dss_master_file=sys["dss_master_file"],
             dc_bus=dc_bus,
-            dc_bus_kv=dc_site_cfg.bus_kv,
+            dc_bus_kv=bus_kv,
             power_factor=dc_config.power_factor,
             dt_s=dt_coarse,
-            connection_type=dc_site_cfg.connection_type,
+            connection_type=connection_type,
             initial_tap_position=tap_pos,
         )
 
@@ -674,11 +468,11 @@ def optimize_taps_for_bus(
         prev_regs = dict(regs)
         for rname in reg_names:
             rname_lower = rname.lower()
-            if rname_lower.endswith("a") or rname_lower == "reg1":
+            if rname_lower.endswith("a"):
                 regs[rname] += phase_adjust["a"] * TAP_STEP
-            elif rname_lower.endswith("b") or rname_lower == "reg2":
+            elif rname_lower.endswith("b"):
                 regs[rname] += phase_adjust["b"] * TAP_STEP
-            elif rname_lower.endswith("c") or rname_lower == "reg3":
+            elif rname_lower.endswith("c"):
                 regs[rname] += phase_adjust["c"] * TAP_STEP
 
         for rname in reg_names:
@@ -691,43 +485,50 @@ def optimize_taps_for_bus(
     return TapPosition(regulators=dict(regs))
 
 
-def _extract_scenario_base_taps(
-    config: SweepConfig,
-    initial_tap_position: TapPosition,
-) -> dict[str, TapPosition]:
-    bases: dict[str, TapPosition] = {"inference": initial_tap_position}
-
-    if not config.tap_schedule:
-        return bases
-
-    entries = sorted(config.tap_schedule, key=lambda e: e.t)
-
-    if len(entries) >= 1 and config.training is not None:
-        e = entries[0]
-        extras = e.model_extra or {}
-        bases["training"] = TapPosition(regulators={k: _parse_tap(v) for k, v in extras.items()})
-
-    if len(entries) >= 2 and config.inference_ramp is not None:
-        e = entries[-1]
-        extras = e.model_extra or {}
-        bases["low_load"] = TapPosition(regulators={k: _parse_tap(v) for k, v in extras.items()})
-
-    return bases
-
-
 def optimize_taps_multiscenario(
     *,
-    config: SweepConfig,
+    sys: dict,
     dc_bus: str,
-    dc_site_cfg: DCSiteConfig,
+    bus_kv: float,
+    base_kw_per_phase: float,
+    connection_type: str,
     inference_data: InferenceData,
     training_trace: TrainingTrace,
+    training: TrainingRun | None,
+    inference_ramps: InferenceRampSchedule | None,
     initial_tap_position: TapPosition,
+    tap_schedule_entries: list[tuple[float, TapPosition]] | None = None,
+    training_t_start: float = 0,
+    training_t_end: float = 0,
+    ramp_t_end: float = 0,
+    replica_counts: dict[str, int] | None = None,
+    total_gpu_capacity: int = 0,
+    pv_systems: list | None = None,
+    time_varying_loads: list | None = None,
+    power_augmentation: PowerAugmentationConfig = POWER_AUG,
+    total_duration_s: int = TOTAL_DURATION_S,
+    v_min: float = V_MIN,
+    v_max: float = V_MAX,
 ) -> dict[str, TapPosition]:
-    sim = config.simulation
-    v_min, v_max = sim.v_min, sim.v_max
+    """Optimize taps for multiple scenarios (inference, training, low_load).
 
-    base_taps = _extract_scenario_base_taps(config, initial_tap_position)
+    Parameters
+    ----------
+    training_t_start, training_t_end : float
+        Timing window for the training run (used for scenario splitting).
+    ramp_t_end : float
+        End time of the inference ramp (used for low_load scenario).
+    """
+
+    # Build scenario base taps from tap_schedule_entries
+    bases: dict[str, TapPosition] = {"inference": initial_tap_position}
+    sorted_entries = sorted(tap_schedule_entries or [], key=lambda e: e[0])
+
+    if len(sorted_entries) >= 1 and training is not None:
+        bases["training"] = sorted_entries[0][1]
+
+    if len(sorted_entries) >= 2 and inference_ramps is not None:
+        bases["low_load"] = sorted_entries[-1][1]
 
     COARSE_TICK = 60
 
@@ -736,19 +537,20 @@ def optimize_taps_multiscenario(
 
     scenarios: list[tuple[str, int, int, TapPosition]] = []
 
-    t_train_start = int(config.training.t_start) if config.training else 0
-    if t_train_start > 0:
-        scenarios.append(("inference", _round_up(min(t_train_start, 180)), 0, base_taps["inference"]))
+    t_ts = int(training_t_start)
+    t_te = int(training_t_end)
+
+    if t_ts > 0:
+        scenarios.append(("inference", _round_up(min(t_ts, 180)), 0, bases["inference"]))
     else:
-        scenarios.append(("inference", _round_up(180), 0, base_taps["inference"]))
+        scenarios.append(("inference", _round_up(180), 0, bases["inference"]))
 
-    if config.training is not None and "training" in base_taps:
-        tc = config.training
-        scenarios.append(("training", _round_up(int(tc.t_end) + 120), int(tc.t_start), base_taps["training"]))
+    if training is not None and "training" in bases:
+        scenarios.append(("training", _round_up(t_te + 120), t_ts, bases["training"]))
 
-    if config.inference_ramp is not None and "low_load" in base_taps:
-        rc = config.inference_ramp
-        scenarios.append(("low_load", _round_up(sim.total_duration_s), int(rc.t_end), base_taps["low_load"]))
+    if inference_ramps is not None and "low_load" in bases:
+        t_re = int(ramp_t_end) if ramp_t_end > 0 else total_duration_s
+        scenarios.append(("low_load", _round_up(total_duration_s), t_re, bases["low_load"]))
 
     results = {}
     for name, t_total, t_start, init_taps in scenarios:
@@ -761,12 +563,21 @@ def optimize_taps_multiscenario(
             taps_str,
         )
         optimal = optimize_taps_for_bus(
-            config=config,
+            sys=sys,
             dc_bus=dc_bus,
-            dc_site_cfg=dc_site_cfg,
+            bus_kv=bus_kv,
+            base_kw_per_phase=base_kw_per_phase,
+            connection_type=connection_type,
             inference_data=inference_data,
             training_trace=training_trace,
+            training=training,
+            inference_ramps=inference_ramps,
             initial_tap_position=init_taps,
+            replica_counts=replica_counts,
+            total_gpu_capacity=total_gpu_capacity,
+            pv_systems=pv_systems,
+            time_varying_loads=time_varying_loads,
+            power_augmentation=power_augmentation,
             t_total_s=t_total,
             t_analysis_start=t_start,
             v_min=v_min,
@@ -780,9 +591,10 @@ def optimize_taps_multiscenario(
 
 def run_case_1d(
     *,
-    config: SweepConfig,
+    sys: dict,
     dc_bus: str,
-    dc_site_cfg: DCSiteConfig,
+    bus_kv: float,
+    base_kw_per_phase: float,
     case_name: str,
     inference_data: InferenceData,
     training_trace: TrainingTrace,
@@ -791,16 +603,33 @@ def run_case_1d(
     initial_taps: TapPosition,
     tap_schedule: TapSchedule | None,
     use_ofo: bool,
+    ofo_config: OFOConfig | None = None,
+    training: TrainingRun | None = None,
+    inference_ramps: InferenceRampSchedule | None = None,
+    replica_counts: dict[str, int] | None = None,
+    total_gpu_capacity: int = 0,
+    pv_systems: list | None = None,
+    time_varying_loads: list | None = None,
+    total_duration_s: int = TOTAL_DURATION_S,
+    v_min: float = V_MIN,
+    v_max: float = V_MAX,
+    power_augmentation: PowerAugmentationConfig = POWER_AUG,
+    connection_type: str = "wye",
+    dt_dc: Fraction = DT_DC,
+    dt_grid: Fraction = DT_GRID,
+    dt_ctrl: Fraction = DT_CTRL,
     save_dir: Path | None = None,
 ) -> dict:
     """Run a single 1-D simulation case and return metrics dict."""
-    sim = config.simulation
-    dt_dc = _parse_fraction(sim.dt_dc)
-    dt_grid = _parse_fraction(sim.dt_grid)
-    dt_ctrl = _parse_fraction(sim.dt_ctrl)
+    dc_config = DatacenterConfig(gpus_per_server=8, base_kw_per_phase=base_kw_per_phase)
 
-    dc_config = DatacenterConfig(gpus_per_server=8, base_kw_per_phase=dc_site_cfg.base_kw_per_phase)
-    workload_kwargs = _build_workload_kwargs(config, inference_data, training_trace)
+    workload_kwargs: dict = {"inference_data": inference_data}
+    if replica_counts is not None:
+        workload_kwargs["replica_counts"] = replica_counts
+    if training is not None:
+        workload_kwargs["training"] = training
+    if inference_ramps is not None:
+        workload_kwargs["inference_ramps"] = inference_ramps
     workload = OfflineWorkload(**workload_kwargs)
 
     dc = OfflineDatacenter(
@@ -808,20 +637,21 @@ def run_case_1d(
         workload,
         dt_s=dt_dc,
         seed=0,
-        power_augmentation=config.power_augmentation,
+        power_augmentation=power_augmentation,
+        total_gpu_capacity=total_gpu_capacity,
     )
 
     grid = ScenarioOpenDSSGrid(
-        pv_systems=config.pv_systems,
-        time_varying_loads=config.time_varying_loads,
-        source_pu=config.source_pu,
-        dss_case_dir=config.ieee_case_dir,
-        dss_master_file=config.dss_master_file,
+        pv_systems=pv_systems or [],
+        time_varying_loads=time_varying_loads or [],
+        source_pu=sys["source_pu"],
+        dss_case_dir=sys["dss_case_dir"],
+        dss_master_file=sys["dss_master_file"],
         dc_bus=dc_bus,
-        dc_bus_kv=dc_site_cfg.bus_kv,
+        dc_bus_kv=bus_kv,
         power_factor=dc_config.power_factor,
         dt_s=dt_grid,
-        connection_type=dc_site_cfg.connection_type,
+        connection_type=connection_type,
         initial_tap_position=initial_taps,
     )
 
@@ -830,8 +660,7 @@ def run_case_1d(
     tap_ctrl = TapScheduleController(schedule=schedule, dt_s=dt_ctrl)
     controllers.append(tap_ctrl)
 
-    if use_ofo:
-        ofo_config = _build_ofo_config(config.ofo, sim)
+    if use_ofo and ofo_config is not None:
         ofo_ctrl = OFOBatchSizeController(
             all_models,
             models=logistic_models,
@@ -844,12 +673,12 @@ def run_case_1d(
         datacenter=dc,
         grid=grid,
         controllers=controllers,
-        total_duration_s=sim.total_duration_s,
+        total_duration_s=total_duration_s,
         dc_bus=dc_bus,
     )
     log = coord.run()
 
-    stats = compute_allbus_voltage_stats(log.grid_states, v_min=sim.v_min, v_max=sim.v_max)
+    stats = compute_allbus_voltage_stats(log.grid_states, v_min=v_min, v_max=v_max)
 
     dc_kW = np.array([(s.power_w.a + s.power_w.b + s.power_w.c) / 3e3 for s in log.dc_states])
     avg_power = float(dc_kW.mean()) if dc_kW.size > 0 else 0.0
@@ -875,8 +704,8 @@ def run_case_1d(
             log.grid_states,
             time_s,
             save_dir=save_dir,
-            v_min=sim.v_min,
-            v_max=sim.v_max,
+            v_min=v_min,
+            v_max=v_max,
             title_template=f"DC@{dc_bus} {case_name} — Voltage (Phase {{label}})",
         )
         if use_ofo:
@@ -937,25 +766,41 @@ def _plot_bus_comparison(all_rows: list[dict], save_path: Path) -> None:
 
 def main_1d(
     *,
-    config: SweepConfig,
+    sys: dict,
     system: str,
+    dc_site: DCSite,
+    all_models: tuple[InferenceModelSpec, ...],
+    inference_data: InferenceData,
+    training_trace: TrainingTrace,
+    logistic_models: LogisticModelStore,
+    ofo_config: OFOConfig,
+    training: TrainingRun | None = None,
+    inference_ramps: InferenceRampSchedule | None = None,
+    tap_schedule_entries: list[tuple[float, TapPosition]] | None = None,
+    training_t_start: float = 0,
+    training_t_end: float = 0,
+    ramp_t_end: float = 0,
+    pv_systems: list | None = None,
+    time_varying_loads: list | None = None,
+    power_augmentation: PowerAugmentationConfig = POWER_AUG,
+    total_duration_s: int = TOTAL_DURATION_S,
+    v_min: float = V_MIN,
+    v_max: float = V_MAX,
     buses: list[str] | None = None,
     dt_override: str | None = None,
     output_dir: Path | None = None,
 ) -> None:
     """1-D sweep: single DC site swept across candidate buses."""
-    sim = config.simulation
-    all_models = tuple(config.models)
-    data_dir = config.data_dir or Path("data/offline") / config.data_hash
+    replica_counts = {md.spec.model_label: md.num_replicas for md in dc_site.models}
+    site_gpu_capacity = dc_site.total_gpu_capacity
 
-    # Data must always be loaded at the config's original resolution
-    data_dt = float(_parse_fraction(sim.dt_dc))
+    dt_dc = DT_DC
+    dt_grid = DT_GRID
+    dt_ctrl = DT_CTRL
 
-    # Override simulation params so run_case_1d picks up the dt
     if dt_override is not None:
-        sim.dt_dc = dt_override
-        sim.dt_grid = dt_override
-        sim.dt_ctrl = dt_override
+        frac = Fraction(dt_override) if "/" in dt_override else Fraction(int(dt_override))
+        dt_dc = dt_grid = dt_ctrl = frac
         logger.info("Time resolution override: dt = %s s for all components", dt_override)
 
     save_dir = (
@@ -963,27 +808,17 @@ def main_1d(
     )
     save_dir.mkdir(parents=True, exist_ok=True)
 
-    assert config.dc_sites is not None
-    default_site = next(iter(config.dc_sites.values()))
-
-    inference_data, training_trace, logistic_models = _load_shared_data(
-        config,
-        all_models,
-        data_dir,
-        data_dt,
-    )
-
     # Discover candidate buses
     if buses:
         candidate_buses = buses
         logger.info("Using user-specified buses: %s", candidate_buses)
     else:
-        logger.info("Discovering candidate 3-phase buses at %.2f kV...", default_site.bus_kv)
+        logger.info("Discovering candidate 3-phase buses at %.2f kV...", dc_site.bus_kv)
         candidate_buses = discover_candidate_buses(
-            config.ieee_case_dir,
-            config.dss_master_file,
-            default_site.bus_kv,
-            exclude=set(config.exclude_buses),
+            sys["dss_case_dir"],
+            sys["dss_master_file"],
+            dc_site.bus_kv,
+            exclude=set(sys["exclude_buses"]),
         )
         logger.info("Found %d candidate buses: %s", len(candidate_buses), candidate_buses)
 
@@ -991,10 +826,7 @@ def main_1d(
         logger.error("No candidate buses found!")
         return
 
-    # Phase 1: Tap optimization
-    initial_taps = _taps_dict_to_position(config.initial_taps) or TapPosition(
-        regulators={"reg1": 1.0, "reg2": 1.0, "reg3": 1.0},
-    )
+    initial_taps = sys["initial_taps"]
 
     logger.info("")
     logger.info("=" * 70)
@@ -1006,20 +838,30 @@ def main_1d(
     for dc_bus in candidate_buses:
         logger.info("")
         logger.info("  Bus %s: optimizing taps...", dc_bus)
-        dc_site_cfg = DCSiteConfig(
-            bus=dc_bus,
-            bus_kv=default_site.bus_kv,
-            base_kw_per_phase=default_site.base_kw_per_phase,
-            connection_type=default_site.connection_type,
-        )
         try:
             taps = optimize_taps_multiscenario(
-                config=config,
+                sys=sys,
                 dc_bus=dc_bus,
-                dc_site_cfg=dc_site_cfg,
+                bus_kv=dc_site.bus_kv,
+                base_kw_per_phase=dc_site.base_kw_per_phase,
+                connection_type=dc_site.connection_type,
                 inference_data=inference_data,
                 training_trace=training_trace,
+                training=training,
+                inference_ramps=inference_ramps,
                 initial_tap_position=initial_taps,
+                tap_schedule_entries=tap_schedule_entries,
+                training_t_start=training_t_start,
+                training_t_end=training_t_end,
+                ramp_t_end=ramp_t_end,
+                replica_counts=replica_counts,
+                total_gpu_capacity=site_gpu_capacity,
+                pv_systems=pv_systems,
+                time_varying_loads=time_varying_loads,
+                power_augmentation=power_augmentation,
+                total_duration_s=total_duration_s,
+                v_min=v_min,
+                v_max=v_max,
             )
             optimal_taps[dc_bus] = taps
         except Exception as e:
@@ -1059,24 +901,19 @@ def main_1d(
     total_cases = len(candidate_buses) * 4
     case_idx = 0
 
+    # Build tap schedule from optimized per-bus taps
     for dc_bus in candidate_buses:
-        dc_site_cfg = DCSiteConfig(
-            bus=dc_bus,
-            bus_kv=default_site.bus_kv,
-            base_kw_per_phase=default_site.base_kw_per_phase,
-            connection_type=default_site.connection_type,
-        )
         bus_taps = optimal_taps.get(dc_bus, {})
         inference_taps = bus_taps.get("inference", initial_taps)
 
-        tap_schedule_entries = []
-        if "training" in bus_taps and config.training is not None:
-            tap_schedule_entries.append((config.training.t_start, bus_taps["training"]))
-        if "low_load" in bus_taps and config.inference_ramp is not None:
-            t_low = config.inference_ramp.t_end + 120
-            tap_schedule_entries.append((t_low, bus_taps["low_load"]))
+        bus_tap_schedule_entries = []
+        if "training" in bus_taps and training is not None:
+            bus_tap_schedule_entries.append((training_t_start, bus_taps["training"]))
+        if "low_load" in bus_taps and inference_ramps is not None:
+            t_low = ramp_t_end + 120 if ramp_t_end > 0 else total_duration_s
+            bus_tap_schedule_entries.append((t_low, bus_taps["low_load"]))
 
-        tap_schedule = TapSchedule(()) if not tap_schedule_entries else TapSchedule(tuple(tap_schedule_entries))
+        bus_tap_schedule = TapSchedule(()) if not bus_tap_schedule_entries else TapSchedule(tuple(bus_tap_schedule_entries))
 
         cases = [
             ("baseline_no_tap", False, False),
@@ -1096,17 +933,33 @@ def main_1d(
 
             try:
                 result = run_case_1d(
-                    config=config,
+                    sys=sys,
                     dc_bus=dc_bus,
-                    dc_site_cfg=dc_site_cfg,
+                    bus_kv=dc_site.bus_kv,
+                    base_kw_per_phase=dc_site.base_kw_per_phase,
                     case_name=case_name,
                     inference_data=inference_data,
                     training_trace=training_trace,
                     logistic_models=logistic_models,
                     all_models=all_models,
                     initial_taps=inference_taps,
-                    tap_schedule=tap_schedule if use_tap_change else None,
+                    tap_schedule=bus_tap_schedule if use_tap_change else None,
                     use_ofo=use_ofo,
+                    ofo_config=ofo_config,
+                    training=training,
+                    inference_ramps=inference_ramps,
+                    replica_counts=replica_counts,
+                    total_gpu_capacity=site_gpu_capacity,
+                    pv_systems=pv_systems,
+                    time_varying_loads=time_varying_loads,
+                    total_duration_s=total_duration_s,
+                    v_min=v_min,
+                    v_max=v_max,
+                    power_augmentation=power_augmentation,
+                    connection_type=dc_site.connection_type,
+                    dt_dc=dt_dc,
+                    dt_grid=dt_grid,
+                    dt_ctrl=dt_ctrl,
                     save_dir=case_save_dir,
                 )
                 logger.info(
@@ -1236,48 +1089,56 @@ def _plot_heatmaps(df: pd.DataFrame, buses: list[str], save_dir: Path) -> None:
 
 
 def main_2d(
-    *, config: SweepConfig, system: str, dt_override: str | None = None, output_dir: Path | None = None
+    *,
+    sys: dict,
+    system: str,
+    dc_sites: dict[str, DCSite],
+    all_models: tuple[InferenceModelSpec, ...],
+    inference_data: InferenceData,
+    training_trace: TrainingTrace,
+    logistic_models: LogisticModelStore,
+    ofo_config: OFOConfig,
+    training: TrainingRun | None = None,
+    pv_systems: list | None = None,
+    time_varying_loads: list | None = None,
+    power_augmentation: PowerAugmentationConfig = POWER_AUG,
+    total_duration_s: int = TOTAL_DURATION_S,
+    v_min: float = V_MIN,
+    v_max: float = V_MAX,
+    dt_override: str | None = None,
+    output_dir: Path | None = None,
 ) -> None:
     """2-D sweep: multiple DC sites, sweep all unordered pairs of candidate buses."""
-    sim = config.simulation
-    ofo_params = config.ofo
-    all_models = tuple(config.models)
-    data_dir = config.data_dir or Path("data/offline") / config.data_hash
-
-    # Data must always be loaded at the config's original resolution
-    data_dt = float(_parse_fraction(sim.dt_dc))
+    dt_dc = DT_DC
+    dt_grid = DT_GRID
+    dt_ctrl = DT_CTRL
 
     if dt_override is not None:
-        dt_dc = dt_grid = dt_ctrl = _parse_fraction(dt_override)
+        frac = Fraction(dt_override) if "/" in dt_override else Fraction(int(dt_override))
+        dt_dc = dt_grid = dt_ctrl = frac
         logger.info("Time resolution override: dt = %s s for all components", dt_override)
-    else:
-        dt_dc = _parse_fraction(sim.dt_dc)
-        dt_grid = _parse_fraction(sim.dt_grid)
-        dt_ctrl = _parse_fraction(sim.dt_ctrl)
 
     save_dir = (
         output_dir if output_dir else (Path(__file__).resolve().parent / "outputs" / system / "sweep_dc_locations_2d")
     )
     save_dir.mkdir(parents=True, exist_ok=True)
 
-    inference_data, training_trace, logistic_models = _load_shared_data(
-        config,
-        all_models,
-        data_dir,
-        data_dt,
-    )
-
     # Discover candidate buses
-    assert config.dc_sites is not None
-    ref_site = next(iter(config.dc_sites.values()))
-    target_kv = ref_site.bus_kv
+    site_ids = list(dc_sites.keys())
+    assert len(site_ids) >= 2, "Need at least 2 dc_sites for 2-D sweep"
+    site_A_id = site_ids[0]
+    site_B_id = site_ids[1]
+    site_A = dc_sites[site_A_id]
+    site_B = dc_sites[site_B_id]
+
+    target_kv = site_A.bus_kv
 
     logger.info("Discovering candidate 3-phase buses at %.1f kV...", target_kv)
     candidate_buses = discover_candidate_buses(
-        config.ieee_case_dir,
-        config.dss_master_file,
+        sys["dss_case_dir"],
+        sys["dss_master_file"],
         target_kv,
-        exclude=set(config.exclude_buses),
+        exclude=set(sys["exclude_buses"]),
     )
     logger.info("Found %d candidate buses: %s", len(candidate_buses), candidate_buses)
 
@@ -1285,22 +1146,13 @@ def main_2d(
         logger.error("Need at least 2 candidate buses for 2-D sweep!")
         return
 
-    # Extract DC site templates
-    site_ids = list(config.dc_sites.keys())
-    assert len(site_ids) >= 2, "Config must define at least 2 dc_sites for 2-D sweep"
-    site_A_id = site_ids[0]
-    site_B_id = site_ids[1]
-    site_A_template = config.dc_sites[site_A_id]
-    site_B_template = config.dc_sites[site_B_id]
+    specs_A = tuple(md.spec for md in site_A.models)
+    specs_B = tuple(md.spec for md in site_B.models)
+    inference_A = inference_data.filter_models(specs_A)
+    inference_B = inference_data.filter_models(specs_B)
 
-    models_A = _resolve_models_for_site(site_A_template, all_models)
-    models_B = _resolve_models_for_site(site_B_template, all_models)
-    inference_A = inference_data.filter_models(models_A) if site_A_template.models is not None else inference_data
-    inference_B = inference_data.filter_models(models_B) if site_B_template.models is not None else inference_data
-
-    ofo_config = _build_ofo_config(ofo_params, sim)
-    initial_taps = _taps_dict_to_position(config.initial_taps)
-    exclude_buses = tuple(config.exclude_buses)
+    initial_taps = sys["initial_taps"]
+    exclude_buses = tuple(sys["exclude_buses"])
 
     # Generate all unordered pairs
     pairs = list(itertools.combinations(candidate_buses, 2))
@@ -1314,49 +1166,53 @@ def main_2d(
         logger.info("[%d/%d] DC1(%s)@%s + DC2(%s)@%s", idx, total, site_A_id, bus_A, site_B_id, bus_B)
 
         try:
-            dc_config_A = DatacenterConfig(gpus_per_server=8, base_kw_per_phase=site_A_template.base_kw_per_phase)
-            dc_config_B = DatacenterConfig(gpus_per_server=8, base_kw_per_phase=site_B_template.base_kw_per_phase)
+            dc_config_A = DatacenterConfig(gpus_per_server=8, base_kw_per_phase=site_A.base_kw_per_phase)
+            dc_config_B = DatacenterConfig(gpus_per_server=8, base_kw_per_phase=site_B.base_kw_per_phase)
 
-            workload_A_kwargs = _build_workload_kwargs(
-                config,
-                inference_A,
-                training_trace,
-                site_ramps=site_A_template.inference_ramps if site_A_template.inference_ramps else None,
-            )
-            workload_B_kwargs = _build_workload_kwargs(
-                config,
-                inference_B,
-                training_trace,
-                site_ramps=site_B_template.inference_ramps if site_B_template.inference_ramps else None,
-            )
+            replica_counts_A = {md.spec.model_label: md.num_replicas for md in site_A.models}
+            replica_counts_B = {md.spec.model_label: md.num_replicas for md in site_B.models}
+
+            wl_kwargs_A: dict = {"inference_data": inference_A, "replica_counts": replica_counts_A}
+            if site_A.inference_ramps is not None:
+                wl_kwargs_A["inference_ramps"] = site_A.inference_ramps
+            if training is not None:
+                wl_kwargs_A["training"] = training
+
+            wl_kwargs_B: dict = {"inference_data": inference_B, "replica_counts": replica_counts_B}
+            if site_B.inference_ramps is not None:
+                wl_kwargs_B["inference_ramps"] = site_B.inference_ramps
+            if training is not None:
+                wl_kwargs_B["training"] = training
 
             dc_A = OfflineDatacenter(
                 dc_config_A,
-                OfflineWorkload(**workload_A_kwargs),
+                OfflineWorkload(**wl_kwargs_A),
                 dt_s=dt_dc,
-                seed=site_A_template.seed,
-                power_augmentation=config.power_augmentation,
+                seed=site_A.seed,
+                power_augmentation=power_augmentation,
+                total_gpu_capacity=site_A.total_gpu_capacity,
             )
             dc_B = OfflineDatacenter(
                 dc_config_B,
-                OfflineWorkload(**workload_B_kwargs),
+                OfflineWorkload(**wl_kwargs_B),
                 dt_s=dt_dc,
-                seed=site_B_template.seed,
-                power_augmentation=config.power_augmentation,
+                seed=site_B.seed,
+                power_augmentation=power_augmentation,
+                total_gpu_capacity=site_B.total_gpu_capacity,
             )
 
             datacenters = {site_A_id: dc_A, site_B_id: dc_B}
             dc_loads = {
-                site_A_id: DCLoadSpec(bus=bus_A, bus_kv=target_kv, connection_type=site_A_template.connection_type),
-                site_B_id: DCLoadSpec(bus=bus_B, bus_kv=target_kv, connection_type=site_B_template.connection_type),
+                site_A_id: DCLoadSpec(bus=bus_A, bus_kv=target_kv, connection_type=site_A.connection_type),
+                site_B_id: DCLoadSpec(bus=bus_B, bus_kv=target_kv, connection_type=site_B.connection_type),
             }
 
             grid = ScenarioOpenDSSGrid(
-                pv_systems=config.pv_systems,
-                time_varying_loads=config.time_varying_loads,
-                source_pu=config.source_pu,
-                dss_case_dir=config.ieee_case_dir,
-                dss_master_file=config.dss_master_file,
+                pv_systems=pv_systems or [],
+                time_varying_loads=time_varying_loads or [],
+                source_pu=sys["source_pu"],
+                dss_case_dir=sys["dss_case_dir"],
+                dss_master_file=sys["dss_master_file"],
                 dc_loads=dc_loads,
                 power_factor=dc_config_A.power_factor,
                 dt_s=dt_grid,
@@ -1365,14 +1221,14 @@ def main_2d(
             )
 
             ofo_A = OFOBatchSizeController(
-                models_A,
+                specs_A,
                 models=logistic_models,
                 config=ofo_config,
                 dt_s=dt_ctrl,
                 site_id=site_A_id,
             )
             ofo_B = OFOBatchSizeController(
-                models_B,
+                specs_B,
                 models=logistic_models,
                 config=ofo_config,
                 dt_s=dt_ctrl,
@@ -1383,7 +1239,7 @@ def main_2d(
                 datacenters=datacenters,
                 grid=grid,
                 controllers=[ofo_A, ofo_B],
-                total_duration_s=sim.total_duration_s,
+                total_duration_s=total_duration_s,
                 dc_bus=bus_A,
             )
 
@@ -1393,8 +1249,8 @@ def main_2d(
 
             vstats = compute_allbus_voltage_stats(
                 log.grid_states,
-                v_min=sim.v_min,
-                v_max=sim.v_max,
+                v_min=v_min,
+                v_max=v_max,
                 exclude_buses=exclude_buses,
             )
 
@@ -1442,20 +1298,25 @@ def _run_multi_dc_case(
     *,
     bus_map: dict[str, str],
     site_ids: list[str],
-    site_templates: dict[str, DCSiteConfig],
-    site_models: dict[str, tuple],
+    dc_sites: dict[str, DCSite],
     site_inference_data: dict[str, InferenceData],
-    config: SweepConfig,
+    sys: dict,
     training_trace: TrainingTrace,
+    training: TrainingRun | None,
     logistic_models: LogisticModelStore,
     ofo_config: OFOConfig,
     target_kv: float,
     initial_taps: TapPosition | None,
     exclude_buses: tuple[str, ...],
-    dt_dc: Fraction,
-    dt_grid: Fraction,
-    dt_ctrl: Fraction,
+    pv_systems: list | None = None,
+    time_varying_loads: list | None = None,
+    power_augmentation: PowerAugmentationConfig = POWER_AUG,
+    dt_dc: Fraction = DT_DC,
+    dt_grid: Fraction = DT_GRID,
+    dt_ctrl: Fraction = DT_CTRL,
     total_duration_s: int | None = None,
+    v_min: float = V_MIN,
+    v_max: float = V_MAX,
     stress_test: bool = False,
 ) -> dict:
     """Run a single multi-DC simulation and return metrics dict.
@@ -1464,48 +1325,47 @@ def _run_multi_dc_case(
     loads are disabled.  Each datacenter uses an immediate inference ramp to
     fill its total_gpu_capacity, simulating the extreme case.
     """
-    sim = config.simulation
+    duration = total_duration_s if total_duration_s is not None else TOTAL_DURATION_S
 
     # Build datacenters
     datacenters = {}
     for sid in site_ids:
-        tmpl = site_templates[sid]
+        site = dc_sites[sid]
         dc_config = DatacenterConfig(
             gpus_per_server=8,
-            base_kw_per_phase=tmpl.base_kw_per_phase,
+            base_kw_per_phase=site.base_kw_per_phase,
         )
+        replica_counts = {md.spec.model_label: md.num_replicas for md in site.models}
+        wl_kwargs: dict = {"inference_data": site_inference_data[sid], "replica_counts": replica_counts}
+
         if stress_test:
-            # Immediate ramp to fill total GPU capacity
-            models_for_site = site_models[sid]
-            current_gpus = sum(m.initial_num_replicas * m.gpus_per_replica for m in models_for_site)
-            total_cap = tmpl.total_gpu_capacity or current_gpus
-            ramp_target = total_cap / current_gpus if current_gpus > 0 else 1.0
-            stress_ramps = (
-                [
-                    InferenceRampConfig(target=ramp_target, t_start=0, t_end=1),
-                ]
-                if ramp_target > 1.0
-                else None
-            )
-            wl_kwargs = _build_workload_kwargs(
-                config,
-                site_inference_data[sid],
-                training_trace,
-                site_ramps=stress_ramps,
-            )
+            # Immediate per-model ramps to fill total GPU capacity
+            current_gpus = sum(md.num_replicas * md.spec.gpus_per_replica for md in site.models)
+            total_cap = site.total_gpu_capacity or current_gpus
+            scale = total_cap / current_gpus if current_gpus > 0 else 1.0
+            if scale > 1.0:
+                ramp_schedule: InferenceRampSchedule | None = None
+                for md in site.models:
+                    abs_target = round(scale * md.num_replicas)
+                    entry = InferenceRamp(target=abs_target, model=md.spec.model_label).at(
+                        t_start=0, t_end=1
+                    )
+                    ramp_schedule = entry if ramp_schedule is None else (ramp_schedule | entry)
+                if ramp_schedule is not None:
+                    wl_kwargs["inference_ramps"] = ramp_schedule
         else:
-            wl_kwargs = _build_workload_kwargs(
-                config,
-                site_inference_data[sid],
-                training_trace,
-                site_ramps=tmpl.inference_ramps if tmpl.inference_ramps else None,
-            )
+            if site.inference_ramps is not None:
+                wl_kwargs["inference_ramps"] = site.inference_ramps
+            if training is not None:
+                wl_kwargs["training"] = training
+
         dc = OfflineDatacenter(
             dc_config,
             OfflineWorkload(**wl_kwargs),
             dt_s=dt_dc,
-            seed=tmpl.seed,
-            power_augmentation=config.power_augmentation,
+            seed=site.seed,
+            power_augmentation=power_augmentation,
+            total_gpu_capacity=site.total_gpu_capacity,
         )
         datacenters[sid] = dc
 
@@ -1514,18 +1374,18 @@ def _run_multi_dc_case(
         sid: DCLoadSpec(
             bus=bus_map[sid],
             bus_kv=target_kv,
-            connection_type=site_templates[sid].connection_type,
+            connection_type=dc_sites[sid].connection_type,
         )
         for sid in site_ids
     }
 
     grid = ScenarioOpenDSSGrid(
-        pv_systems=config.pv_systems,
-        time_varying_loads=[] if stress_test else config.time_varying_loads,
-        source_pu=config.source_pu,
+        pv_systems=pv_systems or [],
+        time_varying_loads=[] if stress_test else (time_varying_loads or []),
+        source_pu=sys["source_pu"],
         constant_pv=stress_test,
-        dss_case_dir=config.ieee_case_dir,
-        dss_master_file=config.dss_master_file,
+        dss_case_dir=sys["dss_case_dir"],
+        dss_master_file=sys["dss_master_file"],
         dc_loads=dc_loads,
         power_factor=DatacenterConfig().power_factor,
         dt_s=dt_grid,
@@ -1536,16 +1396,15 @@ def _run_multi_dc_case(
     # Build OFO controllers
     controllers = []
     for sid in site_ids:
+        site_specs = tuple(md.spec for md in dc_sites[sid].models)
         ofo_ctrl = OFOBatchSizeController(
-            site_models[sid],
+            site_specs,
             models=logistic_models,
             config=ofo_config,
             dt_s=dt_ctrl,
             site_id=sid,
         )
         controllers.append(ofo_ctrl)
-
-    duration = total_duration_s if total_duration_s is not None else sim.total_duration_s
 
     coord = Coordinator(
         datacenters=datacenters,
@@ -1561,8 +1420,8 @@ def _run_multi_dc_case(
 
     vstats = compute_allbus_voltage_stats(
         log.grid_states,
-        v_min=sim.v_min,
-        v_max=sim.v_max,
+        v_min=v_min,
+        v_max=v_max,
         exclude_buses=exclude_buses,
     )
 
@@ -1778,8 +1637,22 @@ def _plot_refinement_iteration(
 
 def main_zoned(
     *,
-    config: SweepConfig,
+    sys: dict,
     system: str,
+    dc_sites: dict[str, DCSite],
+    all_models: tuple[InferenceModelSpec, ...],
+    inference_data: InferenceData,
+    training_trace: TrainingTrace,
+    training: TrainingRun | None,
+    logistic_models: LogisticModelStore,
+    ofo_config: OFOConfig,
+    zones: dict[str, list[str]],
+    pv_systems: list | None = None,
+    time_varying_loads: list | None = None,
+    power_augmentation: PowerAugmentationConfig = POWER_AUG,
+    total_duration_s: int = TOTAL_DURATION_S,
+    v_min: float = V_MIN,
+    v_max: float = V_MAX,
     dt_override: str | None = None,
     dt_screening: str | None = None,
     output_dir: Path | None = None,
@@ -1801,24 +1674,19 @@ def main_zoned(
         each zone one at a time (holding others at best).  Uses native config
         resolution over the full simulation duration for accurate evaluation.
     """
-    sim = config.simulation
-    ofo_params = config.ofo
-    all_models = tuple(config.models)
-    data_dir = config.data_dir or Path("data/offline") / config.data_hash
-
-    data_dt = float(_parse_fraction(sim.dt_dc))
-
-    # Full-resolution dt (for Phase 2 & 3): always use config native resolution
-    dt_dc = _parse_fraction(sim.dt_dc)
-    dt_grid = _parse_fraction(sim.dt_grid)
-    dt_ctrl = _parse_fraction(sim.dt_ctrl)
+    # Full-resolution dt (for Phase 2 & 3)
+    dt_dc = DT_DC
+    dt_grid = DT_GRID
+    dt_ctrl = DT_CTRL
     logger.info("Phase 2/3 resolution: dt_dc=%s, dt_grid=%s, dt_ctrl=%s", dt_dc, dt_grid, dt_ctrl)
 
     # Screening dt (Phase 1): coarse resolution for fast ranking
     if dt_screening is not None:
-        dt_dc_screen = dt_grid_screen = dt_ctrl_screen = _parse_fraction(dt_screening)
+        frac = Fraction(dt_screening) if "/" in dt_screening else Fraction(int(dt_screening))
+        dt_dc_screen = dt_grid_screen = dt_ctrl_screen = frac
     elif dt_override is not None:
-        dt_dc_screen = dt_grid_screen = dt_ctrl_screen = _parse_fraction(dt_override)
+        frac = Fraction(dt_override) if "/" in dt_override else Fraction(int(dt_override))
+        dt_dc_screen = dt_grid_screen = dt_ctrl_screen = frac
     else:
         # Default: 60 s for screening (coarse but fast)
         dt_dc_screen = dt_grid_screen = dt_ctrl_screen = Fraction(60)
@@ -1831,28 +1699,19 @@ def main_zoned(
     )
     save_dir.mkdir(parents=True, exist_ok=True)
 
-    inference_data, training_trace, logistic_models = _load_shared_data(
-        config,
-        all_models,
-        data_dir,
-        data_dt,
-    )
-
-    assert config.dc_sites is not None
-    assert config.zones is not None
-    site_ids = list(config.dc_sites.keys())
+    site_ids = list(dc_sites.keys())
 
     # Discover all 3-phase candidate buses
-    ref_site = next(iter(config.dc_sites.values()))
+    ref_site = next(iter(dc_sites.values()))
     target_kv = ref_site.bus_kv
 
     logger.info("Discovering candidate 3-phase buses at %.1f kV...", target_kv)
     all_candidate_buses = set(
         discover_candidate_buses(
-            config.ieee_case_dir,
-            config.dss_master_file,
+            sys["dss_case_dir"],
+            sys["dss_master_file"],
             target_kv,
-            exclude=set(config.exclude_buses),
+            exclude=set(sys["exclude_buses"]),
         )
     )
     logger.info("Found %d candidate 3-phase buses total", len(all_candidate_buses))
@@ -1860,7 +1719,7 @@ def main_zoned(
     # Build per-zone candidate lists (intersect zone bus lists with 3-phase candidates)
     zone_candidates: dict[str, list[str]] = {}
     for site_id in site_ids:
-        zone_buses = config.zones.get(site_id, [])
+        zone_buses = zones.get(site_id, [])
         if not zone_buses:
             logger.warning("Site '%s' has no zone defined; using all candidate buses", site_id)
             zone_candidates[site_id] = sorted(all_candidate_buses)
@@ -1881,33 +1740,33 @@ def main_zoned(
             logger.error("Zone '%s' has no 3-phase candidate buses! Aborting.", site_id)
             return
 
-    # Prepare per-site models and inference data
-    site_templates = {sid: config.dc_sites[sid] for sid in site_ids}
-    site_models: dict[str, tuple] = {}
+    # Prepare per-site inference data
     site_inference_data: dict[str, InferenceData] = {}
     for sid in site_ids:
-        tmpl = site_templates[sid]
-        models = _resolve_models_for_site(tmpl, all_models)
-        site_models[sid] = models
-        site_inference_data[sid] = inference_data.filter_models(models) if tmpl.models is not None else inference_data
+        site_specs = tuple(md.spec for md in dc_sites[sid].models)
+        site_inference_data[sid] = inference_data.filter_models(site_specs)
 
-    ofo_config = _build_ofo_config(ofo_params, sim)
-    initial_taps = _taps_dict_to_position(config.initial_taps)
-    exclude_buses = tuple(config.exclude_buses)
+    initial_taps = sys["initial_taps"]
+    exclude_buses = tuple(sys["exclude_buses"])
 
     # Shared kwargs for _run_multi_dc_case (without dt, added per-phase)
     _base_kwargs = dict(
         site_ids=site_ids,
-        site_templates=site_templates,
-        site_models=site_models,
+        dc_sites=dc_sites,
         site_inference_data=site_inference_data,
-        config=config,
+        sys=sys,
         training_trace=training_trace,
+        training=training,
         logistic_models=logistic_models,
         ofo_config=ofo_config,
         target_kv=target_kv,
         initial_taps=initial_taps,
         exclude_buses=exclude_buses,
+        pv_systems=pv_systems,
+        time_varying_loads=time_varying_loads,
+        power_augmentation=power_augmentation,
+        v_min=v_min,
+        v_max=v_max,
     )
     screening_kwargs = dict(
         **_base_kwargs,
@@ -1923,7 +1782,7 @@ def main_zoned(
     )
 
     # Default bus map from config
-    default_bus_map = {sid: config.dc_sites[sid].bus for sid in site_ids}
+    default_bus_map = {sid: dc_sites[sid].bus for sid in site_ids}
 
     # ── Phase 1: Screening ───────────────────────────────────────────────────
     logger.info("")
@@ -2001,11 +1860,11 @@ def main_zoned(
     total_phase1 = screen_idx
     logger.info("")
     logger.info("Phase 1 complete: %d simulations", total_phase1)
-    for sid, buses in top_k_per_zone.items():
-        logger.info("  %s top-%d: %s", sid, len(buses), buses)
+    for sid, buses_list in top_k_per_zone.items():
+        logger.info("  %s top-%d: %s", sid, len(buses_list), buses_list)
 
     # ── Phase 2: Combination (1-min stress test: constant PV + full DC) ──────
-    # Duration must yield at least 2 grid steps; ensure >= 2 × dt_grid.
+    # Duration must yield at least 2 grid steps; ensure >= 2 x dt_grid.
     min_duration = int(math.ceil(float(dt_grid) * 2))
     phase2_duration_s = max(60, min_duration)
     logger.info("")
@@ -2024,7 +1883,7 @@ def main_zoned(
     logger.info(
         "Combinations: %d (%s)",
         total,
-        " × ".join(str(len(z)) for z in zone_bus_lists),
+        " x ".join(str(len(z)) for z in zone_bus_lists),
     )
 
     phase2_rows: list[dict] = []
@@ -2245,13 +2104,181 @@ def main_zoned(
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# Per-system experiment definitions
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+def _experiment_ieee13(sys_const, training_trace):
+    """IEEE 13-bus: single DC at bus 671 with training overlay."""
+    models = (
+        deploy("Llama-3.1-8B", 720),
+        deploy("Llama-3.1-70B", 180),
+        deploy("Llama-3.1-405B", 90),
+        deploy("Qwen2.5-Coder-32B", 480),
+        deploy("Qwen2.5-72B", 210),
+    )
+
+    # Per-model ramps: target = round(fraction * num_replicas) with fraction=0.2
+    # 8B: round(0.2*720)=144, 70B: round(0.2*180)=36, 405B: round(0.2*90)=18,
+    # Qwen-32B: round(0.2*480)=96, Qwen-72B: round(0.2*210)=42
+    inference_ramps = (
+        InferenceRamp(target=144, model="Llama-3.1-8B").at(t_start=2500, t_end=3000)
+        | InferenceRamp(target=36, model="Llama-3.1-70B").at(t_start=2500, t_end=3000)
+        | InferenceRamp(target=18, model="Llama-3.1-405B").at(t_start=2500, t_end=3000)
+        | InferenceRamp(target=96, model="Qwen2.5-Coder-32B").at(t_start=2500, t_end=3000)
+        | InferenceRamp(target=42, model="Qwen2.5-72B").at(t_start=2500, t_end=3000)
+    )
+
+    dc_sites = {
+        "default": DCSite(
+            bus="671", bus_kv=sys_const["bus_kv"], base_kw_per_phase=500.0,
+            models=models, seed=0, total_gpu_capacity=7200,
+            inference_ramps=inference_ramps,
+        ),
+    }
+
+    training = TrainingRun(
+        n_gpus=2400, trace=training_trace, target_peak_W_per_gpu=400.0,
+    ).at(t_start=1000.0, t_end=2000.0)
+
+    ofo_config = OFOConfig(
+        primal_step_size=0.1, w_throughput=0.001, w_switch=1.0,
+        voltage_gradient_scale=1e6, v_min=V_MIN, v_max=V_MAX,
+        voltage_dual_step_size=1.0, latency_dual_step_size=1.0,
+        sensitivity_update_interval=3600, sensitivity_perturbation_kw=100.0,
+    )
+
+    tap_schedule_entries = [
+        (1500, TapPosition(regulators={"creg1a": tap(16), "creg1b": tap(6), "creg1c": tap(17)})),
+        (3300, TapPosition(regulators={"creg1a": tap(10), "creg1b": tap(6), "creg1c": tap(10)})),
+    ]
+
+    pv_systems = [PVSystemSpec(bus="675", bus_kv=4.16, peak_kw=10.0)]
+    time_varying_loads = [TimeVaryingLoadSpec(bus="680", bus_kv=4.16, peak_kw=10.0)]
+
+    return dict(
+        dc_sites=dc_sites, training=training, ofo_config=ofo_config,
+        tap_schedule_entries=tap_schedule_entries,
+        training_t_start=1000.0, training_t_end=2000.0, ramp_t_end=3000.0,
+        pv_systems=pv_systems, time_varying_loads=time_varying_loads,
+    )
+
+
+def _experiment_ieee34(sys_const, training_trace):
+    """IEEE 34-bus: two DC sites (upstream + downstream)."""
+    upstream_models = (
+        deploy("Llama-3.1-8B", 720),
+        deploy("Llama-3.1-70B", 180),
+        deploy("Llama-3.1-405B", 90),
+    )
+    downstream_models = (
+        deploy("Qwen2.5-Coder-32B", 480),
+        deploy("Qwen2.5-72B", 210),
+    )
+
+    dc_sites = {
+        "upstream": DCSite(
+            bus="850", bus_kv=sys_const["bus_kv"], base_kw_per_phase=120.0,
+            models=upstream_models, seed=0, total_gpu_capacity=520,
+        ),
+        "downstream": DCSite(
+            bus="834", bus_kv=sys_const["bus_kv"], base_kw_per_phase=80.0,
+            models=downstream_models, seed=42, total_gpu_capacity=600,
+        ),
+    }
+
+    ofo_config = OFOConfig(
+        primal_step_size=0.05, w_throughput=0.001, w_switch=1.0,
+        voltage_gradient_scale=1e6, v_min=V_MIN, v_max=V_MAX,
+        voltage_dual_step_size=20.0, latency_dual_step_size=1.0,
+        sensitivity_update_interval=3600, sensitivity_perturbation_kw=10.0,
+    )
+
+    pv_systems = [
+        PVSystemSpec(bus="848", bus_kv=24.9, peak_kw=130.0),
+        PVSystemSpec(bus="830", bus_kv=24.9, peak_kw=65.0),
+    ]
+    time_varying_loads = [
+        TimeVaryingLoadSpec(bus="860", bus_kv=24.9, peak_kw=80.0),
+        TimeVaryingLoadSpec(bus="844", bus_kv=24.9, peak_kw=120.0),
+        TimeVaryingLoadSpec(bus="840", bus_kv=24.9, peak_kw=60.0),
+        TimeVaryingLoadSpec(bus="858", bus_kv=24.9, peak_kw=50.0),
+        TimeVaryingLoadSpec(bus="854", bus_kv=24.9, peak_kw=40.0),
+    ]
+
+    return dict(
+        dc_sites=dc_sites, training=None, ofo_config=ofo_config,
+        pv_systems=pv_systems, time_varying_loads=time_varying_loads,
+    )
+
+
+def _experiment_ieee123(sys_const, training_trace):
+    """IEEE 123-bus: four DC zones with per-site ramps."""
+    dc_sites = {
+        "z1_sw": DCSite(
+            bus="8", bus_kv=sys_const["bus_kv"], base_kw_per_phase=310.0,
+            models=(deploy("Llama-3.1-8B", 120),), seed=0, total_gpu_capacity=120,
+            # 8B: round(1.5 * 120) = 180
+            inference_ramps=InferenceRamp(target=180, model="Llama-3.1-8B").at(t_start=500, t_end=1000),
+        ),
+        "z2_nw": DCSite(
+            bus="23", bus_kv=sys_const["bus_kv"], base_kw_per_phase=265.0,
+            models=(deploy("Qwen2.5-Coder-32B", 80),), seed=17, total_gpu_capacity=160,
+            # 30B: round(1.3 * 80) = 104
+            inference_ramps=InferenceRamp(target=104, model="Qwen2.5-Coder-32B").at(t_start=1500, t_end=2500),
+        ),
+        "z3_se": DCSite(
+            bus="60", bus_kv=sys_const["bus_kv"], base_kw_per_phase=295.0,
+            models=(deploy("Llama-3.1-70B", 30), deploy("Llama-3.1-405B", 35)),
+            seed=34, total_gpu_capacity=400,
+            # 70B: round(1.5 * 30) = 45, 405B: round(1.5 * 35) = 52
+            inference_ramps=(
+                InferenceRamp(target=45, model="Llama-3.1-70B").at(t_start=700, t_end=1100)
+                | InferenceRamp(target=52, model="Llama-3.1-405B").at(t_start=700, t_end=1100)
+            ),
+        ),
+        "z4_ne": DCSite(
+            bus="105", bus_kv=sys_const["bus_kv"], base_kw_per_phase=325.0,
+            models=(deploy("Qwen2.5-72B", 55),), seed=51, total_gpu_capacity=440,
+            # 235B: round(0.5 * 55) = 27
+            inference_ramps=InferenceRamp(target=27, model="Qwen2.5-72B").at(t_start=2000, t_end=2500),
+        ),
+    }
+
+    ofo_config = OFOConfig(
+        primal_step_size=0.05, w_throughput=0.001, w_switch=1.0,
+        voltage_gradient_scale=1e6, v_min=V_MIN, v_max=V_MAX,
+        voltage_dual_step_size=0.3, latency_dual_step_size=1.0,
+        sensitivity_update_interval=3600, sensitivity_perturbation_kw=10.0,
+    )
+
+    pv_systems = [
+        PVSystemSpec(bus="1", bus_kv=4.16, peak_kw=333.3),
+        PVSystemSpec(bus="48", bus_kv=4.16, peak_kw=333.3),
+        PVSystemSpec(bus="99", bus_kv=4.16, peak_kw=333.3),
+    ]
+
+    return dict(
+        dc_sites=dc_sites, training=None, ofo_config=ofo_config,
+        pv_systems=pv_systems, time_varying_loads=[],
+        zones=sys_const.get("zones"),
+    )
+
+
+_EXPERIMENTS = {
+    "ieee13": _experiment_ieee13,
+    "ieee34": _experiment_ieee34,
+    "ieee123": _experiment_ieee123,
+}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # MAIN ENTRY POINT
 # ══════════════════════════════════════════════════════════════════════════════
 
 
 def main(
     *,
-    config_path: Path,
     system: str,
     buses: list[str] | None = None,
     dt_override: str | None = None,
@@ -2260,25 +2287,60 @@ def main(
     top_k: int = 4,
     refine: bool = False,
 ) -> None:
-    config_path = config_path.resolve()
-    config = SweepConfig.model_validate_json(config_path.read_bytes())
+    sys_const = SYSTEMS[system]()
 
-    # Resolve paths relative to config file
-    config_dir = config_path.parent
-    config.ieee_case_dir = (config_dir / config.ieee_case_dir).resolve()
+    # Load data pipeline
+    data_sources, training_trace_params, data_dir = load_data_sources()
 
-    n_sites = config.num_dc_sites
-    has_zones = config.zones is not None and len(config.zones) > 0
+    # Pre-load data using all model specs (data pipeline generates for all data_sources)
+    all_models = all_model_specs()
+
+    logger.info("Loading data for %s...", system)
+    inference_data = InferenceData.ensure(
+        data_dir, all_models, data_sources, plot=False, dt_s=float(DT_DC),
+    )
+    training_trace = TrainingTrace.ensure(data_dir / "training_trace.csv", training_trace_params)
+    logistic_models = LogisticModelStore.ensure(
+        data_dir / "logistic_fits.csv", all_models, data_sources, plot=False,
+    )
+
+    # Build experiment config
+    experiment_fn = _EXPERIMENTS[system]
+    experiment = experiment_fn(sys_const, training_trace)
+
+    dc_sites = experiment["dc_sites"]
+    n_sites = len(dc_sites)
+    has_zones = experiment.get("zones") is not None and len(experiment.get("zones", {})) > 0
+
+    # Collect all model specs from DC sites for the experiment
+    exp_all_models: list[InferenceModelSpec] = []
+    seen_labels: set[str] = set()
+    for site in dc_sites.values():
+        for md in site.models:
+            if md.spec.model_label not in seen_labels:
+                exp_all_models.append(md.spec)
+                seen_labels.add(md.spec.model_label)
+    exp_all_models_tuple = tuple(exp_all_models)
 
     if has_zones:
         logger.info(
             "Config has %d DC site(s) with %d zone(s) -> zone-constrained sweep",
             n_sites,
-            len(config.zones),
+            len(experiment["zones"]),
         )
         main_zoned(
-            config=config,
+            sys=sys_const,
             system=system,
+            dc_sites=dc_sites,
+            all_models=exp_all_models_tuple,
+            inference_data=inference_data,
+            training_trace=training_trace,
+            training=experiment.get("training"),
+            logistic_models=logistic_models,
+            ofo_config=experiment["ofo_config"],
+            zones=experiment["zones"],
+            pv_systems=experiment.get("pv_systems"),
+            time_varying_loads=experiment.get("time_varying_loads"),
             dt_override=dt_override,
             dt_screening=dt_screening,
             output_dir=output_dir,
@@ -2287,10 +2349,45 @@ def main(
         )
     elif n_sites <= 1:
         logger.info("Config has %d DC site(s) -> 1-D sweep", n_sites)
-        main_1d(config=config, system=system, buses=buses, dt_override=dt_override, output_dir=output_dir)
+        dc_site = next(iter(dc_sites.values()))
+        main_1d(
+            sys=sys_const,
+            system=system,
+            dc_site=dc_site,
+            all_models=exp_all_models_tuple,
+            inference_data=inference_data,
+            training_trace=training_trace,
+            logistic_models=logistic_models,
+            ofo_config=experiment["ofo_config"],
+            training=experiment.get("training"),
+            inference_ramps=dc_site.inference_ramps,
+            tap_schedule_entries=experiment.get("tap_schedule_entries"),
+            training_t_start=experiment.get("training_t_start", 0),
+            training_t_end=experiment.get("training_t_end", 0),
+            ramp_t_end=experiment.get("ramp_t_end", 0),
+            pv_systems=experiment.get("pv_systems"),
+            time_varying_loads=experiment.get("time_varying_loads"),
+            buses=buses,
+            dt_override=dt_override,
+            output_dir=output_dir,
+        )
     else:
         logger.info("Config has %d DC site(s) -> 2-D sweep", n_sites)
-        main_2d(config=config, system=system, dt_override=dt_override, output_dir=output_dir)
+        main_2d(
+            sys=sys_const,
+            system=system,
+            dc_sites=dc_sites,
+            all_models=exp_all_models_tuple,
+            inference_data=inference_data,
+            training_trace=training_trace,
+            logistic_models=logistic_models,
+            ofo_config=experiment["ofo_config"],
+            training=experiment.get("training"),
+            pv_systems=experiment.get("pv_systems"),
+            time_varying_loads=experiment.get("time_varying_loads"),
+            dt_override=dt_override,
+            output_dir=output_dir,
+        )
 
 
 if __name__ == "__main__":
@@ -2300,10 +2397,8 @@ if __name__ == "__main__":
 
     @dataclass
     class Args:
-        config: str
-        """Path to the config JSON file."""
         system: str = "ieee13"
-        """System name for output directory (e.g. ieee13, ieee34, ieee123)."""
+        """System name (ieee13, ieee34, ieee123)."""
         buses: str | None = None
         """Comma-separated list of buses to test (overrides auto-discovery, 1-D only)."""
         dt: str | None = None
@@ -2331,7 +2426,6 @@ if __name__ == "__main__":
     bus_list = [b.strip() for b in args.buses.split(",")] if args.buses else None
     out_dir = Path(args.output_dir) if args.output_dir else None
     main(
-        config_path=Path(args.config),
         system=args.system,
         buses=bus_list,
         dt_override=args.dt,

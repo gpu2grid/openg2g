@@ -36,14 +36,14 @@ The 3-phase approach reduces this to ~400 simulations (~1–2 hours):
 
 ```bash
 python examples/offline/sweep_dc_locations.py \
-    --config examples/offline/config_ieee13.json --system ieee13
+    --system ieee13
 ```
 
 ### IEEE 34-Bus: 2-D Heatmap
 
 ```bash
 python examples/offline/sweep_dc_locations.py \
-    --config examples/offline/config_ieee34.json --system ieee34
+    --system ieee34
 ```
 
 ### IEEE 123-Bus: Zone-Constrained 3-Phase Sweep
@@ -51,12 +51,12 @@ python examples/offline/sweep_dc_locations.py \
 ```bash
 # Phase 1 + Phase 2 only (fast screening)
 python examples/offline/sweep_dc_locations.py \
-    --config examples/offline/config_ieee123.json --system ieee123 \
+    --system ieee123 \
     --dt-screening 60 --top-k 4
 
 # With Phase 3 refinement (full resolution re-sweep)
 python examples/offline/sweep_dc_locations.py \
-    --config examples/offline/config_ieee123.json --system ieee123 \
+    --system ieee123 \
     --dt-screening 60 --top-k 4 --refine
 ```
 
@@ -82,4 +82,4 @@ Key config fields:
 - `exclude_buses`: Buses to exclude from candidates and voltage metrics
 - `pv_systems`, `time_varying_loads`: External disturbances (included in stress test)
 
-See [Data Pipeline](../guide/data-pipeline.md) for the full config format.
+See [Building Simulators](../guide/building-simulators.md) and `examples/offline/systems.py` for configuration details.

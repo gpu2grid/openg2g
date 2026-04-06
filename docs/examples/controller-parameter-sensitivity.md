@@ -25,7 +25,7 @@ The sweep mode auto-selects based on the number of DC sites:
 
 ```bash
 python examples/offline/sweep_ofo_parameters.py \
-    --config examples/offline/config_ieee13.json --system ieee13
+    --system ieee13
 ```
 
 ### IEEE 34-Bus: 2-D Per-Site Sweep
@@ -33,11 +33,11 @@ python examples/offline/sweep_ofo_parameters.py \
 ```bash
 # 2-D sweep (independent parameters per site, auto-selected)
 python examples/offline/sweep_ofo_parameters.py \
-    --config examples/offline/config_ieee34.json --system ieee34
+    --system ieee34
 
 # Force 1-D sweep (shared parameters across sites)
 python examples/offline/sweep_ofo_parameters.py \
-    --config examples/offline/config_ieee34.json --system ieee34 --sweep-mode 1d
+    --system ieee34 --sweep-mode 1d
 ```
 
 ### Overriding Time Resolution
@@ -46,7 +46,7 @@ For faster sweeps during exploration, use a coarser time step:
 
 ```bash
 python examples/offline/sweep_ofo_parameters.py \
-    --config examples/offline/config_ieee34.json --system ieee34 --dt 60
+    --system ieee34 --dt 60
 ```
 
 ## Parameters Swept
@@ -74,4 +74,4 @@ Key config fields:
 - `ofo.*`: Baseline parameter values (center of the sweep grid)
 - `simulation.total_duration_s`: Simulation length (affects sweep runtime)
 
-See [Data Pipeline](../guide/data-pipeline.md) for the full config format.
+See [Building Simulators](../guide/building-simulators.md) and `examples/offline/systems.py` for configuration details.

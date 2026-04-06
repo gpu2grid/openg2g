@@ -5,11 +5,11 @@
         "model_label": "Llama-3.1-8B",
         "model_id": "meta-llama/Llama-3.1-8B-Instruct",
         "gpus_per_replica": 1,
-        "initial_num_replicas": 720,
-        "initial_batch_size": 128,
         "itl_deadline_s": 0.08,
         "feasible_batch_sizes": [1, 2, 3, 4, 5, 6, 7, 8]
       },
+      "simulated_num_replicas": 720,
+      "initial_batch_size": 128,
       "vllm_base_url": "http://node1:8000",
       "gpu_endpoints": [
         {"host": "node1", "port": 4938, "gpu_indices": [0, 1, 2, 3]},
@@ -21,11 +21,11 @@
         "model_label": "Llama-3.1-70B",
         "model_id": "meta-llama/Llama-3.1-70B-Instruct",
         "gpus_per_replica": 4,
-        "initial_num_replicas": 180,
-        "initial_batch_size": 128,
         "itl_deadline_s": 0.10,
         "feasible_batch_sizes": [1, 2, 3, 4, 5, 6, 7, 8]
       },
+      "simulated_num_replicas": 180,
+      "initial_batch_size": 128,
       "vllm_base_url": "http://node2:8000",
       "gpu_endpoints": [
         {"host": "node2", "port": 4938, "gpu_indices": [0, 1, 2, 3]},

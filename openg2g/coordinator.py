@@ -20,6 +20,8 @@ from openg2g.grid.command import GridCommand
 
 logger = logging.getLogger(__name__)
 
+_DEFAULT_SITE = "_default"
+
 
 @dataclass
 class SimulationLog(Generic[DCStateT, GridStateT]):
@@ -32,7 +34,7 @@ class SimulationLog(Generic[DCStateT, GridStateT]):
 
     Attributes:
         dc_states: Every datacenter state produced by the datacenter (flat list, all sites).
-        dc_states_by_site: Per-site datacenter states (multi-DC mode).
+        dc_states_by_site: Per-site datacenter states.
         grid_states: Every grid state produced by the grid.
         commands: All commands emitted by controllers.
         time_s: Simulation time at each grid step (seconds).
@@ -54,11 +56,10 @@ class SimulationLog(Generic[DCStateT, GridStateT]):
 
     events: list[SimEvent] = field(default_factory=list)
 
-    def record_datacenter(self, state: DCStateT, *, site_id: str | None = None) -> None:
+    def record_datacenter(self, state: DCStateT, *, site_id: str) -> None:
         """Append a datacenter state snapshot."""
         self.dc_states.append(state)
-        if site_id is not None:
-            self.dc_states_by_site.setdefault(site_id, []).append(state)
+        self.dc_states_by_site.setdefault(site_id, []).append(state)
 
     def record_grid(self, state: GridStateT, *, dc_bus: str) -> None:
         """Append a grid state snapshot and extract DC bus voltages."""
@@ -98,14 +99,10 @@ class Coordinator(Generic[DCStateT, GridStateT]):
     respective rates.  The base tick is the GCD of all component
     periods.
 
-    Supports both single-DC and multi-DC modes:
-
-    - **Single-DC**: Pass ``datacenter`` (a single backend).
-    - **Multi-DC**: Pass ``datacenters`` (a dict mapping site IDs to backends).
-
     Args:
-        datacenter: Single datacenter backend (legacy mode).
-        datacenters: Dict of datacenter backends keyed by site ID (multi-DC).
+        datacenter: Single datacenter backend (shorthand for
+            ``datacenters={_DEFAULT_SITE: datacenter}``).
+        datacenters: Dict of datacenter backends keyed by site ID.
         grid: Grid simulator backend.
         controllers: List of controllers, applied in order each tick.
         total_duration_s: Total simulation duration (integer seconds).
@@ -124,22 +121,12 @@ class Coordinator(Generic[DCStateT, GridStateT]):
         *,
         datacenters: dict[str, DatacenterBackend[DCStateT]] | None = None,
     ) -> None:
-        # Build datacenters dict
         if datacenters is not None:
             self._datacenters = dict(datacenters)
         elif datacenter is not None:
-            # Wrap single DC in a dict. Use "_single" as key; the grid
-            # will receive a flat list (not a dict) in this mode.
-            self._datacenters = {"_single": datacenter}
-            self._single_dc_mode = True
+            self._datacenters = {_DEFAULT_SITE: datacenter}
         else:
             raise ValueError("Must provide either datacenter or datacenters.")
-
-        if not hasattr(self, "_single_dc_mode"):
-            self._single_dc_mode = False
-
-        # Legacy single-DC property
-        self.datacenter = next(iter(self._datacenters.values()))
 
         self.grid = grid
         self.controllers = list(controllers or [])
@@ -176,6 +163,17 @@ class Coordinator(Generic[DCStateT, GridStateT]):
             )
 
         self.clock = SimulationClock(tick_s=tick, live=live)
+
+    @property
+    def datacenters(self) -> dict[str, DatacenterBackend[DCStateT]]:
+        """Dict of datacenter backends keyed by site ID."""
+        return dict(self._datacenters)
+
+    def _resolve_dc(self, site_id: str | None) -> DatacenterBackend[DCStateT]:
+        """Look up a datacenter by site ID, falling back to the first site."""
+        if site_id and site_id in self._datacenters:
+            return self._datacenters[site_id]
+        return next(iter(self._datacenters.values()))
 
     def reset(self) -> None:
         """Reset coordinator and all sub-components for a fresh run."""
@@ -272,12 +270,7 @@ class Coordinator(Generic[DCStateT, GridStateT]):
 
                 # 2. Grid step (if due). Pass full sub-trace since last grid step.
                 if self.clock.is_due(self.grid.dt_s):
-                    if self._single_dc_mode:
-                        # Single-DC: pass flat list for backward compatibility
-                        power_arg = list(next(iter(dc_buffers.values())))
-                    else:
-                        # Multi-DC: pass dict keyed by site ID
-                        power_arg = {sid: list(buf) for sid, buf in dc_buffers.items()}
+                    power_arg = {sid: list(buf) for sid, buf in dc_buffers.items()}
                     grid_state = self.grid.do_step(self.clock, power_arg, grid_events)
                     for buf in dc_buffers.values():
                         buf.clear()
@@ -286,19 +279,14 @@ class Coordinator(Generic[DCStateT, GridStateT]):
                 # 3. Controllers (if due). In order, actions applied immediately.
                 for ctrl in self.controllers:
                     if self.clock.is_due(ctrl.dt_s):
-                        # Route to the correct datacenter if the controller has a site_id
                         ctrl_site_id = getattr(ctrl, "_site_id", None)
-                        ctrl_dc = (
-                            self._datacenters.get(ctrl_site_id, self.datacenter) if ctrl_site_id else self.datacenter
-                        )
+                        ctrl_dc = self._resolve_dc(ctrl_site_id)
                         commands = ctrl.step(self.clock, ctrl_dc, self.grid, controller_events)
                         for command in commands:
                             if isinstance(command, DatacenterCommand):
                                 target_site = getattr(command, "target_site_id", None)
-                                if target_site and target_site in self._datacenters:
-                                    self._datacenters[target_site].apply_control(command, dc_events)
-                                else:
-                                    self.datacenter.apply_control(command, dc_events)
+                                target_dc = self._resolve_dc(target_site)
+                                target_dc.apply_control(command, dc_events)
                             elif isinstance(command, GridCommand):
                                 self.grid.apply_control(command, grid_events)
                             else:

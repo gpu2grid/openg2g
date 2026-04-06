@@ -48,21 +48,21 @@ In 2-D mode, the script sweeps all **unordered pairs** of candidate buses, placi
 
 ```bash
 python examples/offline/sweep_hosting_capacities.py \
-    --config examples/offline/config_ieee13.json --system ieee13
+    --system ieee13
 ```
 
 ### IEEE 13-Bus: 2-D Bus-Pair Heatmap
 
 ```bash
 python examples/offline/sweep_hosting_capacities.py \
-    --config examples/offline/config_ieee13.json --system ieee13 --mode 2d
+    --system ieee13 --mode 2d
 ```
 
 ### IEEE 34-Bus: With Zone-Aware Taps
 
 ```bash
 python examples/offline/sweep_hosting_capacities.py \
-    --config examples/offline/config_ieee34.json --system ieee34 \
+    --system ieee34 \
     --violation-fractions 0.05,0.1
 ```
 
@@ -71,7 +71,7 @@ python examples/offline/sweep_hosting_capacities.py \
 ```bash
 # Higher power ceiling and finer search tolerance
 python examples/offline/sweep_hosting_capacities.py \
-    --config examples/offline/config_ieee13.json --system ieee13 \
+    --system ieee13 \
     --max-power-mw 15 --tolerance 3
 ```
 
@@ -94,4 +94,4 @@ Key config fields:
 - `regulator_zones`: Maps regulators to downstream buses for zone-aware tap optimization
 - `exclude_buses`: Buses to exclude from both candidates and voltage metrics
 
-See [Data Pipeline](../guide/data-pipeline.md) for the full config format.
+See [Building Simulators](../guide/building-simulators.md) and `examples/offline/systems.py` for configuration details.

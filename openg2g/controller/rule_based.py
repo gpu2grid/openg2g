@@ -76,6 +76,7 @@ class RuleBasedBatchSizeController(
         dt_s: Fraction = Fraction(1),
         site_id: str | None = None,
         exclude_buses: tuple[str, ...] = (),
+        initial_batch_sizes: dict[str, int] | None = None,
     ) -> None:
         model_specs = list(inference_models)
         self._dt_s = dt_s
@@ -83,6 +84,7 @@ class RuleBasedBatchSizeController(
         self._config = config
         self._models = model_specs
         self._exclude_lower = {b.lower() for b in exclude_buses}
+        self._initial_batch_sizes = initial_batch_sizes or {}
 
         # Build per-model feasible batch list (sorted ascending)
         self._feasible: dict[str, list[int]] = {}
@@ -92,7 +94,10 @@ class RuleBasedBatchSizeController(
             self._itl_deadline[ms.model_label] = ms.itl_deadline_s
 
         # Continuous state: log2(batch) per model (for smooth proportional control)
-        self._log2_batch: dict[str, float] = {ms.model_label: math.log2(ms.initial_batch_size) for ms in model_specs}
+        self._log2_batch: dict[str, float] = {
+            ms.model_label: math.log2(self._initial_batch_sizes.get(ms.model_label, ms.feasible_batch_sizes[0]))
+            for ms in model_specs
+        }
 
         logger.info(
             "RuleBasedBatchSizeController: %d models, dt=%s s, step_size=%.2f, deadband=%.4f, v=[%.2f, %.2f]",
@@ -113,7 +118,10 @@ class RuleBasedBatchSizeController(
         return self._dt_s
 
     def reset(self) -> None:
-        self._log2_batch = {ms.model_label: math.log2(ms.initial_batch_size) for ms in self._models}
+        self._log2_batch = {
+            ms.model_label: math.log2(self._initial_batch_sizes.get(ms.model_label, ms.feasible_batch_sizes[0]))
+            for ms in self._models
+        }
 
     def step(
         self,
@@ -192,7 +200,7 @@ class RuleBasedBatchSizeController(
             self._log2_batch[label] = new_log2
             new_batches[label] = best
 
-            if best != dc_state.batch_size_by_model.get(label, ms.initial_batch_size):
+            if best != dc_state.batch_size_by_model.get(label, self._initial_batch_sizes.get(label, ms.feasible_batch_sizes[0])):
                 changed = True
 
         if not changed:

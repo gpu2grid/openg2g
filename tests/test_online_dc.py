@@ -46,13 +46,14 @@ def _make_deployment(
 ) -> VLLMDeployment:
     spec = InferenceModelSpec(
         model_label=label,
-        initial_num_replicas=num_replicas,
         gpus_per_replica=gpus_per_replica,
-        initial_batch_size=128,
         itl_deadline_s=0.1,
+        feasible_batch_sizes=(64, 128),
     )
     return VLLMDeployment(
         spec=spec,
+        simulated_num_replicas=num_replicas,
+        initial_batch_size=128,
         vllm_base_url=f"http://{host}:8000",
         gpu_endpoints=(GPUEndpointMapping(host=host, port=port, gpu_indices=gpu_indices),),
     )

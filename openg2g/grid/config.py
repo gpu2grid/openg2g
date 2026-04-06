@@ -6,6 +6,8 @@ from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import Literal
 
+_PHASE_KEYS = ("a", "b", "c")
+
 
 @dataclass(frozen=True)
 class DCLoadSpec:
@@ -24,31 +26,60 @@ class DCLoadSpec:
 
 @dataclass(frozen=True)
 class TapPosition:
-    """Regulator tap position, supporting both per-phase and named-regulator modes.
+    """Regulator tap position as a mapping of regulator names to tap ratios.
 
-    **Per-phase mode** (legacy, single regulator bank):
+    All regulators are stored in a single ``regulators`` dict.  For
+    convenience, per-phase keyword arguments ``a``, ``b``, ``c`` are
+    accepted and stored under those keys:
 
     ```python
+    # These are equivalent:
     TapPosition(a=1.075, b=1.05, c=1.075)
+    TapPosition(regulators={"a": 1.075, "b": 1.05, "c": 1.075})
     ```
 
-    **Named-regulator mode** (multi-bank systems like IEEE 34/123):
+    Named regulators for multi-bank systems:
 
     ```python
     TapPosition(regulators={"creg1a": 1.075, "creg1b": 1.05, "creg2a": 1.0})
     ```
 
-    At least one of ``a``, ``b``, ``c``, or ``regulators`` must be specified.
+    Attributes:
+        regulators: Mapping of regulator name to tap ratio (pu).
     """
 
-    a: float | None = None
-    b: float | None = None
-    c: float | None = None
     regulators: dict[str, float] = field(default_factory=dict)
 
-    def __post_init__(self) -> None:
-        if self.a is None and self.b is None and self.c is None and not self.regulators:
-            raise ValueError("TapPosition requires at least one phase (a, b, or c) or regulators dict.")
+    def __init__(
+        self,
+        *,
+        a: float | None = None,
+        b: float | None = None,
+        c: float | None = None,
+        regulators: dict[str, float] | None = None,
+    ) -> None:
+        merged = dict(regulators) if regulators else {}
+        for key, val in zip(_PHASE_KEYS, (a, b, c), strict=True):
+            if val is not None:
+                merged[key] = val
+        if not merged:
+            raise ValueError("TapPosition requires at least one regulator tap value.")
+        object.__setattr__(self, "regulators", merged)
+
+    @property
+    def a(self) -> float | None:
+        """Phase A tap ratio, or ``None`` if not set."""
+        return self.regulators.get("a")
+
+    @property
+    def b(self) -> float | None:
+        """Phase B tap ratio, or ``None`` if not set."""
+        return self.regulators.get("b")
+
+    @property
+    def c(self) -> float | None:
+        """Phase C tap ratio, or ``None`` if not set."""
+        return self.regulators.get("c")
 
     def at(self, t: float) -> TapSchedule:
         """Schedule this position at time `t` seconds."""
@@ -104,7 +135,9 @@ class TapSchedule:
                 fields.append(f"b={p.b}")
             if p.c is not None:
                 fields.append(f"c={p.c}")
-            if p.regulators:
-                fields.append(f"regulators={p.regulators}")
+            # Show non-phase regulators
+            for name, val in p.regulators.items():
+                if name not in _PHASE_KEYS:
+                    fields.append(f"{name}={val}")
             parts.append(f"TapPosition({', '.join(fields)}).at(t={t})")
         return " | ".join(parts)

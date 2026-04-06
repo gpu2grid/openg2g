@@ -24,8 +24,11 @@ from openg2g.datacenter.workloads.inference import (
 from openg2g.events import EventEmitter
 
 MODEL = InferenceModelSpec(
-    model_label="TestModel", initial_num_replicas=10, gpus_per_replica=1, initial_batch_size=128, itl_deadline_s=0.1
+    model_label="TestModel", gpus_per_replica=1, itl_deadline_s=0.1,
+    feasible_batch_sizes=(64, 128),
 )
+_REPLICA_COUNTS = {"TestModel": 10}
+_INITIAL_BATCH_SIZES = {"TestModel": 128}
 DC_CFG = DatacenterConfig(gpus_per_server=8)
 _EVENTS = EventEmitter(SimulationClock(Fraction(1, 10)), SimulationLog(), "custom")
 
@@ -54,12 +57,14 @@ def _make_workload(templates: InferenceTemplateStore, itl_fits: ITLFitStore | No
             power_templates=templates,
             itl_fits=itl_fits,
         ),
+        replica_counts=dict(_REPLICA_COUNTS),
+        initial_batch_sizes=dict(_INITIAL_BATCH_SIZES),
     )
 
 
 def test_step_returns_offline_state():
     store = _make_simple_store()
-    dc = OfflineDatacenter(DC_CFG, _make_workload(store), dt_s=Fraction(1, 10))
+    dc = OfflineDatacenter(DC_CFG, _make_workload(store), dt_s=Fraction(1, 10), total_gpu_capacity=10)
 
     clock = SimulationClock(tick_s=Fraction(1, 10))
     state = dc.step(clock, _EVENTS)
@@ -75,7 +80,7 @@ def test_step_returns_offline_state():
 def test_step_produces_correct_number_of_states():
     """Stepping produces one state per call with monotonically increasing times."""
     store = _make_simple_store()
-    dc = OfflineDatacenter(DC_CFG, _make_workload(store), dt_s=Fraction(1, 10))
+    dc = OfflineDatacenter(DC_CFG, _make_workload(store), dt_s=Fraction(1, 10), total_gpu_capacity=10)
 
     clock = SimulationClock(tick_s=Fraction(1, 10))
     states = []
@@ -92,7 +97,7 @@ def test_step_produces_correct_number_of_states():
 def test_batch_change_takes_effect_immediately():
     """Batch size change via apply_control takes effect on the very next step."""
     store = _make_simple_store()
-    dc = OfflineDatacenter(DC_CFG, _make_workload(store), dt_s=Fraction(1, 10))
+    dc = OfflineDatacenter(DC_CFG, _make_workload(store), dt_s=Fraction(1, 10), total_gpu_capacity=10)
 
     clock = SimulationClock(tick_s=Fraction(1, 10))
 
@@ -132,7 +137,7 @@ def test_offline_datacenter_emits_observed_itl_when_latency_fits_is_set():
         scale_stall=0.1,
     )
     latency_fits = ITLFitStore({"TestModel": {128: fake_params}})
-    dc = OfflineDatacenter(DC_CFG, _make_workload(store, itl_fits=latency_fits), dt_s=Fraction(1, 10))
+    dc = OfflineDatacenter(DC_CFG, _make_workload(store, itl_fits=latency_fits), dt_s=Fraction(1, 10), total_gpu_capacity=10)
 
     state = dc.step(SimulationClock(tick_s=Fraction(1, 10)), _EVENTS)
     assert "TestModel" in state.observed_itl_s_by_model
@@ -146,7 +151,7 @@ def test_apply_control_rejects_unknown_command():
         pass
 
     store = _make_simple_store()
-    dc = OfflineDatacenter(DC_CFG, _make_workload(store), dt_s=Fraction(1, 10))
+    dc = OfflineDatacenter(DC_CFG, _make_workload(store), dt_s=Fraction(1, 10), total_gpu_capacity=10)
 
     with pytest.raises(TypeError, match="OfflineDatacenter does not support"):
         dc.apply_control(_CustomCommand(), _EVENTS)

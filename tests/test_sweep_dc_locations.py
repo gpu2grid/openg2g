@@ -1,7 +1,8 @@
 """Tests for the unified sweep_dc_locations module.
 
-Validates config parsing, sweep mode selection (1-D vs 2-D), and shared
-helper functions for both IEEE 13 and IEEE 34 systems.
+Validates helper functions, profile generation, and bus discovery.
+Tests for removed JSON-based config models have been replaced with tests
+for the programmatic experiment definitions.
 
 Note: This module depends on OpenDSS (via transitive imports). If OpenDSS
 is not available or crashes, the entire test module is skipped.
@@ -26,22 +27,14 @@ if str(_examples_dir) not in sys.path:
 try:
     from sweep_dc_locations import (
         TAP_STEP,
-        DCSiteConfig,
-        SimulationParams,
-        SweepConfig,
-        _build_ofo_config,
-        _extract_scenario_base_taps,
-        _parse_fraction,
-        _parse_tap,
-        _resolve_models_for_site,
         _smooth_bump,
-        _taps_dict_to_position,
         discover_candidate_buses,
         eval_profile,
         find_violations,
         load_profile_kw,
         pv_profile_kw,
     )
+    from systems import tap
 
     from openg2g.grid.config import TapPosition
 
@@ -52,15 +45,8 @@ except Exception:
 pytestmark = pytest.mark.skipif(not CAN_IMPORT, reason="Cannot import sweep_dc_locations (OpenDSS unavailable)")
 
 
-# ── Config file paths ────────────────────────────────────────────────────────
-
-CONFIG_DIR = Path(__file__).resolve().parent.parent / "examples" / "offline"
-CONFIG_IEEE13 = CONFIG_DIR / "config_ieee13.json"
-CONFIG_IEEE34 = CONFIG_DIR / "config_ieee34.json"
-
-
 # ══════════════════════════════════════════════════════════════════════════════
-# Unit tests: helpers and config parsing
+# Unit tests: helpers and profile functions
 # ══════════════════════════════════════════════════════════════════════════════
 
 
@@ -102,123 +88,11 @@ class TestProfiles:
         assert val > 0.0
 
 
-class TestParseFraction:
-    def test_integer(self):
-        assert _parse_fraction("60") == 60
-
-    def test_fraction(self):
-        assert _parse_fraction("1/10") == pytest.approx(0.1)
-
-    def test_fraction_value(self):
-        from fractions import Fraction
-
-        assert _parse_fraction("1/10") == Fraction(1, 10)
-
-
-class TestParseTap:
-    def test_none(self):
-        assert _parse_tap(None) is None
-
-    def test_string_positive(self):
-        assert _parse_tap("+14") == pytest.approx(1.0 + 14 * TAP_STEP)
-
-    def test_string_negative(self):
-        assert _parse_tap("-3") == pytest.approx(1.0 - 3 * TAP_STEP)
-
-    def test_string_zero(self):
-        assert _parse_tap("+0") == pytest.approx(1.0)
-
-    def test_float(self):
-        assert _parse_tap(1.05) == pytest.approx(1.05)
-
-
-class TestTapsDictToPosition:
-    def test_none(self):
-        assert _taps_dict_to_position(None) is None
-
-    def test_empty(self):
-        assert _taps_dict_to_position({}) is None
-
-    def test_valid(self):
-        tp = _taps_dict_to_position({"reg1": "+14", "reg2": "+6", "reg3": "+15"})
-        assert tp is not None
-        assert len(tp.regulators) == 3
-        assert tp.regulators["reg1"] == pytest.approx(1.0 + 14 * TAP_STEP)
-
-
-class TestResolveModels:
-    def test_none_returns_all(self):
-        from openg2g.datacenter.config import InferenceModelSpec
-
-        models = (
-            InferenceModelSpec(
-                model_label="A",
-                model_id="a",
-                gpus_per_replica=1,
-                initial_num_replicas=1,
-                initial_batch_size=8,
-                itl_deadline_s=0.1,
-                feasible_batch_sizes=[8],
-            ),
-            InferenceModelSpec(
-                model_label="B",
-                model_id="b",
-                gpus_per_replica=1,
-                initial_num_replicas=1,
-                initial_batch_size=8,
-                itl_deadline_s=0.1,
-                feasible_batch_sizes=[8],
-            ),
-        )
-        site = DCSiteConfig(bus="x", models=None)
-        result = _resolve_models_for_site(site, models)
-        assert result == models
-
-    def test_filter(self):
-        from openg2g.datacenter.config import InferenceModelSpec
-
-        models = (
-            InferenceModelSpec(
-                model_label="A",
-                model_id="a",
-                gpus_per_replica=1,
-                initial_num_replicas=1,
-                initial_batch_size=8,
-                itl_deadline_s=0.1,
-                feasible_batch_sizes=[8],
-            ),
-            InferenceModelSpec(
-                model_label="B",
-                model_id="b",
-                gpus_per_replica=1,
-                initial_num_replicas=1,
-                initial_batch_size=8,
-                itl_deadline_s=0.1,
-                feasible_batch_sizes=[8],
-            ),
-        )
-        site = DCSiteConfig(bus="x", models=["B"])
-        result = _resolve_models_for_site(site, models)
-        assert len(result) == 1
-        assert result[0].model_label == "B"
-
-    def test_missing_raises(self):
-        from openg2g.datacenter.config import InferenceModelSpec
-
-        models = (
-            InferenceModelSpec(
-                model_label="A",
-                model_id="a",
-                gpus_per_replica=1,
-                initial_num_replicas=1,
-                initial_batch_size=8,
-                itl_deadline_s=0.1,
-                feasible_batch_sizes=[8],
-            ),
-        )
-        site = DCSiteConfig(bus="x", models=["Z"])
-        with pytest.raises(ValueError, match="unknown model labels"):
-            _resolve_models_for_site(site, models)
+class TestTapHelper:
+    def test_tap_converts_steps(self):
+        assert tap(14) == pytest.approx(1.0 + 14 * TAP_STEP)
+        assert tap(0) == pytest.approx(1.0)
+        assert tap(-3) == pytest.approx(1.0 - 3 * TAP_STEP)
 
 
 class TestFindViolations:
@@ -241,120 +115,105 @@ class TestFindViolations:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Config parsing and mode selection
+# Experiment definitions
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-class TestSweepConfig:
-    def test_ieee13_parses(self):
-        config = SweepConfig.model_validate_json(CONFIG_IEEE13.read_bytes())
-        assert config.num_dc_sites == 1
-        assert "default" in config.dc_sites
+class TestExperimentDefinitions:
+    """Validate that per-system experiment definitions produce valid configs."""
 
-    def test_ieee34_parses(self):
-        config = SweepConfig.model_validate_json(CONFIG_IEEE34.read_bytes())
-        assert config.num_dc_sites == 2
-        assert "upstream" in config.dc_sites
-        assert "downstream" in config.dc_sites
+    def test_ieee13_experiment(self):
+        from sweep_dc_locations import _experiment_ieee13
+        from systems import ieee13
 
-    def test_ieee13_selects_1d(self):
-        config = SweepConfig.model_validate_json(CONFIG_IEEE13.read_bytes())
-        assert config.num_dc_sites <= 1
+        from openg2g.datacenter.workloads.training import TrainingTrace, TrainingTraceParams
 
-    def test_ieee34_selects_2d(self):
-        config = SweepConfig.model_validate_json(CONFIG_IEEE34.read_bytes())
-        assert config.num_dc_sites >= 2
+        sys_const = ieee13()
+        # Create a minimal training trace for the test
+        ttp = TrainingTraceParams()
+        # We just need the experiment function to not crash
+        # The training_trace is only used for TrainingRun construction
+        import tempfile
 
-    def test_default_dc_site(self):
-        minimal = {
-            "models": [],
-            "data_sources": [],
-            "ieee_case_dir": ".",
-        }
-        config = SweepConfig.model_validate(minimal)
-        assert config.dc_sites is not None
-        assert "default" in config.dc_sites
-        assert config.num_dc_sites == 1
+        with tempfile.NamedTemporaryFile(suffix=".csv", delete=False, mode="w") as f:
+            f.write("time_s,power_W\n0,100\n1,200\n")
+            tmp_path = Path(f.name)
 
-    def test_data_hash_deterministic(self):
-        config = SweepConfig.model_validate_json(CONFIG_IEEE13.read_bytes())
-        h1 = config.data_hash
-        h2 = config.data_hash
-        assert h1 == h2
-        assert len(h1) == 16
+        try:
+            training_trace = TrainingTrace.ensure(tmp_path, ttp)
+            exp = _experiment_ieee13(sys_const, training_trace)
+        finally:
+            tmp_path.unlink(missing_ok=True)
 
-    def test_ieee13_dc_site_properties(self):
-        config = SweepConfig.model_validate_json(CONFIG_IEEE13.read_bytes())
-        site = config.dc_sites["default"]
+        assert "dc_sites" in exp
+        assert len(exp["dc_sites"]) == 1
+        assert "default" in exp["dc_sites"]
+        site = exp["dc_sites"]["default"]
         assert site.bus == "671"
         assert site.bus_kv == 4.16
         assert site.base_kw_per_phase == 500.0
+        assert exp["training"] is not None
+        assert exp["ofo_config"] is not None
+        assert len(exp["pv_systems"]) == 1
+        assert len(exp["time_varying_loads"]) == 1
 
-    def test_ieee34_dc_site_properties(self):
-        config = SweepConfig.model_validate_json(CONFIG_IEEE34.read_bytes())
-        upstream = config.dc_sites["upstream"]
-        downstream = config.dc_sites["downstream"]
-        assert upstream.bus_kv == 24.9
-        assert downstream.bus_kv == 24.9
-        assert upstream.models is not None
-        assert downstream.models is not None
-        assert set(upstream.models) != set(downstream.models)
+    def test_ieee34_experiment(self):
+        from sweep_dc_locations import _experiment_ieee34
+        from systems import ieee34
 
-    def test_ieee13_has_tap_schedule(self):
-        config = SweepConfig.model_validate_json(CONFIG_IEEE13.read_bytes())
-        assert len(config.tap_schedule) == 2
-        assert config.tap_schedule[0].t == 1500
-        assert config.tap_schedule[1].t == 3300
+        sys_const = ieee34()
+        exp = _experiment_ieee34(sys_const, None)
 
-    def test_ieee34_has_tap_schedule(self):
-        config = SweepConfig.model_validate_json(CONFIG_IEEE34.read_bytes())
-        assert len(config.tap_schedule) == 1
-        assert config.tap_schedule[0].t == 1800
+        assert len(exp["dc_sites"]) == 2
+        assert "upstream" in exp["dc_sites"]
+        assert "downstream" in exp["dc_sites"]
+        assert exp["dc_sites"]["upstream"].bus_kv == 24.9
+        assert exp["dc_sites"]["downstream"].bus_kv == 24.9
+        assert exp["training"] is None
+        assert exp["ofo_config"] is not None
+        assert len(exp["pv_systems"]) == 2
+        assert len(exp["time_varying_loads"]) == 5
 
-    def test_ieee13_has_training_and_site_ramps(self):
-        config = SweepConfig.model_validate_json(CONFIG_IEEE13.read_bytes())
-        assert config.training is not None
-        # Inference ramps are per-site, not top-level
-        site = config.dc_sites["default"]
-        assert len(site.inference_ramps) > 0
+    def test_ieee123_experiment(self):
+        from sweep_dc_locations import _experiment_ieee123
+        from systems import ieee123
 
-    def test_ieee34_no_training(self):
-        config = SweepConfig.model_validate_json(CONFIG_IEEE34.read_bytes())
-        assert config.training is None
-        assert config.inference_ramp is None
+        sys_const = ieee123()
+        exp = _experiment_ieee123(sys_const, None)
 
-    def test_ieee34_has_regulator_zones(self):
-        config = SweepConfig.model_validate_json(CONFIG_IEEE34.read_bytes())
-        assert config.regulator_zones is not None
-        assert "creg1" in config.regulator_zones
-        assert "creg2" in config.regulator_zones
+        assert len(exp["dc_sites"]) == 4
+        assert "z1_sw" in exp["dc_sites"]
+        assert "z4_ne" in exp["dc_sites"]
+        assert exp["training"] is None
+        assert exp["ofo_config"] is not None
+        assert len(exp["pv_systems"]) == 3
+        assert exp["zones"] is not None
+        assert len(exp["zones"]) == 4
 
+    def test_ieee13_selects_1d(self):
+        from sweep_dc_locations import _experiment_ieee13
+        from systems import ieee13
 
-class TestExtractScenarioBaseTaps:
-    def test_no_schedule(self):
-        config = SweepConfig.model_validate_json(CONFIG_IEEE34.read_bytes())
-        initial = TapPosition(regulators={"reg1": 1.0})
-        bases = _extract_scenario_base_taps(config, initial)
-        assert "inference" in bases
-        assert len(bases) == 1
+        sys_const = ieee13()
+        exp = _experiment_ieee13(sys_const, None)
+        assert len(exp["dc_sites"]) == 1
 
-    def test_with_schedule(self):
-        config = SweepConfig.model_validate_json(CONFIG_IEEE13.read_bytes())
-        initial = _taps_dict_to_position(config.initial_taps)
-        bases = _extract_scenario_base_taps(config, initial)
-        assert "inference" in bases
-        assert "training" in bases
+    def test_ieee34_selects_2d(self):
+        from sweep_dc_locations import _experiment_ieee34
+        from systems import ieee34
 
+        sys_const = ieee34()
+        exp = _experiment_ieee34(sys_const, None)
+        assert len(exp["dc_sites"]) == 2
 
-class TestBuildOFOConfig:
-    def test_builds(self):
-        from sweep_dc_locations import OFOParams
+    def test_ieee123_selects_zoned(self):
+        from sweep_dc_locations import _experiment_ieee123
+        from systems import ieee123
 
-        ofo_params = OFOParams()
-        sim = SimulationParams()
-        ofo_config = _build_ofo_config(ofo_params, sim)
-        assert ofo_config.v_min == 0.95
-        assert ofo_config.v_max == 1.05
+        sys_const = ieee123()
+        exp = _experiment_ieee123(sys_const, None)
+        assert exp.get("zones") is not None
+        assert len(exp["zones"]) == len(exp["dc_sites"])
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -382,7 +241,7 @@ class TestDiscoverCandidateBusesIEEE13:
             pytest.skip("IEEE 13 grid data not available")
         buses = discover_candidate_buses(
             IEEE13_DIR,
-            "IEEE13Nodeckt.dss",
+            "IEEE13Bus.dss",
             4.16,
             exclude={"sourcebus", "650", "rg60"},
         )
@@ -394,7 +253,7 @@ class TestDiscoverCandidateBusesIEEE13:
             pytest.skip("IEEE 13 grid data not available")
         buses = discover_candidate_buses(
             IEEE13_DIR,
-            "IEEE13Nodeckt.dss",
+            "IEEE13Bus.dss",
             4.16,
             exclude={"sourcebus", "650", "rg60"},
         )
@@ -409,7 +268,7 @@ class TestDiscoverCandidateBusesIEEE34:
             pytest.skip("IEEE 34 grid data not available")
         buses = discover_candidate_buses(
             IEEE34_DIR,
-            "ieee34Mod1_halfline.dss",
+            "IEEE34Bus.dss",
             24.9,
             exclude={"sourcebus", "800", "802", "806", "808", "810", "812", "814", "888", "890"},
         )
@@ -420,7 +279,7 @@ class TestDiscoverCandidateBusesIEEE34:
             pytest.skip("IEEE 34 grid data not available")
         buses = discover_candidate_buses(
             IEEE34_DIR,
-            "ieee34Mod1_halfline.dss",
+            "IEEE34Bus.dss",
             24.9,
             exclude={"sourcebus"},
         )

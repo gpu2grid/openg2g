@@ -45,8 +45,8 @@ Constraints:
     v[i,t,s] in [v_min - slack_u, v_max + slack_o]
 
 Usage:
-    python optimize_pv_and_dc_locations.py --config config_ieee34_pv_optimization.json --system ieee34
-    python optimize_pv_and_dc_locations.py --config config_ieee123.json --system ieee123 --n-pv 5
+    python optimize_pv_and_dc_locations.py --system ieee34
+    python optimize_pv_and_dc_locations.py --system ieee123 --n-pv 5
 """
 
 from __future__ import annotations
@@ -72,7 +72,7 @@ from optimize_pv_locations_and_capacities import (
     precompute_load_v_shift,
     validate_with_opendss,
 )
-from sweep_dc_locations import DCSiteConfig, SweepConfig, discover_candidate_buses
+from sweep_dc_locations import discover_candidate_buses
 
 logger = logging.getLogger("pv_dc_coopt")
 
@@ -105,7 +105,7 @@ class CoOptMILPResult:
 
 
 def compute_dc_demand_profiles(
-    dc_site_configs: dict[str, DCSiteConfig],
+    dc_site_configs: dict[str, object],
     model_gpu_map: dict[str, int],
     scenarios: list[Scenario],
     typical_gpu_w: float = 300.0,
@@ -784,10 +784,20 @@ def plot_coopt_results(
 # ── Main ─────────────────────────────────────────────────────────────────────
 
 
+@dataclass
+class _DCSiteInfo:
+    """Minimal DC site descriptor for the co-optimisation MILP."""
+
+    bus: str
+    bus_kv: float
+    base_kw_per_phase: float
+    models: list[str] | None = None
+    total_gpu_capacity: int | None = None
+
+
 def main(
     *,
-    config_path: Path,
-    system: str,
+    system: str = "ieee34",
     n_pv: int = 3,
     s_max_kw: float = 500.0,
     s_total_max_kw: float | None = None,
@@ -804,9 +814,13 @@ def main(
 ) -> None:
     """Run joint PV + DC location co-optimisation.
 
-    1. Load config, parse taps
+    All experiment parameters (system constants, DC sites, time-varying loads)
+    are defined inline per system.  No external JSON config required.
+
+    Steps:
+    1. Build system config with inline parameters
     2. Discover PV candidate buses (all 3-phase, zone-filtered)
-    3. Discover DC candidate buses (per-zone from config.zones)
+    3. Discover DC candidate buses (per-zone from system zones)
     4. Estimate DC peak demand per site
     5. Generate scenarios (WITHOUT dc_sites_info since DC locations are variable)
     6. Compute sensitivities (H_pv, H_dc, H_tap, H_load) on bare circuit
@@ -815,14 +829,94 @@ def main(
     9. Validate
     10. Save results
     """
-    config_path = config_path.resolve()
+    from systems import (
+        SYSTEMS,
+        TimeVaryingLoadSpec,
+        deploy,
+        ieee34,
+        ieee123,
+        tap,
+    )
 
-    config = SweepConfig.model_validate_json(config_path.read_bytes())
-    config_dir = config_path.parent
-    config.ieee_case_dir = (config_dir / config.ieee_case_dir).resolve()
+    from openg2g.datacenter.config import ModelDeployment
+    from openg2g.grid.config import TapPosition
 
-    assert config.dc_sites is not None, "Config must define dc_sites"
-    default_site = next(iter(config.dc_sites.values()))
+    # ── Build system config with experiment-specific overrides ──
+    sys = SYSTEMS[system]()
+
+    if system == "ieee34":
+        # PV optimisation study: lower source voltage, uniform taps, no existing PV
+        sys["source_pu"] = 1.05
+        sys["initial_taps"] = TapPosition(regulators={
+            "creg1a": tap(8), "creg1b": tap(8), "creg1c": tap(8),
+            "creg2a": tap(8), "creg2b": tap(8), "creg2c": tap(8),
+        })
+
+        bus_kv = sys["bus_kv"]  # 24.9
+
+        # DC site descriptors (models referenced by label for GPU count estimation)
+        all_models: tuple[ModelDeployment, ...] = (
+            deploy("Llama-3.1-8B", 720), deploy("Llama-3.1-70B", 180), deploy("Llama-3.1-405B", 90), deploy("Qwen3-30B-A3B", 480), deploy("Qwen3-235B-A22B", 210),
+        )
+        dc_sites: dict[str, _DCSiteInfo] = {
+            "upstream": _DCSiteInfo(
+                bus="850", bus_kv=bus_kv, base_kw_per_phase=120.0,
+                models=["Llama-3.1-8B", "Llama-3.1-70B", "Llama-3.1-405B"],
+                total_gpu_capacity=520,
+            ),
+            "downstream": _DCSiteInfo(
+                bus="834", bus_kv=bus_kv, base_kw_per_phase=80.0,
+                models=["Qwen3-30B-A3B", "Qwen3-235B-A22B"],
+                total_gpu_capacity=600,
+            ),
+        }
+
+        time_varying_loads = [
+            TimeVaryingLoadSpec(bus="860", bus_kv=bus_kv, peak_kw=50.0),
+            TimeVaryingLoadSpec(bus="844", bus_kv=bus_kv, peak_kw=80.0),
+            TimeVaryingLoadSpec(bus="840", bus_kv=bus_kv, peak_kw=15.0),
+            TimeVaryingLoadSpec(bus="858", bus_kv=bus_kv, peak_kw=30.0),
+            TimeVaryingLoadSpec(bus="854", bus_kv=bus_kv, peak_kw=10.0),
+            TimeVaryingLoadSpec(bus="848", bus_kv=bus_kv, peak_kw=60.0),
+        ]
+
+    elif system == "ieee123":
+        bus_kv = sys["bus_kv"]  # 4.16
+
+        all_models = (
+            deploy("Llama-3.1-8B", 120), deploy("Llama-3.1-70B", 30), deploy("Llama-3.1-405B", 35), deploy("Qwen3-30B-A3B", 80), deploy("Qwen3-235B-A22B", 55),
+        )
+        dc_sites = {
+            "z1_sw": _DCSiteInfo(
+                bus="8", bus_kv=bus_kv, base_kw_per_phase=310.0,
+                models=["Llama-3.1-8B"], total_gpu_capacity=120,
+            ),
+            "z2_nw": _DCSiteInfo(
+                bus="23", bus_kv=bus_kv, base_kw_per_phase=265.0,
+                models=["Qwen3-30B-A3B"], total_gpu_capacity=160,
+            ),
+            "z3_se": _DCSiteInfo(
+                bus="60", bus_kv=bus_kv, base_kw_per_phase=295.0,
+                models=["Llama-3.1-70B", "Llama-3.1-405B"], total_gpu_capacity=400,
+            ),
+            "z4_ne": _DCSiteInfo(
+                bus="105", bus_kv=bus_kv, base_kw_per_phase=325.0,
+                models=["Qwen3-235B-A22B"], total_gpu_capacity=440,
+            ),
+        }
+        time_varying_loads = []
+
+    else:
+        raise ValueError(f"PV+DC co-optimisation not configured for system '{system}'. Use ieee34 or ieee123.")
+
+    bus_kv = sys["bus_kv"]
+    source_pu = sys.get("source_pu", 1.05)
+    exclude_buses_list = list(sys["exclude_buses"])
+    exclude_buses_set = set(exclude_buses_list)
+    zones = sys.get("regulator_zones") or sys.get("zones")
+
+    # Build model GPU map for demand estimation
+    model_gpu_map = {m.spec.model_label: m.num_replicas * m.spec.gpus_per_replica for m in all_models}
 
     save_dir = Path(__file__).resolve().parent / "outputs" / system / "pv_dc_coopt"
     save_dir.mkdir(parents=True, exist_ok=True)
@@ -834,16 +928,16 @@ def main(
     logger.info("=" * 70)
 
     all_candidate_buses = discover_candidate_buses(
-        config.ieee_case_dir,
-        config.dss_master_file,
-        default_site.bus_kv,
-        exclude=set(config.exclude_buses),
+        sys["dss_case_dir"],
+        sys["dss_master_file"],
+        bus_kv,
+        exclude=exclude_buses_set,
     )
 
     # PV candidates: zone-filtered if zones are defined
     pv_candidate_buses = list(all_candidate_buses)
-    if config.zones:
-        zoned_buses = {b.lower() for buses_list in config.zones.values() for b in buses_list}
+    if zones:
+        zoned_buses = {b.lower() for buses_list in zones.values() for b in buses_list}
         before = len(pv_candidate_buses)
         pv_candidate_buses = [b for b in pv_candidate_buses if b.lower() in zoned_buses]
         logger.info("PV: Filtered to zoned buses: %d -> %d candidates", before, len(pv_candidate_buses))
@@ -860,14 +954,14 @@ def main(
     dc_candidate_buses: list[str] = []
     dc_zone_indices: dict[str, list[int]] = {}
 
-    if config.zones and not no_dc_zones:
+    if zones and not no_dc_zones:
         # Each DC site gets candidates from its zone
-        zone_names = list(config.zones.keys())
-        dc_site_ids = list(config.dc_sites.keys())
+        zone_names = list(zones.keys())
+        dc_site_ids = list(dc_sites.keys())
 
         # Collect all unique DC candidate buses across zones
         dc_bus_set: set[str] = set()
-        for zone_buses in config.zones.values():
+        for zone_buses in zones.values():
             for b in zone_buses:
                 if b.lower() in all_cand_lower:
                     dc_bus_set.add(b)
@@ -879,7 +973,7 @@ def main(
         # If there are more sites than zones, cycle through zones
         for k, site_id in enumerate(dc_site_ids):
             zone_name = zone_names[k % len(zone_names)]
-            zone_set = {b.lower() for b in config.zones[zone_name]}
+            zone_set = {b.lower() for b in zones[zone_name]}
             indices = [j for j, b in enumerate(dc_cand_lower) if b in zone_set]
             dc_zone_indices[site_id] = indices
             logger.info(
@@ -891,7 +985,7 @@ def main(
     else:
         # No zones: all candidate buses are available for all DC sites
         dc_candidate_buses = list(all_candidate_buses)
-        dc_site_ids = list(config.dc_sites.keys())
+        dc_site_ids = list(dc_sites.keys())
         all_indices = list(range(len(dc_candidate_buses)))
         for site_id in dc_site_ids:
             dc_zone_indices[site_id] = list(all_indices)
@@ -904,32 +998,27 @@ def main(
     logger.info("STEP 3: Parsing taps and DC demand")
     logger.info("=" * 70)
 
-    # Parse initial taps
+    # Parse initial taps from TapPosition object
     tap_pu: dict[str, float] = {}
     initial_tap_ints: dict[str, int] = {}
     regulator_names: list[str] = []
-    if config.initial_taps:
-        for name, val in config.initial_taps.items():
-            if isinstance(val, str):
-                tap_int = int(val)
-                tap_pu[name] = 1.0 + tap_int * TAP_STEP
-                initial_tap_ints[name] = tap_int
-            else:
-                tap_pu[name] = float(val)
-                initial_tap_ints[name] = round((float(val) - 1.0) / TAP_STEP)
+    initial_taps = sys.get("initial_taps")
+    if initial_taps is not None:
+        for name, val in initial_taps.regulators.items():
+            tap_pu[name] = val
+            initial_tap_ints[name] = round((val - 1.0) / TAP_STEP)
             regulator_names.append(name)
 
-    # Estimate GPU counts per model
+    # GPU power estimation
     TYPICAL_GPU_W = 300.0
-    model_gpu_map = {m.model_label: m.initial_num_replicas * m.gpus_per_replica for m in config.models}
 
-    # ── Build load_configs from config ──
+    # ── Build load_configs from time_varying_loads ──
     load_configs: list[tuple[str, float]] = []
     load_buses: list[str] = []
-    if config.time_varying_loads:
-        for lc in config.time_varying_loads:
-            load_configs.append((lc.bus, lc.peak_kw))
-            load_buses.append(lc.bus)
+    for lc in time_varying_loads:
+        load_configs.append((lc.bus, lc.peak_kw))
+        load_buses.append(lc.bus)
+    if load_configs:
         logger.info(
             "Load configs: %s",
             ", ".join(f"{b}={kw:.0f}kW" for b, kw in load_configs),
@@ -970,13 +1059,13 @@ def main(
     logger.info("  5a: PV sensitivities...")
     t0 = time.time()
     H_pv, v0, v_index = compute_pv_sensitivities(
-        case_dir=config.ieee_case_dir,
-        master_file=config.dss_master_file,
+        case_dir=sys["dss_case_dir"],
+        master_file=sys["dss_master_file"],
         candidate_buses=pv_candidate_buses,
-        exclude_buses=set(config.exclude_buses),
-        source_pu=config.source_pu or 1.05,
+        exclude_buses=exclude_buses_set,
+        source_pu=source_pu,
         initial_taps=tap_pu if tap_pu else None,
-        bus_kv=default_site.bus_kv,
+        bus_kv=bus_kv,
         dc_sites=None,  # bare circuit
     )
     logger.info(
@@ -995,13 +1084,13 @@ def main(
     logger.info("  5b: DC sensitivities...")
     t0 = time.time()
     H_dc = compute_dc_sensitivities(
-        case_dir=config.ieee_case_dir,
-        master_file=config.dss_master_file,
+        case_dir=sys["dss_case_dir"],
+        master_file=sys["dss_master_file"],
         dc_candidate_buses=dc_candidate_buses,
         v_index=v_index,
-        source_pu=config.source_pu or 1.05,
+        source_pu=source_pu,
         initial_taps=tap_pu if tap_pu else None,
-        bus_kv=default_site.bus_kv,
+        bus_kv=bus_kv,
     )
     logger.info(
         "  DC sensitivity: %.1f s, %d monitored x %d candidates", time.time() - t0, H_dc.shape[0], H_dc.shape[1]
@@ -1021,13 +1110,13 @@ def main(
         logger.info("    Regulators: %s", regulator_names)
         t0 = time.time()
         H_tap = compute_tap_sensitivities(
-            case_dir=config.ieee_case_dir,
-            master_file=config.dss_master_file,
+            case_dir=sys["dss_case_dir"],
+            master_file=sys["dss_master_file"],
             regulator_names=regulator_names,
             v_index=v_index,
-            source_pu=config.source_pu or 1.05,
+            source_pu=source_pu,
             initial_taps=tap_pu if tap_pu else None,
-            bus_kv=default_site.bus_kv,
+            bus_kv=bus_kv,
             dc_sites=None,
         )
         logger.info("  Tap sensitivity: %.1f s", time.time() - t0)
@@ -1038,13 +1127,13 @@ def main(
         logger.info("  5d: Load sensitivities...")
         t0 = time.time()
         H_load = compute_load_sensitivities(
-            case_dir=config.ieee_case_dir,
-            master_file=config.dss_master_file,
+            case_dir=sys["dss_case_dir"],
+            master_file=sys["dss_master_file"],
             load_buses=load_buses,
             v_index=v_index,
-            source_pu=config.source_pu or 1.05,
+            source_pu=source_pu,
             initial_taps=tap_pu if tap_pu else None,
-            bus_kv=default_site.bus_kv,
+            bus_kv=bus_kv,
             dc_sites=None,
         )
         logger.info("  Load sensitivity: %.1f s", time.time() - t0)
@@ -1058,7 +1147,7 @@ def main(
     logger.info("=" * 70)
 
     dc_demand_kw, site_ids_ordered = compute_dc_demand_profiles(
-        config.dc_sites,
+        dc_sites,
         model_gpu_map,
         scenarios,
         typical_gpu_w=TYPICAL_GPU_W,
@@ -1124,7 +1213,7 @@ def main(
         days_per_year=days_per_year,
         c_switch=c_switch,
         load_v_shift=load_v_shift,
-        pv_zones=config.zones,
+        pv_zones=zones,
     )
 
     # ── Report results ──
@@ -1202,8 +1291,8 @@ def main(
         assigned_bus = result.dc_assignments.get(site_id, "")
         # Determine zone name
         zone_name = ""
-        if config.zones:
-            zone_names = list(config.zones.keys())
+        if zones:
+            zone_names = list(zones.keys())
             k = site_ids_ordered.index(site_id)
             zone_name = zone_names[k % len(zone_names)]
         # Peak demand
@@ -1284,41 +1373,6 @@ def main(
         dc_site_ids=site_ids_ordered,
     )
 
-    # ── Plot optimized topology ──
-    try:
-        from plot_topology import plot_topology
-
-        # Build a modified config dict with optimized locations
-        cfg_dict = json.loads(config_path.read_bytes())
-        # Update DC sites to optimized buses
-        for site_id, assigned_bus in result.dc_assignments.items():
-            if site_id in cfg_dict.get("dc_sites", {}):
-                cfg_dict["dc_sites"][site_id]["bus"] = assigned_bus
-        # Update PV systems to optimized locations and capacities
-        cfg_dict["pv_systems"] = [
-            {"bus": bus, "bus_kv": default_site.bus_kv, "peak_kw": cap / 3.0, "power_factor": 1.0}
-            for bus, cap in zip(result.pv_locations, result.pv_capacities_kw, strict=False)
-        ]
-        # Use absolute ieee_case_dir so the temp config works from any location
-        cfg_dict["ieee_case_dir"] = str(config.ieee_case_dir)
-        # Write temporary config for topology plot
-        tmp_config = save_dir / f"_optimized_config_{system}.json"
-        tmp_config.write_text(json.dumps(cfg_dict, indent=2))
-        plot_topology(
-            config_path=tmp_config,
-            system=system,
-            output_dir=save_dir,
-        )
-        # Rename to a more descriptive name
-        topo_default = save_dir / f"{system}_topology.png"
-        topo_final = save_dir / f"optimized_topology_{system}.png"
-        if topo_default.exists():
-            topo_default.replace(topo_final)
-            logger.info("  Topology plot: %s", topo_final)
-        tmp_config.unlink(missing_ok=True)
-    except Exception as e:
-        logger.warning("  Topology plot failed: %s", e)
-
     # ── Step 8: Validate with full OpenDSS simulation ──
     if validate and (result.pv_locations or result.dc_assignments):
         logger.info("")
@@ -1340,8 +1394,8 @@ def main(
                 )
 
             vr = validate_coopt(
-                case_dir=config.ieee_case_dir,
-                master_file=config.dss_master_file,
+                case_dir=sys["dss_case_dir"],
+                master_file=sys["dss_master_file"],
                 pv_locations=result.pv_locations,
                 pv_capacities_kw=result.pv_capacities_kw,
                 dc_assignments=result.dc_assignments,
@@ -1350,9 +1404,9 @@ def main(
                 scenario=sc,
                 sc_idx=sc_idx,
                 v_index=v_index,
-                source_pu=config.source_pu or 1.05,
+                source_pu=source_pu,
                 initial_taps=tap_pu if tap_pu else None,
-                bus_kv=default_site.bus_kv,
+                bus_kv=bus_kv,
                 tap_schedule=val_schedule,
                 v_min=v_min,
                 v_max=v_max,
@@ -1385,10 +1439,8 @@ if __name__ == "__main__":
 
     @_dataclass
     class Args:
-        config: str
-        """Path to the config JSON file."""
-        system: str = "ieee123"
-        """System name for output directory."""
+        system: str = "ieee34"
+        """System name (ieee34 or ieee123)."""
         n_pv: int = 3
         """Max number of PV sites to place."""
         s_max_kw: float = 500.0
@@ -1426,7 +1478,6 @@ if __name__ == "__main__":
     logging.getLogger("openg2g.grid").setLevel(logging.WARNING)
 
     main(
-        config_path=Path(args.config),
         system=args.system,
         n_pv=args.n_pv,
         s_max_kw=args.s_max_kw,

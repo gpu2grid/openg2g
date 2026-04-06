@@ -34,32 +34,35 @@ from pathlib import Path
 
 from openg2g.datacenter.config import (
     DatacenterConfig, InferenceModelSpec, InferenceRamp,
-    PowerAugmentationConfig, TrainingRun,
+    ModelDeployment, PowerAugmentationConfig, TrainingRun,
 )
 from openg2g.datacenter.offline import OfflineDatacenter, OfflineWorkload
 from openg2g.datacenter.workloads.inference import InferenceData
 from openg2g.datacenter.workloads.training import TrainingTrace
 
-models = (
-    InferenceModelSpec(
-        model_label="Llama-3.1-8B", initial_num_replicas=720, gpus_per_replica=1,
-        initial_batch_size=128, itl_deadline_s=0.08,
-    ),
-    InferenceModelSpec(
-        model_label="Llama-3.1-70B", initial_num_replicas=180, gpus_per_replica=4,
-        initial_batch_size=128, itl_deadline_s=0.10,
-    ),
+spec_8b = InferenceModelSpec(
+    model_label="Llama-3.1-8B", gpus_per_replica=1,
+    itl_deadline_s=0.08, feasible_batch_sizes=(8, 16, 32, 64, 128, 256, 512),
 )
+spec_70b = InferenceModelSpec(
+    model_label="Llama-3.1-70B", gpus_per_replica=4,
+    itl_deadline_s=0.10, feasible_batch_sizes=(8, 16, 32, 64, 128, 256, 512),
+)
+models = (spec_8b, spec_70b)
 
 data_dir = Path("data/offline")
 inference_data = InferenceData.ensure(data_dir, models, dt_s=0.1)
 training_trace = TrainingTrace.ensure(data_dir / "training_trace.csv")
 
+# Replica counts are separate from model specs
+replica_counts = {"Llama-3.1-8B": 720, "Llama-3.1-70B": 180}
+
 workload = OfflineWorkload(
     inference_data=inference_data,
+    replica_counts=replica_counts,
     inference_ramps=(
-        InferenceRamp(target=0.5).at(t_start=1500.0, t_end=2000.0)
-        | InferenceRamp(target=1.2, model="Llama-3.1-8B").at(t_start=2500.0, t_end=3000.0)
+        InferenceRamp(target=360, model="Llama-3.1-8B").at(t_start=1500.0, t_end=2000.0)
+        | InferenceRamp(target=864, model="Llama-3.1-8B").at(t_start=2500.0, t_end=3000.0)
     ),
     training=TrainingRun(n_gpus=2400, trace=training_trace).at(t_start=1000.0, t_end=2000.0),
 )
@@ -70,6 +73,7 @@ dc = OfflineDatacenter(
     workload,
     dt_s=Fraction(1, 10),
     seed=0,
+    total_gpu_capacity=1440,
     power_augmentation=PowerAugmentationConfig(
         amplitude_scale_range=(0.98, 1.02),
         noise_fraction=0.005,
@@ -77,60 +81,10 @@ dc = OfflineDatacenter(
 )
 ```
 
-#### Inference Ramps
+[`InferenceRamp`][openg2g.datacenter.config.InferenceRamp] controls the number of active replicas over time using absolute counts. Each ramp specifies its `target` replica count and the `model` it applies to. Ramps are scheduled with `at(t_start, t_end)` and chained with `|`. The datacenter validates that ramp targets do not exceed `total_gpu_capacity` before running.
 
-[`InferenceRamp`][openg2g.datacenter.config.InferenceRamp] controls the fraction of active inference servers over time.
-Ramps are scheduled with [`at(t_start, t_end)`][openg2g.datacenter.config.InferenceRamp.at] and chained with `|` to build an [`InferenceRampSchedule`][openg2g.datacenter.config.InferenceRampSchedule]:
-
-```python
-from openg2g.datacenter.config import InferenceRamp
-
-# Single ramp: reduce all models to 20% of initial servers
-ramps = InferenceRamp(target=0.2).at(t_start=2500, t_end=3000)
-
-# Multiple ramps: ramp down then back up
-ramps = (
-    InferenceRamp(target=0.5).at(t_start=1000, t_end=1500)
-    | InferenceRamp(target=1.0).at(t_start=2000, t_end=2200)
-)
-
-# Scale-up beyond initial replicas (target > 1.0)
-ramps = (
-    InferenceRamp(target=0.5).at(t_start=500, t_end=1000)
-    | InferenceRamp(target=1.5).at(t_start=2000, t_end=2500)
-)
-
-# Per-model ramps: only ramp a specific model
-ramps = (
-    InferenceRamp(target=0.3, model="Llama-3.1-70B").at(t_start=1200, t_end=1800)
-    | InferenceRamp(target=1.2, model="Llama-3.1-8B").at(t_start=2000, t_end=2500)
-)
-```
-
-Key concepts:
-
-- **`target`**: Fraction of initial servers to activate. `0.5` = half the servers; `1.0` = all servers (default); `1.5` = 50% more servers than the initial `initial_num_replicas`.
-- **`model`**: When set, the ramp applies only to that model. When `None` (default), it applies to all models in the datacenter.
-- **Scale-up** (target > 1.0): The datacenter pre-allocates extra servers at construction time based on the peak target in the schedule. At `t=0`, only the initial server count is active; the extra servers activate when the fraction exceeds 1.0.
-- **Piecewise-linear interpolation**: Between ramp events, the active fraction holds at the last target. During a ramp window `[t_start, t_end]`, the fraction linearly interpolates from the previous level to the new target.
-
-In JSON config files (used by the example scripts), per-site ramps are specified as a list:
-
-```json
-{
-  "dc_sites": {
-    "site_a": {
-      "bus": "54",
-      "base_kw_per_phase": 160.0,
-      "models": ["Llama-3.1-70B", "Llama-3.1-405B"],
-      "inference_ramps": [
-        {"target": 0.5, "t_start": 1000, "t_end": 1500},
-        {"target": 1.2, "t_start": 2500, "t_end": 3000, "model": "Llama-3.1-70B"}
-      ]
-    }
-  }
-}
-```
+!!! Warning "GPU capacity validation"
+    The `total_gpu_capacity` parameter is the physical GPU count at the site and must be specified explicitly. At initialization, the datacenter checks that ramp schedules never exceed this capacity at any point in time.
 
 ### Grid
 
@@ -156,7 +110,7 @@ tap_schedule = (
 
 grid = OpenDSSGrid(
     dss_case_dir="examples/ieee13",
-    dss_master_file="IEEE13Nodeckt.dss",
+    dss_master_file="IEEE13Bus.dss",
     dc_bus="671",
     dc_bus_kv=4.16,
     power_factor=dc_config.power_factor,
@@ -164,6 +118,41 @@ grid = OpenDSSGrid(
     connection_type="wye",
 )
 ```
+
+#### Grid Data Files
+
+OpenG2G ships with IEEE test feeder models in `data/grid/`, one folder per system. Each folder contains a self-contained master `.dss` file and a shared line impedance file:
+
+```
+data/grid/
+├── ieee13/
+│   ├── IEEE13Bus.dss        # Circuit, transformers, regulators, loads, lines, bus coordinates
+│   └── IEEELineCodes.dss    # Line impedance definitions (loaded via Redirect)
+├── ieee34/
+│   ├── IEEE34Bus.dss
+│   └── IEEELineCodes.dss
+└── ieee123/
+    ├── IEEE123Bus.dss
+    └── IEEELineCodes.dss
+```
+
+These are modified from the [OpenDSS IEEE Test Cases](https://github.com/tshort/OpenDSS/tree/master/Distrib/IEEETestCases) for studying datacenter loads on distribution grids. See the header comment in each `.dss` file for system-specific modifications.
+
+**Regulator naming.** OpenDSS models voltage regulators as two separate objects — a `Transformer` (the physical hardware) and a `RegControl` (the control logic that adjusts the transformer's tap). Names follow the convention `reg{bank}{phase}` / `creg{bank}{phase}` (the `c` prefix stands for "control"):
+
+| Component | Pattern | Example | Meaning |
+|-----------|---------|---------|---------|
+| Transformer | `reg{bank}{phase}` | `reg1a` | Bank 1, phase A |
+| RegControl | `creg{bank}{phase}` | `creg1a` | Control for bank 1, phase A |
+
+Each `RegControl` points to its transformer: `new regcontrol.creg1a transformer=reg1a winding=2 ...`. A typical bank has three per-phase regulators (e.g., `creg1a`, `creg1b`, `creg1c`).
+
+**Adding a new test system.** When adding a new `.dss` file:
+
+1. Name the master file `IEEE{N}Bus.dss`.
+2. Use explicit phase suffixes on regulator transformer buses (e.g., `buses=[650.1 RG60.1]`). The simulator determines phase-to-regulator mapping from bus node data — if phase cannot be determined, users must address regulators by name in `TapPosition`.
+3. Follow the `reg{bank}{phase}` / `creg{bank}{phase}` naming convention for regulators.
+4. Use `SetBusXY bus=... X=... Y=...` for inline bus coordinates (no external CSV files).
 
 ### Controllers
 
@@ -408,7 +397,7 @@ How it implements the interface:
 - **`total_gpu_capacity`**: Maximum number of GPUs this datacenter can physically host. Auto-computed from initial model allocation if not specified. Incoming replica shifts are rejected or clamped when the datacenter is full. Exposed via `current_gpu_usage()` and `available_gpu_capacity()` methods.
 - **`load_shift_headroom`**: Fraction of extra server capacity to pre-allocate (e.g., 0.3 = 30%) so incoming replicas have server slots available.
 - **`reset()`** clears step counter, replica offsets, and RNG state. Rebuilds server layouts from the stored config so the next run starts fresh. History is cleared automatically by `do_reset()`.
-- An [`ActivationPolicy`][openg2g.datacenter.layout.ActivationPolicy] determines which servers are active at each timestep. The default [`RampActivationPolicy`][openg2g.datacenter.layout.RampActivationPolicy] follows an [`InferenceRampSchedule`][openg2g.datacenter.config.InferenceRampSchedule] with random priority ordering. Ramps can target specific models via the `model` parameter and support scale-up beyond the initial replica count (target > 1.0).
+- An [`ActivationPolicy`][openg2g.datacenter.layout.ActivationPolicy] determines which servers are active at each timestep. The default [`RampActivationPolicy`][openg2g.datacenter.layout.RampActivationPolicy] follows an [`InferenceRampSchedule`][openg2g.datacenter.config.InferenceRampSchedule] with random priority ordering. Ramps can target specific models via the `model` parameter and support targets above 1.0 (activating more replicas than the initial count).
 - Training workload overlays add transient high-power phases.
 
 ### `OpenDSSGrid`
@@ -459,16 +448,6 @@ How it works:
 4. **Capacity-aware**: Checks `available_gpu_capacity()` on the destination before shifting. Shifts are rejected if the destination datacenter is full.
 5. **Incremental**: Shifts `gpus_per_shift` GPUs worth of replicas per time step, repeating until the violation resolves.
 
-**Configuration** (in the JSON config):
-
-```json
-"load_shift": {
-    "enabled": true,
-    "gpus_per_shift": 8,
-    "headroom": 0.3
-}
-```
-
 **Wiring:**
 
 ```python
@@ -500,13 +479,13 @@ The `examples/offline/` directory includes ready-to-run analysis scripts. For de
 
 | Script | Topic | Details |
 |--------|-------|---------|
-| `run_baseline.py`, `run_ofo.py` | Baseline and OFO simulations (all systems) | [GPU Flexibility](../examples/1-gpu-flexibility.md), [Voltage Strategies](../examples/2-voltage-regulation-strategies.md) |
-| `analyze_different_controllers.py` | Controller comparison (baseline, rule-based, OFO) | [Voltage Strategies](../examples/2-voltage-regulation-strategies.md) |
-| `sweep_ofo_parameters.py` | OFO parameter sensitivity sweep | [Parameter Sensitivity](../examples/3-controller-parameter-sensitivity.md) |
-| `plot_topology.py` | System topology visualization | [Grid Topology](../examples/4-grid-topology-effects.md) |
-| `sweep_hosting_capacities.py` | Per-bus hosting capacity analysis | [Hosting Capacity](../examples/5-hosting-capacity.md) |
-| `sweep_dc_locations.py` | DC location sweep (1-D, 2-D, zone-constrained) | [DC Location Planning](../examples/6-dc-location-planning.md) |
-| `analyze_LLM_load_shifting.py` | Cross-site LLM replica shifting comparison | [Multi-DC Coordination](../examples/7-multi-dc-coordination.md) |
-| `optimize_pv_locations_and_capacities.py` | PV placement + capacity MILP | [PV + DC Siting](../examples/8-pv-dc-siting.md) |
-| `optimize_pv_and_dc_locations.py` | Joint PV + DC location MILP | [PV + DC Siting](../examples/8-pv-dc-siting.md) |
+| `run_baseline.py`, `run_ofo.py` | Baseline and OFO simulations (all systems) | [GPU Flexibility](../examples/gpu-flexibility.md), [Voltage Strategies](../examples/voltage-regulation-strategies.md) |
+| `analyze_different_controllers.py` | Controller comparison (baseline, rule-based, OFO) | [Voltage Strategies](../examples/voltage-regulation-strategies.md) |
+| `sweep_ofo_parameters.py` | OFO parameter sensitivity sweep | [Parameter Sensitivity](../examples/controller-parameter-sensitivity.md) |
+| `plot_topology.py` | System topology visualization | [Grid Topology](../examples/grid-topology-effects.md) |
+| `sweep_hosting_capacities.py` | Per-bus hosting capacity analysis | [Hosting Capacity](../examples/hosting-capacity.md) |
+| `sweep_dc_locations.py` | DC location sweep (1-D, 2-D, zone-constrained) | [DC Location Planning](../examples/dc-location-planning.md) |
+| `analyze_LLM_load_shifting.py` | Cross-site LLM replica shifting comparison | [Multi-DC Coordination](../examples/multi-dc-coordination.md) |
+| `optimize_pv_locations_and_capacities.py` | PV placement + capacity MILP | [PV + DC Siting](../examples/pv-dc-siting.md) |
+| `optimize_pv_and_dc_locations.py` | Joint PV + DC location MILP | [PV + DC Siting](../examples/pv-dc-siting.md) |
 | `plot_all_figures.py` | Reusable plotting utilities | — |

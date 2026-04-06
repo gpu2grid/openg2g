@@ -30,13 +30,13 @@ OpenG2G includes three standard IEEE test feeders with pre-configured datacenter
 
 ```bash
 # IEEE 13-bus
-python examples/offline/plot_topology.py --config examples/offline/config_ieee13.json --system ieee13
+python examples/offline/plot_topology.py --system ieee13
 
 # IEEE 34-bus
-python examples/offline/plot_topology.py --config examples/offline/config_ieee34.json --system ieee34
+python examples/offline/plot_topology.py --system ieee34
 
 # IEEE 123-bus
-python examples/offline/plot_topology.py --config examples/offline/config_ieee123.json --system ieee123
+python examples/offline/plot_topology.py --system ieee123
 ```
 
 The topology plot shows buses (colored by zone), DC locations (stars), PV systems (yellow triangles), and voltage regulators (red diamonds). It automatically parses connections and regulator definitions from the OpenDSS files.
@@ -47,13 +47,13 @@ Run baseline and OFO on each system and compare voltage statistics:
 
 ```bash
 # IEEE 13
-python examples/offline/run_ofo.py --config examples/offline/config_ieee13.json --system ieee13
+python examples/offline/run_ofo.py --system ieee13
 
 # IEEE 34
-python examples/offline/run_ofo.py --config examples/offline/config_ieee34.json --system ieee34
+python examples/offline/run_ofo.py --system ieee34
 
 # IEEE 123
-python examples/offline/run_ofo.py --config examples/offline/config_ieee123.json --system ieee123
+python examples/offline/run_ofo.py --system ieee123
 ```
 
 ## Key Observations
@@ -65,13 +65,7 @@ python examples/offline/run_ofo.py --config examples/offline/config_ieee123.json
 
 ## Configuration
 
-The topology and DER configuration is specified in the JSON config file:
+The topology and DER configuration is defined inline in each experiment function (see `run_ofo.py`):
 
-- `ieee_case_dir`, `dss_master_file`: Path to OpenDSS circuit files
-- `source_pu`: Substation voltage (affects base voltage levels)
-- `dc_sites`: Datacenter locations and power levels
-- `pv_systems`: Solar PV locations and peak capacities
-- `time_varying_loads`: Additional load locations and magnitudes
-- `initial_taps`: Regulator starting positions
-
-See [Data Pipeline](../guide/data-pipeline.md) for the full config format.
+- **Feeder constants** (in `systems.py`): `dss_case_dir`, `dss_master_file`, `source_pu`, `initial_taps`, `exclude_buses`
+- **Experiment parameters** (inline in each script): `dc_sites` (datacenter locations and power levels), `pv_systems` (solar PV locations and peak capacities), `time_varying_loads` (additional load locations and magnitudes)

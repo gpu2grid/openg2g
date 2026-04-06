@@ -29,10 +29,10 @@ The IEEE 13 config includes a training overlay (2400 GPUs, t=1000–2000s) and a
 
 ```bash
 # Baseline (no batch control, no tap changes)
-python examples/offline/run_baseline.py --config examples/offline/config_ieee13.json --system ieee13
+python examples/offline/run_baseline.py --system ieee13
 
 # OFO batch-size control
-python examples/offline/run_ofo.py --config examples/offline/config_ieee13.json --system ieee13
+python examples/offline/run_ofo.py --system ieee13
 ```
 
 ### IEEE 34-Bus: External Load Changes
@@ -40,8 +40,8 @@ python examples/offline/run_ofo.py --config examples/offline/config_ieee13.json 
 The IEEE 34 config has PV systems at buses 830 and 848 and time-varying loads at five buses. The datacenter load is steady (no ramps), so all voltage disturbances come from external sources.
 
 ```bash
-python examples/offline/run_baseline.py --config examples/offline/config_ieee34.json --system ieee34
-python examples/offline/run_ofo.py --config examples/offline/config_ieee34.json --system ieee34
+python examples/offline/run_baseline.py --system ieee34
+python examples/offline/run_ofo.py --system ieee34
 ```
 
 ### IEEE 123-Bus: Internal + External
@@ -49,8 +49,8 @@ python examples/offline/run_ofo.py --config examples/offline/config_ieee34.json 
 The IEEE 123 config combines per-site inference ramps (four datacenters with different ramp schedules), three PV systems, and time-varying loads — representing the most realistic scenario.
 
 ```bash
-python examples/offline/run_baseline.py --config examples/offline/config_ieee123.json --system ieee123
-python examples/offline/run_ofo.py --config examples/offline/config_ieee123.json --system ieee123
+python examples/offline/run_baseline.py --system ieee123
+python examples/offline/run_ofo.py --system ieee123
 ```
 
 ## Key Results
@@ -71,6 +71,6 @@ Key config fields for this analysis:
 - `training`: Training workload overlay with `dc_site`, `n_gpus`, `t_start`/`t_end` (internal disturbance)
 - `pv_systems`: Solar PV injections (external disturbance)
 - `time_varying_loads`: Additional loads at arbitrary buses (external disturbance)
-- `ofo`: OFO controller parameters (see [Controller Parameter Sensitivity](3-controller-parameter-sensitivity.md))
+- `ofo`: OFO controller parameters (see [Controller Parameter Sensitivity](controller-parameter-sensitivity.md))
 
-See [Data Pipeline](../guide/data-pipeline.md) for the full config format.
+See [Building Simulators](../guide/building-simulators.md) and `examples/offline/systems.py` for configuration details.

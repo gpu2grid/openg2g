@@ -2,17 +2,16 @@
 
 Automatically parses bus coordinates, line/transformer connections, and regulator
 definitions from OpenDSS files. Overlays DC sites, PV systems, and zone coloring
-from a config JSON file.
+from experiment definitions in run_ofo.py.
 
 Usage:
-    python plot_topology.py --config config_ieee13.json --system ieee13
-    python plot_topology.py --config config_ieee34.json --system ieee34
-    python plot_topology.py --config config_ieee123.json --system ieee123
+    python plot_topology.py --system ieee13
+    python plot_topology.py --system ieee34
+    python plot_topology.py --system ieee123
 """
 
 from __future__ import annotations
 
-import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -272,19 +271,22 @@ ZONE_PALETTE = [
 
 def plot_topology(
     *,
-    config_path: Path,
     system: str,
     output_dir: Path | None = None,
     large_font: bool = False,
 ) -> Path:
     """Plot system topology and return the output file path."""
-    config_path = config_path.resolve()
-    with open(config_path) as f:
-        cfg = json.load(f)
+    from run_ofo import _EXPERIMENTS
+    from systems import SYSTEMS, DT_DC, load_data_sources
 
-    config_dir = config_path.parent
-    dss_dir = (config_dir / cfg["ieee_case_dir"]).resolve()
-    master_file = cfg.get("dss_master_file", "")
+    sys = SYSTEMS[system]()
+    dss_dir = sys["dss_case_dir"]
+    master_file = sys["dss_master_file"]
+
+    # Build experiment to get DC sites, PV, zones
+    # We don't need real data — just the experiment structure
+    experiment_fn = _EXPERIMENTS[system]
+    experiment = experiment_fn(sys, None, None, None)
 
     # Find bus coordinate file
     coord_file = None
@@ -302,13 +304,15 @@ def plot_topology(
     edges = parse_dss_edges(dss_dir, master_file)
     parse_dss_regulators(dss_dir, master_file)
 
-    # Config overlays
-    zones_cfg = cfg.get("zones", {})
-    dc_sites = cfg.get("dc_sites", {})
-    pv_systems = cfg.get("pv_systems", [])
+    # Overlays from experiment
+    zones_cfg = experiment.get("zones") or sys.get("zones") or {}
+    dc_sites_obj = experiment.get("dc_sites", {})
+    pv_systems_list = experiment.get("pv_systems") or []
 
-    dc_buses = {site["bus"].lower(): sid for sid, site in dc_sites.items()}
-    pv_buses = {pv["bus"].lower(): f"{pv['peak_kw']:.0f} kW/ph" for pv in pv_systems}
+    # Convert DCSite objects to dicts for plotting
+    dc_sites = {sid: {"bus": site.bus} for sid, site in dc_sites_obj.items()}
+    dc_buses = {site.bus.lower(): sid for sid, site in dc_sites_obj.items()}
+    pv_buses = {pv.bus.lower(): f"{pv.peak_kw:.0f} kW/ph" for pv in pv_systems_list}
 
     # Zone coloring
     zone_ids = list(zones_cfg.keys()) if zones_cfg else list(dc_sites.keys())
@@ -340,7 +344,7 @@ def plot_topology(
             ax.plot(x, y, "-", color=color, linewidth=3.0, alpha=alpha, zorder=1)
 
     # Draw buses
-    {b.lower() for b in cfg.get("exclude_buses", [])}
+    {b.lower() for b in sys.get("exclude_buses", ())}
     for bus_name, (x, y) in coords.items():
         zid = bus_zone.get(bus_name)
         is_dc = bus_name in dc_buses
@@ -482,8 +486,6 @@ if __name__ == "__main__":
 
     @dc_cls
     class Args:
-        config: str
-        """Path to the config JSON file."""
         system: str = "ieee13"
         """System name (e.g., ieee13, ieee34, ieee123)."""
         output_dir: str | None = None
@@ -493,4 +495,4 @@ if __name__ == "__main__":
 
     args = tyro.cli(Args)
     out_dir = Path(args.output_dir) if args.output_dir else None
-    plot_topology(config_path=Path(args.config), system=args.system, output_dir=out_dir, large_font=args.large_font)
+    plot_topology(system=args.system, output_dir=out_dir, large_font=args.large_font)

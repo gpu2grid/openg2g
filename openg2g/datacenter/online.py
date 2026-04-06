@@ -121,24 +121,30 @@ class VLLMDeployment(BaseModel):
 
     Pairs a reusable
     [`InferenceModelSpec`][openg2g.datacenter.config.InferenceModelSpec]
-    with physical deployment details. `spec.initial_num_replicas` is the
-    simulated (augmented) count for grid simulation. The real replica
-    count is derived from `gpu_endpoints` and `spec.gpus_per_replica`.
+    with physical deployment details. ``simulated_num_replicas`` is the
+    augmented replica count for grid simulation. The real replica
+    count is derived from ``gpu_endpoints`` and ``spec.gpus_per_replica``.
 
     Tracks the current batch size (`max_num_seqs`) and provides
     `set_batch_size()` to update it on the vLLM server.
 
     Attributes:
         spec: Model specification (shared with offline datacenter).
+        simulated_num_replicas: Number of replicas to simulate for grid
+            power augmentation. Must be specified explicitly.
         vllm_base_url: Base URL of the vLLM server (e.g. `http://node1:8000`).
         gpu_endpoints: GPU endpoint mappings for power monitoring.
         request_extra_body: Extra fields merged into every request dict
             for this model (e.g. `chat_template_kwargs`).
+        initial_batch_size: Starting batch size. The ``batch_size`` field
+            is initialized from this value.
         batch_size: Current batch size (`max_num_seqs`). Initialized from
-            `spec.initial_batch_size` if not set explicitly.
+            ``initial_batch_size`` if not set explicitly.
     """
 
     spec: InferenceModelSpec
+    simulated_num_replicas: int
+    initial_batch_size: int
     vllm_base_url: str
     gpu_endpoints: tuple[GPUEndpointMapping, ...] = ()
     request_extra_body: dict[str, Any] | None = None
@@ -146,7 +152,7 @@ class VLLMDeployment(BaseModel):
 
     def model_post_init(self, __context: Any) -> None:
         if self.batch_size == 0:
-            self.batch_size = self.spec.initial_batch_size
+            self.batch_size = self.initial_batch_size
 
     @property
     def model_label(self) -> str:
@@ -165,7 +171,7 @@ class VLLMDeployment(BaseModel):
     @property
     def augmentation_factor(self) -> float:
         """Ratio of simulated replicas to real replicas."""
-        return self.spec.initial_num_replicas / max(self.num_real_replicas, 1)
+        return self.simulated_num_replicas / max(self.num_real_replicas, 1)
 
     def set_batch_size(self, batch_size: int, ramp_up_rate: float = 0.0) -> None:
         """Update batch size on the vLLM server and track it locally.
@@ -788,7 +794,7 @@ class OnlineDatacenter(LLMBatchSizeControlledDatacenter[OnlineDatacenterState]):
                 "  %s: %d real GPUs, %d simulated replicas (%.0fx augmentation), %d virtual servers, vllm=%s",
                 d.model_label,
                 d.num_real_gpus,
-                d.spec.initial_num_replicas,
+                d.simulated_num_replicas,
                 d.augmentation_factor,
                 n_servers,
                 d.vllm_base_url,
@@ -811,8 +817,13 @@ class OnlineDatacenter(LLMBatchSizeControlledDatacenter[OnlineDatacenterState]):
 
         for d in self._deployments:
             spec = d.spec
-            if spec.initial_num_replicas > 0:
-                num_servers = math.ceil(spec.initial_num_replicas * spec.gpus_per_replica / gpus_per_server)
+            n_replicas = d.simulated_num_replicas
+            if n_replicas > 0:
+                total_gpus = n_replicas * spec.gpus_per_replica
+                num_servers = math.ceil(total_gpus / gpus_per_server)
+
+                # Per-model schedule with absolute counts
+                model_schedule = schedule.for_model(spec.model_label, initial_count=n_replicas)
 
                 # Phase shuffle (consumes RNG)
                 sA, sB, sC = split_integer_evenly(num_servers, 3)
@@ -821,9 +832,11 @@ class OnlineDatacenter(LLMBatchSizeControlledDatacenter[OnlineDatacenterState]):
 
                 # Priority shuffle (consumes RNG) — must happen here
                 self._policies[d.model_label] = RampActivationPolicy(
-                    schedule,
+                    model_schedule,
                     num_servers,
                     rng,
+                    gpus_per_replica=spec.gpus_per_replica,
+                    gpus_per_server=gpus_per_server,
                 )
 
                 # Stagger offsets (consumes RNG) — float for online
@@ -832,7 +845,6 @@ class OnlineDatacenter(LLMBatchSizeControlledDatacenter[OnlineDatacenterState]):
                 # Amplitude scales (consumes RNG)
                 amplitude_scales = rng.uniform(amp_lo, amp_hi, size=num_servers)
 
-                total_gpus = spec.initial_num_replicas * spec.gpus_per_replica
                 gpus_per_server_list = np.full(num_servers, gpus_per_server, dtype=int)
                 tail = total_gpus - (num_servers - 1) * gpus_per_server
                 gpus_per_server_list[-1] = int(tail) if tail > 0 else gpus_per_server
@@ -886,7 +898,7 @@ class OnlineDatacenter(LLMBatchSizeControlledDatacenter[OnlineDatacenterState]):
         )
         self._rolling_buffer.clear()
         for d in self._deployments:
-            d.batch_size = d.spec.initial_batch_size
+            d.batch_size = d.initial_batch_size
         self._started = False
 
     def start(self) -> None:
@@ -936,7 +948,7 @@ class OnlineDatacenter(LLMBatchSizeControlledDatacenter[OnlineDatacenterState]):
 
         # 3. Set initial batch sizes on vLLM servers
         for d in self._deployments:
-            d.set_batch_size(d.spec.initial_batch_size)
+            d.set_batch_size(d.initial_batch_size)
 
         # 4. Start load generation (and Prometheus poller)
         self._load_gen.start()
@@ -1030,7 +1042,7 @@ class OnlineDatacenter(LLMBatchSizeControlledDatacenter[OnlineDatacenterState]):
                     label = d.model_label
                     running = prom.get(label, {}).get("num_requests_running", 0.0)
                     trajectory[label].append((elapsed, running))
-                    target = d.spec.initial_batch_size * saturation_threshold
+                    target = d.initial_batch_size * saturation_threshold
 
                     if running >= target and saturation_time[label] is None:
                         saturation_time[label] = now
@@ -1064,7 +1076,7 @@ class OnlineDatacenter(LLMBatchSizeControlledDatacenter[OnlineDatacenterState]):
                     for d in self._deployments:
                         label = d.model_label
                         running = prom.get(label, {}).get("num_requests_running", 0.0)
-                        target = d.spec.initial_batch_size
+                        target = d.initial_batch_size
                         sat_t = saturation_time[label]
                         buf_s = (now - sat_t) if sat_t is not None else 0.0
                         logger.info(
@@ -1090,7 +1102,7 @@ class OnlineDatacenter(LLMBatchSizeControlledDatacenter[OnlineDatacenterState]):
             label = d.model_label
             running = prom.get(label, {}).get("num_requests_running", 0.0)
             sat_t = saturation_time[label]
-            not_saturated = running < d.spec.initial_batch_size * saturation_threshold
+            not_saturated = running < d.initial_batch_size * saturation_threshold
             not_buffered = sat_t is None or (time.monotonic() - sat_t) < stagger_s
             if not_saturated or not_buffered:
                 failed.append(label)
@@ -1100,7 +1112,7 @@ class OnlineDatacenter(LLMBatchSizeControlledDatacenter[OnlineDatacenterState]):
             f"Models that failed to reach {saturation_threshold:.0%} of initial_batch_size:",
         ]
         for label in failed:
-            target = self._deployment_map[label].spec.initial_batch_size
+            target = self._deployment_map[label].initial_batch_size
             traj = trajectory[label]
             final = traj[-1][1] if traj else 0.0
             parts.append(f"  {label} (target: {target}, reached: {final:.0f}):")

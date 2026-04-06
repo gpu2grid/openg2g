@@ -52,26 +52,23 @@ class RampActivationPolicy(ActivationPolicy):
     [`InferenceRampSchedule`][openg2g.datacenter.config.InferenceRampSchedule].
 
     At time *t*, the top-*k* servers (by random priority) are active,
-    where `k = round(schedule.fraction_at(t) * base_servers)`, capped at
-    ``num_servers``.
-
-    When the schedule has targets > 1.0 (scale-up), ``num_servers`` should
-    be larger than ``base_servers`` to accommodate the extra capacity.
+    where *k* is derived from the schedule's absolute replica count and
+    the model's GPU requirements.
 
     This is the default policy used by
     [`OfflineDatacenter`][openg2g.datacenter.offline.OfflineDatacenter].
 
     Args:
-        schedule: Temporal ramp schedule mapping time to active-server fraction.
-        num_servers: Total allocated servers (may exceed ``base_servers``
-            when schedule targets exceed 1.0).
+        schedule: Per-model ramp schedule (absolute replica counts).
+        num_servers: Total allocated servers (may exceed baseline when
+            ramp targets exceed the initial replica count).
         rng: RNG for randomizing priority ordering. Consumed once at
             construction time.
-        base_servers: Baseline server count corresponding to fraction 1.0.
-            Defaults to ``num_servers`` (no scale-up).
+        gpus_per_replica: GPUs required per model replica.
+        gpus_per_server: GPUs per physical server.
     """
 
-    __slots__ = ("_base", "_n", "_priority", "_schedule")
+    __slots__ = ("_gpus_per_replica", "_gpus_per_server", "_n", "_priority", "_replica_offset", "_schedule")
 
     def __init__(
         self,
@@ -79,26 +76,36 @@ class RampActivationPolicy(ActivationPolicy):
         num_servers: int,
         rng: np.random.Generator,
         *,
-        base_servers: int | None = None,
+        gpus_per_replica: int,
+        gpus_per_server: int,
     ) -> None:
         self._schedule = schedule
         self._n = num_servers
-        self._base = base_servers if base_servers is not None else num_servers
+        self._gpus_per_replica = gpus_per_replica
+        self._gpus_per_server = gpus_per_server
+        self._replica_offset: int = 0
         priority = np.arange(num_servers, dtype=int)
         rng.shuffle(priority)
         self._priority = priority
 
+    def _servers_for_count(self, replica_count: float) -> int:
+        """Convert a replica count to a server count."""
+        import math
+
+        gpus_needed = max(0.0, replica_count + self._replica_offset) * self._gpus_per_replica
+        return max(0, min(self._n, math.ceil(gpus_needed / self._gpus_per_server)))
+
     def active_mask(self, t: float) -> np.ndarray:
-        frac = self._schedule.fraction_at(t)
-        k = max(0, min(self._n, int(round(float(frac) * self._base))))
+        count = self._schedule.count_at(t)
+        k = self._servers_for_count(float(count))
         mask = np.zeros(self._n, dtype=bool)
         mask[self._priority[:k]] = True
         return mask
 
     def active_indices(self, t: float) -> np.ndarray:
         """Return active server indices in priority order."""
-        frac = self._schedule.fraction_at(t)
-        k = max(0, min(self._n, int(round(float(frac) * self._base))))
+        count = self._schedule.count_at(t)
+        k = self._servers_for_count(float(count))
         return self._priority[:k].copy()
 
 

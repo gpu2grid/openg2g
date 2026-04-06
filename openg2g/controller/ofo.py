@@ -558,6 +558,7 @@ class OFOBatchSizeController(Controller[LLMBatchSizeControlledDatacenter[LLMData
         config: OFOConfig | None = None,
         dt_s: Fraction = Fraction(1),
         site_id: str | None = None,
+        initial_batch_sizes: dict[str, int] | None = None,
     ) -> None:
         if config is None:
             config = OFOConfig()
@@ -569,6 +570,7 @@ class OFOBatchSizeController(Controller[LLMBatchSizeControlledDatacenter[LLMData
             raise ValueError(f"Duplicate model labels: {labels}")
 
         model_specs = list(inference_models)
+        self._initial_batch_sizes = initial_batch_sizes or {}
 
         for ms in model_specs:
             label = ms.model_label
@@ -604,7 +606,10 @@ class OFOBatchSizeController(Controller[LLMBatchSizeControlledDatacenter[LLMData
             throughput_fits=models.throughput_fits,
             config=config,
         )
-        self._optimizer.init_from_batches({ms.model_label: ms.initial_batch_size for ms in model_specs})
+        self._optimizer.init_from_batches({
+            ms.model_label: self._initial_batch_sizes.get(ms.model_label, ms.feasible_batch_sizes[0])
+            for ms in model_specs
+        })
 
         self._sensitivity_matrix: np.ndarray | None = None
         self._control_step_count: int = 0
@@ -619,7 +624,10 @@ class OFOBatchSizeController(Controller[LLMBatchSizeControlledDatacenter[LLMData
     def reset(self) -> None:
         self._voltage_dual = None
         self._latency_dual_by_model = {ms.model_label: 0.0 for ms in self._models}
-        self._optimizer.init_from_batches({ms.model_label: ms.initial_batch_size for ms in self._models})
+        self._optimizer.init_from_batches({
+            ms.model_label: self._initial_batch_sizes.get(ms.model_label, ms.feasible_batch_sizes[0])
+            for ms in self._models
+        })
         self._sensitivity_matrix = None
         self._control_step_count = 0
 

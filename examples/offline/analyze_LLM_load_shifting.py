@@ -1,13 +1,12 @@
 """LLM load shifting: compare OFO with and without cross-site replica shifting.
 
-Runs two OFO simulations — one with load shifting disabled and one enabled —
+Runs two OFO simulations -- one with load shifting disabled and one enabled --
 then produces comparison plots showing voltage improvement and replica movement.
 
-The config must have a ``load_shift`` section with ``enabled: true`` and
-each DC site must run at least 3 models (warm-start requirement).
+Each DC site must run at least 3 models (warm-start requirement).
 
 Usage:
-    python analyze_LLM_load_shifting.py --config config_ieee123_load_shift.json --system ieee123
+    python analyze_LLM_load_shifting.py --system ieee123
 """
 
 from __future__ import annotations
@@ -23,17 +22,84 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 from run_ofo import run_mode
-from sweep_dc_locations import (
-    SweepConfig,
-    _parse_fraction,
+from systems import (
+    SYSTEMS,
+    DCSite,
+    DT_CTRL,
+    DT_DC,
+    DT_GRID,
+    POWER_AUG,
+    V_MAX,
+    V_MIN,
+    deploy,
+    ieee123,
+    load_data_sources,
+    tap,
 )
 
-from openg2g.controller.ofo import LogisticModelStore
+from openg2g.controller.ofo import LogisticModelStore, OFOConfig
 from openg2g.datacenter.command import ShiftReplicas
 from openg2g.datacenter.workloads.inference import InferenceData
+from openg2g.datacenter.workloads.training import TrainingTrace
+from openg2g.grid.config import TapPosition, TapSchedule
 from openg2g.metrics.voltage import VoltageStats
 
 logger = logging.getLogger("load_shift_comparison")
+
+
+# ── IEEE 123-bus load-shift experiment definition ────────────────────────────
+
+LOAD_SHIFT_DC_SITES: dict[str, DCSite] = {
+    "z1_sw": DCSite(
+        bus="7",
+        bus_kv=4.16,
+        base_kw_per_phase=210,
+        models=(deploy("Llama-3.1-8B", 120), deploy("Qwen3-30B-A3B", 120), deploy("Llama-3.1-70B", 120)),
+        total_gpu_capacity=520,
+        load_shift_headroom=0.3,
+    ),
+    "z2_nw": DCSite(
+        bus="33",
+        bus_kv=4.16,
+        base_kw_per_phase=175,
+        models=(deploy("Llama-3.1-8B", 120), deploy("Qwen3-30B-A3B", 120), deploy("Llama-3.1-405B", 40)),
+        total_gpu_capacity=728,
+        load_shift_headroom=0.3,
+    ),
+    "z3_se": DCSite(
+        bus="76",
+        bus_kv=4.16,
+        base_kw_per_phase=215,
+        models=(deploy("Qwen3-30B-A3B", 120), deploy("Llama-3.1-70B", 120), deploy("Llama-3.1-405B", 40), deploy("Qwen3-235B-A22B", 40)),
+        total_gpu_capacity=1300,
+        load_shift_headroom=0.3,
+    ),
+    "z4_ne": DCSite(
+        bus="108",
+        bus_kv=4.16,
+        base_kw_per_phase=235,
+        models=(deploy("Llama-3.1-8B", 120), deploy("Qwen3-30B-A3B", 120), deploy("Llama-3.1-405B", 40), deploy("Qwen3-235B-A22B", 40)),
+        total_gpu_capacity=1300,
+        load_shift_headroom=0.3,
+    ),
+}
+
+# Override initial taps: creg4a = +13 instead of the standard +14
+LOAD_SHIFT_SYS = ieee123()
+LOAD_SHIFT_SYS["initial_taps"] = TapPosition(regulators={
+    "creg1a": tap(9),
+    "creg2a": tap(5),
+    "creg3a": tap(5),
+    "creg3c": tap(5),
+    "creg4a": tap(13),
+    "creg4b": tap(1),
+    "creg4c": tap(4),
+})
+
+LOAD_SHIFT_TAP_SCHEDULE = TapSchedule(((1800, TapPosition(regulators={"creg4a": tap(15)})),))
+
+LOAD_SHIFT_GPUS_PER_SHIFT = 8
+LOAD_SHIFT_HEADROOM = 0.3
 
 
 def _extract_shift_timeseries(
@@ -324,58 +390,53 @@ def plot_load_shift_comparison(
     print(f"Outputs: {save_dir}")
 
 
-def main(*, config_path: Path, system: str = "ieee123") -> None:
-    config_path = config_path.resolve()
-    config = SweepConfig.model_validate_json(config_path.read_bytes())
-    sim = config.simulation
+def main(*, system: str = "ieee123") -> None:
+    sys_const = LOAD_SHIFT_SYS
+    dc_sites = LOAD_SHIFT_DC_SITES
 
-    config_dir = config_path.parent
-    config.ieee_case_dir = (config_dir / config.ieee_case_dir).resolve()
+    # Collect all unique models across sites
+    all_models = []
+    seen = set()
+    for site in dc_sites.values():
+        for m in site.models:
+            if m.spec.model_label not in seen:
+                all_models.append(m)
+                seen.add(m.spec.model_label)
 
-    all_models = tuple(config.models)
-    data_sources = {s.model_label: s for s in config.data_sources}
-    data_dir = config.data_dir or Path("data/offline") / config.data_hash
+    # Load data pipeline
+    data_sources, training_trace_params, data_dir = load_data_sources()
 
-    dt_dc = _parse_fraction(sim.dt_dc)
-    dt_grid = _parse_fraction(sim.dt_grid)
-    dt_ctrl = _parse_fraction(sim.dt_ctrl)
+    all_specs = tuple(m.spec for m in all_models)
 
     logger.info("Loading inference data...")
     inference_data = InferenceData.ensure(
         data_dir,
-        all_models,
+        all_specs,
         data_sources,
-        mlenergy_data_dir=config.mlenergy_data_dir,
         plot=False,
-        dt_s=float(dt_dc),
+        dt_s=float(DT_DC),
     )
     logistic_models = LogisticModelStore.ensure(
         data_dir / "logistic_fits.csv",
-        all_models,
+        all_specs,
         data_sources,
-        mlenergy_data_dir=config.mlenergy_data_dir,
         plot=False,
+    )
+    training_trace = TrainingTrace.ensure(
+        data_dir / "training_trace.csv",
+        training_trace_params,
     )
 
     save_dir = Path(__file__).resolve().parent / "outputs" / system / "load_shift_comparison"
     save_dir.mkdir(parents=True, exist_ok=True)
 
-    from openg2g.datacenter.workloads.training import TrainingTrace
-
-    training_trace = TrainingTrace.ensure(
-        data_dir / "training_trace.csv",
-        config.training_trace_params,
-    )
-
     shared = dict(
-        config=config,
-        all_models=all_models,
+        sys=sys_const,
+        dc_sites=dc_sites,
         inference_data=inference_data,
         training_trace=training_trace,
         logistic_models=logistic_models,
-        dt_dc=dt_dc,
-        dt_grid=dt_grid,
-        dt_ctrl=dt_ctrl,
+        tap_schedule=LOAD_SHIFT_TAP_SCHEDULE,
         save_dir=save_dir,
     )
 
@@ -384,23 +445,48 @@ def main(*, config_path: Path, system: str = "ieee123") -> None:
     logger.info("=" * 70)
     logger.info("RUN 1: OFO without load shifting")
     logger.info("=" * 70)
-    # Temporarily disable load_shift
-    orig_ls = config.load_shift
-    config.load_shift = {"enabled": False}
-    stats_no_shift, log_no_shift = run_mode("ofo", **shared, folder_name="ofo_no_shift")
+
+    # Build no-shift sites (load_shift_headroom=0.0)
+    dc_sites_no_shift = {
+        sid: DCSite(
+            bus=site.bus,
+            bus_kv=site.bus_kv,
+            base_kw_per_phase=site.base_kw_per_phase,
+            models=site.models,
+            seed=site.seed,
+            total_gpu_capacity=site.total_gpu_capacity,
+            connection_type=site.connection_type,
+            inference_ramps=site.inference_ramps,
+            load_shift_headroom=0.0,
+        )
+        for sid, site in dc_sites.items()
+    }
+
+    stats_no_shift, log_no_shift = run_mode(
+        "ofo",
+        **{**shared, "dc_sites": dc_sites_no_shift},
+        load_shift_enabled=False,
+        folder_name="ofo_no_shift",
+    )
 
     # --- Run 2: OFO with load shift ---
     logger.info("")
     logger.info("=" * 70)
     logger.info("RUN 2: OFO with load shifting")
     logger.info("=" * 70)
-    config.load_shift = orig_ls if orig_ls else {"enabled": True, "gpus_per_shift": 8, "headroom": 0.3}
-    stats_with_shift, log_with_shift = run_mode("ofo", **shared, folder_name="ofo_with_shift")
+    stats_with_shift, log_with_shift = run_mode(
+        "ofo",
+        **shared,
+        load_shift_enabled=True,
+        load_shift_gpus_per_shift=LOAD_SHIFT_GPUS_PER_SHIFT,
+        load_shift_headroom=LOAD_SHIFT_HEADROOM,
+        folder_name="ofo_with_shift",
+    )
 
     # --- Plots ---
-    site_ids = list(config.dc_sites.keys())
-    models_by_site = {sid: list(scfg.models or []) for sid, scfg in config.dc_sites.items()}
-    gpus_per_replica = {m.model_label: m.gpus_per_replica for m in all_models}
+    site_ids = list(dc_sites.keys())
+    models_by_site = {sid: [m.spec.model_label for m in site.models] for sid, site in dc_sites.items()}
+    gpus_per_replica = {m.spec.model_label: m.spec.gpus_per_replica for m in all_models}
 
     plot_load_shift_comparison(
         log_no_shift,
@@ -411,7 +497,7 @@ def main(*, config_path: Path, system: str = "ieee123") -> None:
         models_by_site,
         gpus_per_replica,
         save_dir,
-        exclude_buses=tuple(config.exclude_buses),
+        exclude_buses=tuple(sys_const["exclude_buses"]),
     )
 
 
@@ -422,8 +508,6 @@ if __name__ == "__main__":
 
     @dataclass
     class Args:
-        config: str = "config_ieee123_load_shift.json"
-        """Path to config JSON with load_shift section."""
         system: str = "ieee123"
         """System name (used for output directory)."""
         log_level: str = "INFO"
@@ -440,4 +524,4 @@ if __name__ == "__main__":
     logging.getLogger("openg2g.grid").setLevel(logging.WARNING)
     logging.getLogger("openg2g.controller.ofo").setLevel(logging.WARNING)
 
-    main(config_path=Path(args.config), system=args.system)
+    main(system=args.system)

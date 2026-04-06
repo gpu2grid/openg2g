@@ -23,11 +23,10 @@ When multiple datacenters share a distribution feeder, their controllers must co
 
 ### IEEE 123-Bus: OFO vs OFO + Load Shifting
 
-Requires `config_ieee123_load_shift.json` with multi-model DCs (at least 3 models per site for warm-start) and `load_shift` section enabled.
+The experiment is defined inline in `analyze_LLM_load_shifting.py` with multi-model DCs (at least 3 models per site for warm-start) and load shifting enabled.
 
 ```bash
-python examples/offline/analyze_LLM_load_shifting.py \
-    --config examples/offline/config_ieee123_load_shift.json --system ieee123
+python examples/offline/analyze_LLM_load_shifting.py --system ieee123
 ```
 
 Outputs (in `outputs/ieee123/load_shift_comparison/`):
@@ -65,4 +64,4 @@ Key config fields:
 - `dc_sites[].total_gpu_capacity`: Maximum GPUs per site (enforced during shifting)
 - `dc_sites[].models`: Each site must have at least 3 models for warm-start shifting
 
-See [Data Pipeline](../guide/data-pipeline.md) for the full config format.
+See [Building Simulators](../guide/building-simulators.md) and `examples/offline/systems.py` for configuration details.

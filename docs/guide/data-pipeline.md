@@ -29,17 +29,15 @@ logistic_models = LogisticModelStore.ensure(data_dir / "logistic_fits.csv", mode
 
 ## Config File
 
-A single JSON config file drives both data generation and simulation. Example (`examples/offline/config.json`):
+A shared `config.json` (`examples/offline/config.json`) stores model specifications and benchmark data sources:
 
 ```json
 {
-  "models": [
+  "model_specs": [
     {
       "model_label": "Llama-3.1-8B",
       "model_id": "meta-llama/Llama-3.1-8B-Instruct",
       "gpus_per_replica": 1,
-      "initial_num_replicas": 720,
-      "initial_batch_size": 128,
       "itl_deadline_s": 0.08,
       "feasible_batch_sizes": [8, 16, 32, 64, 128, 256, 512]
     }
@@ -52,34 +50,127 @@ A single JSON config file drives both data generation and simulation. Example (`
       "batch_sizes": [8, 16, 32, 64, 96, 128, 192, 256, 384, 512, 768, 1024]
     }
   ],
-  "training_trace_params": {},
-  "data_dir": null,
-  "ieee_case_dir": "examples/ieee13",
-  "mlenergy_data_dir": null
+  "training_trace_params": {}
 }
 ```
 
-- `models[]` entries are parsed directly as [`InferenceModelSpec`][openg2g.datacenter.config.InferenceModelSpec]. `initial_num_replicas` is the starting replica count; inference ramps with `target > 1.0` can scale beyond this.
+- `model_specs[]` entries are parsed as [`InferenceModelSpec`][openg2g.datacenter.config.InferenceModelSpec]. These describe model identity (GPU requirements, feasible batch sizes, latency deadlines) but not deployment-specific parameters like replica counts or initial batch sizes — those are defined per-experiment in each script.
 - `data_sources[]` entries are parsed as [`MLEnergySource`][openg2g.datacenter.workloads.inference.MLEnergySource], linked to models by `model_label`.
 - `training_trace_params` is parsed as [`TrainingTraceParams`][openg2g.datacenter.workloads.training.TrainingTraceParams]. Empty `{}` uses all defaults.
-- `data_dir`: `null` means auto-generate a hash-based path (`data/offline/{hash}`). An explicit path skips hashing.
-- `mlenergy_data_dir`: `null` loads benchmark data from the HuggingFace Hub.
+- First run downloads benchmark data from the HuggingFace Hub and caches it in `data/offline/{hash}/`.
 
-# Baseline and OFO simulations (works with any IEEE system)
-python examples/offline/run_baseline.py --config examples/offline/config_ieee13.json --system ieee13
-python examples/offline/run_ofo.py --config examples/offline/config_ieee13.json --system ieee13
-python examples/offline/run_ofo.py --config examples/offline/config_ieee13.json --system ieee13 --mode all   # both no-tap and tap-change
+All other configuration — datacenter sizing, controller tuning, workload scenarios, grid setup — is defined programmatically in each example script. See [Building Simulators](building-simulators.md) and `examples/offline/systems.py` for details. For running simulations, see [Quickstart](../getting-started/quickstart.md) and the [Examples](../examples/) documentation.
 
-python examples/offline/run_ofo.py --config examples/offline/config_ieee34.json --system ieee34
-python examples/offline/run_ofo.py --config examples/offline/config_ieee123.json --system ieee123
+## Lazy Generation and Caching
 
-# Analysis scripts
-python examples/offline/sweep_hosting_capacities.py --config examples/offline/config_ieee34.json --system ieee34
-python examples/offline/sweep_dc_locations.py --config examples/offline/config_ieee13.json --system ieee13   # 1-D (single DC)
-python examples/offline/sweep_dc_locations.py --config examples/offline/config_ieee34.json --system ieee34   # 2-D (multi DC)
-python examples/offline/sweep_dc_locations.py --config examples/offline/config_ieee123.json --system ieee123 --dt-screening 60 --top-k 4   # zone-constrained
-python examples/offline/analyze_different_controllers.py --config examples/offline/config_ieee13.json --system ieee13
-python examples/offline/optimize_pv_and_dc_locations.py --config examples/offline/config_ieee123.json --system ieee123 --n-pv 3
+Each data class provides an `ensure()` classmethod that combines generate-if-missing and load into a single call:
+
+```python
+# First run: generates data to data_dir, then loads it.
+# Subsequent runs: loads directly from cache.
+inference_data = InferenceData.ensure(
+    data_dir, models, data_sources,
+    dt_s=0.1,
+)
+training_trace = TrainingTrace.ensure(
+    data_dir / "training_trace.csv",
+    training_trace_params,
+)
+logistic_models = LogisticModelStore.ensure(
+    data_dir / "logistic_fits.csv",
+    models, data_sources,
+)
 ```
 
-`--config` is the only required argument. The config file specifies all paths and data sources. The OFO and baseline scripts support `--mode no-tap` (default), `--mode tap-change`, or `--mode all` to control whether tap schedule changes are applied. For detailed usage guides and examples across all IEEE test systems, see the [Examples](../examples/) documentation.
+Under the hood, `ensure()` checks whether the output file or directory exists. If not, it calls `generate().save()` to create the artifacts. Then it calls `load()` to return the ready-to-use object.
+
+### Default data path
+
+The helper `load_data_sources()` in `examples/offline/systems.py` computes a hash-based cache path from the data-relevant config keys (data sources and training trace parameters). Different configs automatically get different cache directories, so you can switch configs without manually clearing the cache.
+
+## Inference Data Generation
+
+[`InferenceData.generate()`][openg2g.datacenter.workloads.inference.InferenceData.generate] uses the [`mlenergy-data`](https://ml.energy/data) toolkit to download and process GPU benchmark data from the [ML.ENERGY Benchmark v3 dataset](https://huggingface.co/datasets/ml-energy/benchmark-v3).
+
+For each model and batch size, it:
+
+1. Extracts power timelines from benchmark runs
+2. Resamples to a median-duration grid
+3. Fits [`ITLMixtureModel`][mlenergy_data.modeling.ITLMixtureModel] distributions per batch size
+
+```
+ML.ENERGY Benchmark Dataset                 mlenergy-data
+    (Hugging Face hub)                         toolkit
+
+  ┌─────────────────────┐
+  │ results.json        │       LLMRuns.from_hf()
+  │ (power, latency,    │────────────────────────────>┐
+  │  throughput, ITL)   │    Load, filter, validate   │
+  │  per model × batch  │                             │
+  └─────────────────────┘                             │
+                                                      v
+                                  ┌───────────────────────────────────┐
+         Config file              │ InferenceData.generate()          │
+  ┌─────────────────────┐         │                                   │
+  │ config.json         │         │ For each model x batch size:      │
+  │                     │────────>│  1. Extract power timelines       │
+  │ model_specs[] +     │         │  2. Resample to median-duration   │
+  │ data_sources[]      │         │  3. Fit ITLMixtureModel           │
+  └─────────────────────┘         └───────────┬───────────────────────┘
+                                              │
+                                              v
+                        ┌────────────────────────────────┐
+                        │ data/offline/{hash}/            │
+                        │                                 │
+                        │  traces/*.csv                   │  <── GPU power timeseries
+                        │  traces_summary.csv             │  <── Trace manifest
+                        │  latency_fits.csv               │  <── ITL distribution params
+                        │  _manifest.json                 │  <── Version stamp
+                        └────────────────────────────────┘
+```
+
+## Logistic Curve Fitting
+
+[`LogisticModelStore.generate()`][openg2g.controller.ofo.LogisticModelStore.generate] fits four-parameter logistic curves to power, latency, and throughput versus batch size:
+
+$$p(x) = \frac{P_{\max}}{1 + \exp(-k_p(x - x_{0,p}))} + p_0, \quad x \triangleq \log_2(b)$$
+
+where $P_{\max}$ is the saturation magnitude, $k_p$ controls transition sharpness, $x_{0,p}$ is the characteristic batch size threshold, and $p_0$ is an offset term. Latency and throughput use the same functional form with their own parameters.
+
+OpenG2G uses [`LogisticModel`][mlenergy_data.modeling.LogisticModel] from [`mlenergy-data`](https://ml.energy/data) at both stages:
+
+- **Generation**: [`LogisticModel.fit(x, y)`][mlenergy_data.modeling.logistic.LogisticModel.fit] fits the curve to benchmark data
+- **Runtime**: [`LogisticModel.eval(batch)`][mlenergy_data.modeling.logistic.LogisticModel.eval] evaluates the curve, and [`LogisticModel.deriv_wrt_x(x)`][mlenergy_data.modeling.logistic.LogisticModel.deriv_wrt_x] computes gradients for the OFO controller
+
+## ITL Mixture Model
+
+Historical ITL measurements exhibit heavy-tailed behavior.
+The generation step captures this using a weighted mixture of two lognormal distributions per batch size.
+
+OpenG2G uses [`ITLMixtureModel`][mlenergy_data.modeling.ITLMixtureModel] from [`mlenergy-data`](https://ml.energy/data) at both stages:
+
+- **Generation**: [`ITLMixtureModel.fit(samples)`][mlenergy_data.modeling.latency.ITLMixtureModel.fit] fits the mixture to raw ITL samples
+- **Runtime**: [`ITLMixtureModel.sample_avg(n_replicas, rng)`][mlenergy_data.modeling.latency.ITLMixtureModel.sample_avg] draws average latency across replicas
+
+## Training Trace Generation
+
+[`TrainingTrace.generate()`][openg2g.datacenter.workloads.training.TrainingTrace.generate] synthesizes a training power trace with configurable high/low plateaus, noise, brief dips, and a warm-up ramp. Generation is based on characteristics derived from real large model training measurements.
+
+Parameters are controlled via [`TrainingTraceParams`][openg2g.datacenter.workloads.training.TrainingTraceParams]. The empty dict `{}` in the config uses all defaults.
+
+## Dataset Access
+
+The [`mlenergy-data`](https://ml.energy/data) toolkit automatically downloads benchmark data from the [ML.ENERGY Benchmark v3 dataset](https://huggingface.co/datasets/ml-energy/benchmark-v3) on first run.
+
+To use the dataset:
+
+1. [Request access on Hugging Face](https://huggingface.co/datasets/ml-energy/benchmark-v3)
+1. [Create a Hugging Face access token](https://huggingface.co/settings/tokens)
+1. Set the `HF_TOKEN` environment variable to your token before running.
+
+## Runtime Integration
+
+At simulation time, the generated artifacts are consumed by two components:
+
+- **[`OfflineDatacenter`][openg2g.datacenter.offline.OfflineDatacenter]**: Uses [`InferenceData`][openg2g.datacenter.workloads.inference.InferenceData] to replay periodic per-GPU power templates. Latency fits ([`ITLMixtureModel`][mlenergy_data.modeling.ITLMixtureModel]) are sampled at each control interval.
+- **[`OFOBatchSizeController`][openg2g.controller.ofo.OFOBatchSizeController]**: Uses [`LogisticModelStore`][openg2g.controller.ofo.LogisticModelStore] for logistic curve evaluation. Calls `eval()` and `deriv_wrt_x()` at each control step to compute gradients.

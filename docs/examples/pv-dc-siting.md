@@ -102,7 +102,7 @@ All sensitivity matrices are computed via finite-difference perturbation on a "b
 
 ```bash
 python examples/offline/optimize_pv_locations_and_capacities.py \
-    --config examples/offline/config_ieee34_pv_optimization.json --system ieee34
+    --system ieee34
 ```
 
 ### IEEE 123: PV + DC Co-Optimization
@@ -110,12 +110,12 @@ python examples/offline/optimize_pv_locations_and_capacities.py \
 ```bash
 # Zone-constrained DC placement (default)
 python examples/offline/optimize_pv_and_dc_locations.py \
-    --config examples/offline/config_ieee123.json --system ieee123 \
+    --system ieee123 \
     --n-pv 3 --s-max-kw 500
 
 # Custom cost parameters
 python examples/offline/optimize_pv_and_dc_locations.py \
-    --config examples/offline/config_ieee123.json --system ieee123 \
+    --system ieee123 \
     --n-pv 3 --s-max-kw 500 --c-inv 100 --c-viol 10000
 ```
 
@@ -151,4 +151,4 @@ Key config fields:
 - `initial_taps`: Starting regulator positions (co-optimized with PV/DC placement)
 - `regulator_zones`: Maps regulators to downstream buses
 
-See [Data Pipeline](../guide/data-pipeline.md) for the full config format.
+See [Building Simulators](../guide/building-simulators.md) and `examples/offline/systems.py` for configuration details.

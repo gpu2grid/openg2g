@@ -121,7 +121,7 @@ def main(*, config_path: Path, mode: str = "no-tap") -> None:
     logger.info("Initializing OpenDSSGrid...")
     grid = OpenDSSGrid(
         dss_case_dir=config.ieee_case_dir,
-        dss_master_file="IEEE13Nodeckt.dss",
+        dss_master_file="IEEE13Bus.dss",
         dc_bus=DC_BUS,
         dc_bus_kv=4.16,
         power_factor=dc_config.power_factor,

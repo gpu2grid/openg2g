@@ -40,7 +40,7 @@ def discover_modules() -> dict[str, list[str]]:
             continue
 
         rel = py_file.relative_to(PACKAGE_DIR.parent)
-        module = str(rel.with_suffix("")).replace("/", ".")
+        module = ".".join(rel.with_suffix("").parts)
 
         if module in EXCLUDE_MODULES:
             continue

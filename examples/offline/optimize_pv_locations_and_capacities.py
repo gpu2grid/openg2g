@@ -41,9 +41,9 @@ Constraints:
     v[i,t,s] <= v_max + slack_o[i,t,s]
 
 Usage:
-    python optimize_pv_locations_and_capacities.py --config config_ieee34_pv_optimization.json --system ieee34
-    python optimize_pv_locations_and_capacities.py --config config_ieee34_pv_optimization.json \
-        --system ieee34 --n-pv 5 --s-max 1000 --s-total-max 2500
+    python optimize_pv_locations_and_capacities.py --system ieee34
+    python optimize_pv_locations_and_capacities.py --system ieee34 --n-pv 5 --s-max-kw 1000 --s-total-max-kw 2500
+    python optimize_pv_locations_and_capacities.py --system ieee123
 """
 
 from __future__ import annotations
@@ -56,6 +56,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
+
+from openg2g import PROJECT_ROOT
 
 logger = logging.getLogger("pv_expansion")
 
@@ -1467,7 +1469,8 @@ def plot_scenario_profiles(
 
 def compare_with_ofo(
     *,
-    config_path: Path,
+    sys: dict,
+    dc_sites: dict,
     pv_locations: list[str],
     pv_capacities_kw: list[float],
     tap_schedule_by_scenario: dict[str, dict[int, dict[str, int]]] | None,
@@ -1482,221 +1485,108 @@ def compare_with_ofo(
       3. tap_plus_ofo — MILP tap schedule + OFO batch-size control
 
     Uses the first scenario's tap schedule (summer_clear) for the 1-hour simulation.
+
+    Args:
+        sys: System constants dict from ``systems.py``.
+        dc_sites: ``{site_id: DCSite}`` dict describing the datacenter sites.
     """
-    if system.startswith("ieee123"):
-        from run_ieee123_ofo import (
-            IEEE123Config as _Config,
-        )
-        from run_ieee123_ofo import (
-            PVSystemConfig,
-            ScenarioOpenDSSGrid,
-            _parse_fraction,
-            _resolve_models_for_site,
-            _taps_dict_to_position,
-        )
-    else:
-        from run_ieee34_ofo import (
-            IEEE34Config as _Config,
-        )
-        from run_ieee34_ofo import (
-            PVSystemConfig,
-            ScenarioOpenDSSGrid,
-            _parse_fraction,
-            _resolve_models_for_site,
-            _taps_dict_to_position,
-        )
+    from run_ofo import run_mode
+    from systems import (
+        DCSite,
+        DT_CTRL,
+        DT_DC,
+        DT_GRID,
+        POWER_AUG,
+        PVSystemSpec,
+        TOTAL_DURATION_S,
+        V_MAX,
+        V_MIN,
+        all_model_specs,
+        load_data_sources,
+        tap,
+    )
+
     from openg2g.controller.ofo import (
         LogisticModelStore,
-        OFOBatchSizeController,
         OFOConfig,
     )
-    from openg2g.controller.tap_schedule import TapScheduleController
-    from openg2g.coordinator import Coordinator
-    from openg2g.datacenter.config import DatacenterConfig
-    from openg2g.datacenter.offline import OfflineDatacenter, OfflineWorkload
     from openg2g.datacenter.workloads.inference import InferenceData
-    from openg2g.grid.config import DCLoadSpec, TapPosition, TapSchedule
-    from openg2g.metrics.voltage import VoltageStats, compute_allbus_voltage_stats
+    from openg2g.datacenter.workloads.training import TrainingTrace
+    from openg2g.grid.config import TapPosition, TapSchedule
+    from openg2g.metrics.voltage import VoltageStats
 
     logger.info("")
     logger.info("=" * 70)
     logger.info("OFO COMPARISON: Running coordinator simulations")
     logger.info("=" * 70)
 
-    config = _Config.model_validate_json(config_path.read_bytes())
-    sim = config.simulation
-    config_dir = config_path.parent
-    config.ieee_case_dir = (config_dir / config.ieee_case_dir).resolve()
+    # Load data pipeline
+    data_sources, training_trace_params, data_dir = load_data_sources()
+    all_models = all_model_specs()
 
-    all_models = tuple(config.models)
-    data_sources = {s.model_label: s for s in config.data_sources}
-    data_dir = config.data_dir or Path("data/offline") / config.data_hash
-
-    dt_dc = _parse_fraction(sim.dt_dc)
-    dt_grid = _parse_fraction(sim.dt_grid)
-    dt_ctrl = _parse_fraction(sim.dt_ctrl)
-
-    # Add MILP-optimized PV systems to config
-    pv_systems = list(config.pv_systems)
-    default_site = next(iter(config.dc_sites.values()))
-    for bus, cap_kw in zip(pv_locations, pv_capacities_kw, strict=False):
-        pv_systems.append(
-            PVSystemConfig(
-                bus=bus,
-                bus_kv=default_site.bus_kv,
-                peak_kw=cap_kw / 3.0,  # per-phase peak (at pv_frac=1)
-            )
-        )
-    config.pv_systems = pv_systems
-    logger.info("  PV systems: %s", ", ".join(f"{p.bus}={p.peak_kw:.0f}kW/ph" for p in pv_systems))
-
-    # Load inference data
     logger.info("  Loading inference data...")
     inference_data = InferenceData.ensure(
-        data_dir,
-        all_models,
-        data_sources,
-        mlenergy_data_dir=config.mlenergy_data_dir,
-        plot=False,
-        dt_s=float(dt_dc),
+        data_dir, all_models, data_sources, plot=False, dt_s=float(DT_DC),
     )
+    training_trace = TrainingTrace.ensure(data_dir / "training_trace.csv", training_trace_params)
     logistic_models = LogisticModelStore.ensure(
-        data_dir / "logistic_fits.csv",
-        all_models,
-        data_sources,
-        mlenergy_data_dir=config.mlenergy_data_dir,
-        plot=False,
+        data_dir / "logistic_fits.csv", all_models, data_sources, plot=False,
     )
 
-    # Build MILP tap schedule for coordinator (use first scenario = summer_clear)
-    milp_tap_entries: list[tuple[float, TapPosition]] = []
+    # Add MILP-optimized PV systems
+    bus_kv = sys["bus_kv"]
+    pv_systems = [
+        PVSystemSpec(bus=bus, bus_kv=bus_kv, peak_kw=cap_kw / 3.0)
+        for bus, cap_kw in zip(pv_locations, pv_capacities_kw, strict=False)
+    ]
+    logger.info("  PV systems: %s", ", ".join(f"{p.bus}={p.peak_kw:.0f}kW/ph" for p in pv_systems))
+
+    # Build MILP tap schedule for coordinator (use first scenario)
+    milp_tap_schedule: TapSchedule | None = None
     if tap_schedule_by_scenario:
-        # Use the first scenario's schedule
         sc_name = next(iter(tap_schedule_by_scenario))
         sc_schedule = tap_schedule_by_scenario[sc_name]
         logger.info("  Using tap schedule from scenario: %s", sc_name)
-
-        # Convert hour-based schedule to second-based schedule (1h = 3600s, 24h -> map hours to 0-3600s)
-        total_s = sim.total_duration_s
+        entries: list[tuple[float, TapPosition]] = []
         for hour, taps in sorted(sc_schedule.items()):
-            # Map 24h day to simulation duration: time_s = hour / 24 * total_s
-            time_s = hour / 24.0 * total_s
+            time_s = hour / 24.0 * TOTAL_DURATION_S
             tap_pu = {reg: 1.0 + tap_int * TAP_STEP for reg, tap_int in taps.items()}
-            milp_tap_entries.append((time_s, TapPosition(regulators=tap_pu)))
+            entries.append((time_s, TapPosition(regulators=tap_pu)))
+        milp_tap_schedule = TapSchedule(tuple(entries))
+
+    # OFO config (same defaults as run_ofo experiments)
+    ofo_config = OFOConfig(
+        primal_step_size=0.05, w_throughput=0.001, w_switch=1.0,
+        voltage_gradient_scale=1e6, v_min=V_MIN, v_max=V_MAX,
+        voltage_dual_step_size=20.0, latency_dual_step_size=1.0,
+        sensitivity_update_interval=3600, sensitivity_perturbation_kw=10.0,
+    )
 
     ofo_save_dir = save_dir / "ofo_comparison"
     ofo_save_dir.mkdir(parents=True, exist_ok=True)
 
-    exclude_buses = tuple(config.exclude_buses)
-
-    def _run_mode(mode_name: str, use_taps: bool, use_ofo: bool) -> VoltageStats:
-        """Run a single comparison mode."""
-        run_dir = ofo_save_dir / mode_name
-        run_dir.mkdir(parents=True, exist_ok=True)
-
-        list(config.dc_sites.keys())
-        dc_loads: dict[str, DCLoadSpec] = {}
-        datacenters: dict[str, OfflineDatacenter] = {}
-        controllers: list = []
-        site_models_map: dict[str, tuple] = {}
-        primary_bus = ""
-
-        for site_id, site_cfg in config.dc_sites.items():
-            site_models = _resolve_models_for_site(site_cfg, all_models)
-            site_models_map[site_id] = site_models
-            site_inference = inference_data.filter_models(site_models) if site_cfg.models else inference_data
-
-            dc_config = DatacenterConfig(gpus_per_server=8, base_kw_per_phase=site_cfg.base_kw_per_phase)
-            workload = OfflineWorkload(inference_data=site_inference)
-            dc = OfflineDatacenter(
-                dc_config,
-                workload,
-                dt_s=dt_dc,
-                seed=site_cfg.seed,
-                power_augmentation=config.power_augmentation,
-            )
-            datacenters[site_id] = dc
-            dc_loads[site_id] = DCLoadSpec(
-                bus=site_cfg.bus,
-                bus_kv=site_cfg.bus_kv,
-                connection_type=site_cfg.connection_type,
-            )
-            if not primary_bus:
-                primary_bus = site_cfg.bus
-
-        initial_taps = _taps_dict_to_position(config.initial_taps)
-
-        grid = ScenarioOpenDSSGrid(
-            pv_systems=config.pv_systems,
-            time_varying_loads=config.time_varying_loads,
-            source_pu=config.source_pu,
-            dss_case_dir=config.ieee_case_dir,
-            dss_master_file=config.dss_master_file,
-            dc_loads=dc_loads,
-            power_factor=DatacenterConfig(base_kw_per_phase=0).power_factor,
-            dt_s=dt_grid,
-            initial_tap_position=initial_taps,
-            exclude_buses=exclude_buses,
+    # Run all three modes using run_ofo.run_mode
+    results: dict[str, VoltageStats] = {}
+    for mode_name, ctrl_mode, sched in [
+        ("tap_only", "baseline", milp_tap_schedule),
+        ("ofo_only", "ofo", None),
+        ("tap_plus_ofo", "ofo", milp_tap_schedule),
+    ]:
+        logger.info("  Running %s (ctrl=%s, tap_schedule=%s)...", mode_name, ctrl_mode, sched is not None)
+        stats, _log = run_mode(
+            ctrl_mode,
+            sys=sys,
+            dc_sites=dc_sites,
+            inference_data=inference_data,
+            training_trace=training_trace,
+            logistic_models=logistic_models,
+            ofo_config=ofo_config,
+            tap_schedule=sched,
+            pv_systems=pv_systems,
+            save_dir=ofo_save_dir,
+            folder_name=mode_name,
         )
-
-        # Tap schedule controller
-        if use_taps and milp_tap_entries:
-            controllers.append(
-                TapScheduleController(
-                    schedule=TapSchedule(tuple(milp_tap_entries)),
-                    dt_s=dt_ctrl,
-                )
-            )
-        else:
-            controllers.append(
-                TapScheduleController(
-                    schedule=TapSchedule(()),
-                    dt_s=dt_ctrl,
-                )
-            )
-
-        # OFO controllers
-        if use_ofo:
-            ofo_params = config.ofo
-            ofo_config = OFOConfig(
-                primal_step_size=ofo_params.primal_step_size,
-                w_throughput=ofo_params.w_throughput,
-                w_switch=ofo_params.w_switch,
-                voltage_gradient_scale=ofo_params.voltage_gradient_scale,
-                v_min=sim.v_min,
-                v_max=sim.v_max,
-                voltage_dual_step_size=ofo_params.voltage_dual_step_size,
-                latency_dual_step_size=ofo_params.latency_dual_step_size,
-                sensitivity_update_interval=ofo_params.sensitivity_update_interval,
-                sensitivity_perturbation_kw=ofo_params.sensitivity_perturbation_kw,
-            )
-            for site_id, _site_cfg in config.dc_sites.items():
-                site_models = site_models_map[site_id]
-                ofo_ctrl = OFOBatchSizeController(
-                    site_models,
-                    models=logistic_models,
-                    config=ofo_config,
-                    dt_s=dt_ctrl,
-                    site_id=site_id if len(config.dc_sites) > 1 else None,
-                )
-                controllers.append(ofo_ctrl)
-
-        logger.info("  Running %s (taps=%s, ofo=%s)...", mode_name, use_taps, use_ofo)
-        coord = Coordinator(
-            datacenters=datacenters,
-            grid=grid,
-            controllers=controllers,
-            total_duration_s=sim.total_duration_s,
-            dc_bus=primary_bus,
-        )
-        log = coord.run()
-
-        stats = compute_allbus_voltage_stats(
-            log.grid_states,
-            v_min=sim.v_min,
-            v_max=sim.v_max,
-            exclude_buses=exclude_buses,
-        )
+        results[mode_name] = stats
         logger.info(
             "    Violation time: %.1f s, Vmin: %.4f, Vmax: %.4f, Integral: %.4f",
             stats.violation_time_s,
@@ -1704,16 +1594,6 @@ def compare_with_ofo(
             stats.worst_vmax,
             stats.integral_violation_pu_s,
         )
-        return stats
-
-    # Run all three modes
-    results: dict[str, VoltageStats] = {}
-    for mode_name, use_taps, use_ofo in [
-        ("tap_only", True, False),
-        ("ofo_only", False, True),
-        ("tap_plus_ofo", True, True),
-    ]:
-        results[mode_name] = _run_mode(mode_name, use_taps, use_ofo)
 
     # Comparison CSV
     import csv as csv_mod
@@ -1802,8 +1682,7 @@ def _representative_taps(result: MILPResult, regulator_names: list[str]) -> dict
 
 def main(
     *,
-    config_path: Path,
-    system: str,
+    system: str = "ieee34",
     n_pv: int = 5,
     s_max_kw: float = 2000.0,
     s_total_max_kw: float | None = 2500.0,
@@ -1822,7 +1701,11 @@ def main(
 ) -> None:
     """Run PV expansion planning with optional tap co-optimisation.
 
+    All experiment parameters (system constants, DC sites, time-varying loads)
+    are defined inline per system.  No external JSON config required.
+
     Args:
+        system: IEEE test feeder name (``ieee34`` or ``ieee123``).
         c_inv: Annualised investment cost ($/kW/year).  Typical utility-scale
             PV is ~$800-1200/kW installed; at 20-year lifetime this is
             ~$40-60/kW/year.  Use higher values to account for O&M, land,
@@ -1837,109 +1720,160 @@ def main(
         compare_ofo: If True, run coordinator simulations comparing tap-only,
             OFO-only, and tap+OFO modes after MILP solve.
     """
-    config_path = config_path.resolve()
+    from sweep_dc_locations import discover_candidate_buses
+    from systems import (
+        SYSTEMS,
+        DCSite,
+        PVSystemSpec,
+        TimeVaryingLoadSpec,
+        deploy,
+        ieee34,
+        ieee123,
+        tap,
+    )
 
-    from sweep_dc_locations import SweepConfig, discover_candidate_buses
+    from openg2g.grid.config import TapPosition
 
-    config = SweepConfig.model_validate_json(config_path.read_bytes())
-    config_dir = config_path.parent
-    config.ieee_case_dir = (config_dir / config.ieee_case_dir).resolve()
+    # ── Build system config with PV-optimisation overrides ──
+    sys = SYSTEMS[system]()
 
-    assert config.dc_sites is not None
-    default_site = next(iter(config.dc_sites.values()))
+    # System-specific experiment parameters (DC sites, time-varying loads).
+    # These mirror the JSON configs that were previously used but are now inline.
+    if system == "ieee34":
+        # PV optimisation study: lower source voltage (1.05 vs base 1.09),
+        # uniform initial taps (+8 all), no existing PV, different load set.
+        sys["source_pu"] = 1.05  # override for PV optimization study
+        sys["initial_taps"] = TapPosition(regulators={
+            "creg1a": tap(8), "creg1b": tap(8), "creg1c": tap(8),
+            "creg2a": tap(8), "creg2b": tap(8), "creg2c": tap(8),
+        })
+
+        bus_kv = sys["bus_kv"]  # 24.9
+        upstream_models = (deploy("Llama-3.1-8B", 720), deploy("Llama-3.1-70B", 180), deploy("Llama-3.1-405B", 90))
+        downstream_models = (deploy("Qwen3-30B-A3B", 480), deploy("Qwen3-235B-A22B", 210))
+
+        dc_sites = {
+            "upstream": DCSite(
+                bus="850", bus_kv=bus_kv, base_kw_per_phase=120.0,
+                models=upstream_models, seed=0, total_gpu_capacity=520,
+            ),
+            "downstream": DCSite(
+                bus="834", bus_kv=bus_kv, base_kw_per_phase=80.0,
+                models=downstream_models, seed=42, total_gpu_capacity=600,
+            ),
+        }
+
+        time_varying_loads = [
+            TimeVaryingLoadSpec(bus="860", bus_kv=bus_kv, peak_kw=50.0),
+            TimeVaryingLoadSpec(bus="844", bus_kv=bus_kv, peak_kw=80.0),
+            TimeVaryingLoadSpec(bus="840", bus_kv=bus_kv, peak_kw=15.0),
+            TimeVaryingLoadSpec(bus="858", bus_kv=bus_kv, peak_kw=30.0),
+            TimeVaryingLoadSpec(bus="854", bus_kv=bus_kv, peak_kw=10.0),
+            TimeVaryingLoadSpec(bus="848", bus_kv=bus_kv, peak_kw=60.0),
+        ]
+
+    elif system == "ieee123":
+        bus_kv = sys["bus_kv"]  # 4.16
+        dc_sites = {
+            "z1_sw": DCSite(
+                bus="8", bus_kv=bus_kv, base_kw_per_phase=310.0,
+                models=(deploy("Llama-3.1-8B", 120),), seed=0, total_gpu_capacity=120,
+            ),
+            "z2_nw": DCSite(
+                bus="23", bus_kv=bus_kv, base_kw_per_phase=265.0,
+                models=(deploy("Qwen3-30B-A3B", 80),), seed=17, total_gpu_capacity=160,
+            ),
+            "z3_se": DCSite(
+                bus="60", bus_kv=bus_kv, base_kw_per_phase=295.0,
+                models=(deploy("Llama-3.1-70B", 30), deploy("Llama-3.1-405B", 35)), seed=34, total_gpu_capacity=400,
+            ),
+            "z4_ne": DCSite(
+                bus="105", bus_kv=bus_kv, base_kw_per_phase=325.0,
+                models=(deploy("Qwen3-235B-A22B", 55),), seed=51, total_gpu_capacity=440,
+            ),
+        }
+        time_varying_loads = []
+
+    else:
+        raise ValueError(f"PV optimisation not configured for system '{system}'. Use ieee34 or ieee123.")
+
+    bus_kv = sys["bus_kv"]
+    source_pu = sys.get("source_pu", 1.05)
+    exclude_buses = set(sys["exclude_buses"])
+    zones = sys.get("regulator_zones") or sys.get("zones")
 
     save_dir = Path(__file__).resolve().parent / "outputs" / system / "pv_expansion"
     save_dir.mkdir(parents=True, exist_ok=True)
+
+    # ── Parse initial taps ──
+    tap_pu: dict[str, float] = {}
+    initial_tap_ints: dict[str, int] = {}
+    regulator_names: list[str] = []
+    initial_taps = sys.get("initial_taps")
+    if initial_taps is not None:
+        for name, val in initial_taps.regulators.items():
+            tap_pu[name] = val
+            initial_tap_ints[name] = round((val - 1.0) / TAP_STEP)
+            regulator_names.append(name)
 
     # Discover candidate buses
     if buses:
         candidate_buses = buses
     else:
         candidate_buses = discover_candidate_buses(
-            config.ieee_case_dir,
-            config.dss_master_file,
-            default_site.bus_kv,
-            exclude=set(config.exclude_buses),
+            sys["dss_case_dir"],
+            sys["dss_master_file"],
+            bus_kv,
+            exclude=exclude_buses,
         )
 
     # Filter to only zoned buses (exclude inter-zone connectors)
-    if config.zones:
-        zoned_buses = {b.lower() for buses_list in config.zones.values() for b in buses_list}
+    if zones:
+        zoned_buses = {b.lower() for buses_list in zones.values() for b in buses_list}
         before = len(candidate_buses)
         candidate_buses = [b for b in candidate_buses if b.lower() in zoned_buses]
         logger.info("Filtered to zoned buses: %d -> %d candidates", before, len(candidate_buses))
 
     logger.info("Candidate buses (%d): %s", len(candidate_buses), candidate_buses)
 
-    # Parse initial taps to pu values and integer positions
-    tap_pu: dict[str, float] = {}
-    initial_tap_ints: dict[str, int] = {}
-    regulator_names: list[str] = []
-    if config.initial_taps:
-        for name, val in config.initial_taps.items():
-            if isinstance(val, str):
-                tap_int = int(val)
-                tap_pu[name] = 1.0 + tap_int * TAP_STEP
-                initial_tap_ints[name] = tap_int
-            else:
-                tap_pu[name] = float(val)
-                initial_tap_ints[name] = round((float(val) - 1.0) / TAP_STEP)
-            regulator_names.append(name)
-
     # Build dc_sites dict for sensitivity base case.
     # Estimate realistic power per phase = base_kw + GPU workload power.
-    # base_kw_per_phase is just infrastructure; GPU inference adds ~300W/GPU.
     TYPICAL_GPU_W = 300.0  # H100 inference average
-    model_gpu_map = {m.model_label: m.initial_num_replicas * m.gpus_per_replica for m in config.models}
 
-    dc_sites_dict: dict[str, dict] | None = None
-    if config.dc_sites:
-        dc_sites_dict = {}
-        for sid, s in config.dc_sites.items():
-            total_gpus = getattr(s, "total_gpu_capacity", None) or sum(
-                model_gpu_map.get(m, 0) for m in (s.models or [])
-            )
-            gpu_kw_per_phase = total_gpus * TYPICAL_GPU_W / 1000.0 / 3.0
-            peak_kw_per_phase = s.base_kw_per_phase + gpu_kw_per_phase
-            # Use peak demand as sensitivity base case — this gives the most
-            # accurate linearisation during midday when PV injection is highest
-            # and overvoltage constraints are most likely to bind.
-            dc_sites_dict[sid] = {
-                "bus": s.bus,
-                "base_kw_per_phase": peak_kw_per_phase,
-                "peak_kw_per_phase": peak_kw_per_phase,
-            }
-            logger.info(
-                "DC site %s@%s: %d GPUs, peak/base %.0f kW/ph (base %.0f + GPU %.0f)",
-                sid,
-                s.bus,
-                total_gpus,
-                peak_kw_per_phase,
-                s.base_kw_per_phase,
-                gpu_kw_per_phase,
-            )
+    dc_sites_dict: dict[str, dict] = {}
+    for sid, site in dc_sites.items():
+        total_gpus = site.total_gpu_capacity or sum(m.spec.gpus_per_replica * m.num_replicas for m in site.models)
+        gpu_kw_per_phase = total_gpus * TYPICAL_GPU_W / 1000.0 / 3.0
+        peak_kw_per_phase = site.base_kw_per_phase + gpu_kw_per_phase
+        dc_sites_dict[sid] = {
+            "bus": site.bus,
+            "base_kw_per_phase": peak_kw_per_phase,
+            "peak_kw_per_phase": peak_kw_per_phase,
+        }
+        logger.info(
+            "DC site %s@%s: %d GPUs, peak/base %.0f kW/ph (base %.0f + GPU %.0f)",
+            sid, site.bus, total_gpus, peak_kw_per_phase, site.base_kw_per_phase, gpu_kw_per_phase,
+        )
 
-    # ── Build load_configs from config ──
+    # ── Build load_configs from time_varying_loads ──
     load_configs: list[tuple[str, float]] = []
     load_buses: list[str] = []
-    if config.time_varying_loads:
-        for lc in config.time_varying_loads:
-            load_configs.append((lc.bus, lc.peak_kw))
-            load_buses.append(lc.bus)
+    for lc in time_varying_loads:
+        load_configs.append((lc.bus, lc.peak_kw))
+        load_buses.append(lc.bus)
+    if load_configs:
         logger.info("Load configs: %s", ", ".join(f"{b}={kw:.0f}kW" for b, kw in load_configs))
 
     # DC sites info for time-varying inference demand in scenarios
-    # Tuple: (bus, peak_kw_per_phase, base_kw_per_phase, site_id)
-    # peak_kw is used to compute actual load; base_kw is the sensitivity linearisation point
     dc_sites_info: list[tuple[str, float, float, str]] = []
-    if dc_sites_dict:
-        for sid, sd in dc_sites_dict.items():
-            dc_bus = sd["bus"]
-            dc_peak = sd["peak_kw_per_phase"]
-            dc_base = sd["base_kw_per_phase"]
-            dc_sites_info.append((dc_bus, dc_peak, dc_base, sid))
-            if dc_bus not in load_buses:
-                load_buses.append(dc_bus)
+    for sid, sd in dc_sites_dict.items():
+        dc_bus = sd["bus"]
+        dc_peak = sd["peak_kw_per_phase"]
+        dc_base = sd["base_kw_per_phase"]
+        dc_sites_info.append((dc_bus, dc_peak, dc_base, sid))
+        if dc_bus not in load_buses:
+            load_buses.append(dc_bus)
+    if dc_sites_info:
         logger.info(
             "DC sites for time-varying demand: %s",
             ", ".join(f"{b}: peak={pk:.0f}, base={bs:.0f} kW/ph ({sid})" for b, pk, bs, sid in dc_sites_info),
@@ -1980,13 +1914,13 @@ def main(
     t0 = time.time()
 
     H_pv, v0, v_index = compute_pv_sensitivities(
-        case_dir=config.ieee_case_dir,
-        master_file=config.dss_master_file,
+        case_dir=sys["dss_case_dir"],
+        master_file=sys["dss_master_file"],
         candidate_buses=candidate_buses,
-        exclude_buses=set(config.exclude_buses),
-        source_pu=config.source_pu or 1.05,
+        exclude_buses=exclude_buses,
+        source_pu=source_pu,
         initial_taps=current_tap_pu if current_tap_pu else None,
-        bus_kv=default_site.bus_kv,
+        bus_kv=bus_kv,
         dc_sites=dc_sites_dict,
     )
     logger.info("PV sensitivity computation: %.1f s", time.time() - t0)
@@ -2009,18 +1943,18 @@ def main(
         logger.info("  Linearization taps: %s", {k: f"{v:+d}" for k, v in current_tap_ints.items()})
         t0 = time.time()
         H_tap = compute_tap_sensitivities(
-            case_dir=config.ieee_case_dir,
-            master_file=config.dss_master_file,
+            case_dir=sys["dss_case_dir"],
+            master_file=sys["dss_master_file"],
             regulator_names=regulator_names,
             v_index=v_index,
-            source_pu=config.source_pu or 1.05,
+            source_pu=source_pu,
             initial_taps=current_tap_pu if current_tap_pu else None,
-            bus_kv=default_site.bus_kv,
+            bus_kv=bus_kv,
             dc_sites=dc_sites_dict,
         )
         logger.info("Tap sensitivity computation: %.1f s", time.time() - t0)
     elif co_optimise_taps:
-        logger.info("No initial_taps in config — skipping tap co-optimisation")
+        logger.info("No initial_taps — skipping tap co-optimisation")
 
     # ── Step 1c: Compute load sensitivities ──
     load_v_shift = None
@@ -2032,13 +1966,13 @@ def main(
         logger.info("  Load buses: %s", load_buses)
         t0 = time.time()
         H_load = compute_load_sensitivities(
-            case_dir=config.ieee_case_dir,
-            master_file=config.dss_master_file,
+            case_dir=sys["dss_case_dir"],
+            master_file=sys["dss_master_file"],
             load_buses=load_buses,
             v_index=v_index,
-            source_pu=config.source_pu or 1.05,
+            source_pu=source_pu,
             initial_taps=current_tap_pu if current_tap_pu else None,
-            bus_kv=default_site.bus_kv,
+            bus_kv=bus_kv,
             dc_sites=dc_sites_dict,
         )
         logger.info("Load sensitivity computation: %.1f s", time.time() - t0)
@@ -2081,7 +2015,7 @@ def main(
         days_per_year=days_per_year,
         c_switch=c_switch,
         load_v_shift=load_v_shift,
-        zones=config.zones,
+        zones=zones,
     )
 
     logger.info(
@@ -2153,7 +2087,7 @@ def main(
         writer.writeheader()
         writer.writerows(rows)
 
-    # Save tap schedule CSV (one row per scenario × hour × regulator)
+    # Save tap schedule CSV (one row per scenario x hour x regulator)
     if result.tap_schedules:
         with open(save_dir / f"tap_schedule_{system}.csv", "w", newline="") as f:
             fields = ["scenario", "hour"] + [f"{r}_tap" for r in regulator_names] + [f"{r}_pu" for r in regulator_names]
@@ -2184,6 +2118,7 @@ def main(
         "total_pv_kw": sum(result.pv_capacities_kw),
         "tap_schedules": result.tap_schedules,
         "parameters": {
+            "system": system,
             "n_pv": n_pv,
             "s_max_kw": s_max_kw,
             "s_total_max_kw": s_total_max_kw,
@@ -2202,32 +2137,7 @@ def main(
 
     plot_results(candidate_buses, result, save_dir, system)
 
-    # ── Plot optimised topology ──
-    try:
-        import json as _json
-
-        from plot_topology import plot_topology
-
-        cfg_dict = _json.loads(config_path.read_bytes())
-        cfg_dict["pv_systems"] = [
-            {"bus": bus, "bus_kv": default_site.bus_kv, "peak_kw": cap / 3.0, "power_factor": 1.0}
-            for bus, cap in zip(result.pv_locations, result.pv_capacities_kw, strict=False)
-        ]
-        cfg_dict["ieee_case_dir"] = str(config.ieee_case_dir)
-        tmp_config = save_dir / f"_optimized_config_{system}.json"
-        tmp_config.write_text(_json.dumps(cfg_dict, indent=2))
-        plot_topology(config_path=tmp_config, system=system, output_dir=save_dir)
-        topo_default = save_dir / f"{system}_topology.png"
-        topo_final = save_dir / f"optimized_topology_{system}.png"
-        if topo_default.exists():
-            topo_default.replace(topo_final)
-            logger.info("Topology plot: %s", topo_final)
-        tmp_config.unlink(missing_ok=True)
-    except Exception as e:
-        logger.warning("Topology plot failed: %s", e)
-
     # ── Step 4: Validate with full OpenDSS simulation ──
-    # For validation, use each scenario's median-hour tap setting
     if validate and (result.pv_locations or result.tap_schedules):
         logger.info("")
         logger.info("=" * 70)
@@ -2236,26 +2146,24 @@ def main(
 
         val_results = []
         for sc in scenarios:
-            # Use per-hour tap schedule for validation
             val_schedule = None
             if result.tap_schedules and sc.name in result.tap_schedules:
                 val_schedule = result.tap_schedules[sc.name]
-                # Show summary
                 unique = len(set(tuple(sorted(taps.items())) for taps in val_schedule.values()))
                 logger.info(
                     "  Validating %s with %d distinct tap settings across %d hours", sc.name, unique, len(val_schedule)
                 )
 
             vr = validate_with_opendss(
-                case_dir=config.ieee_case_dir,
-                master_file=config.dss_master_file,
+                case_dir=sys["dss_case_dir"],
+                master_file=sys["dss_master_file"],
                 pv_locations=result.pv_locations,
                 pv_capacities_kw=result.pv_capacities_kw,
                 scenario=sc,
                 v_index=v_index,
-                source_pu=config.source_pu or 1.05,
+                source_pu=source_pu,
                 initial_taps=tap_pu if tap_pu else None,
-                bus_kv=default_site.bus_kv,
+                bus_kv=bus_kv,
                 dc_sites=dc_sites_dict,
                 tap_schedule=val_schedule,
                 v_min=v_min,
@@ -2276,7 +2184,8 @@ def main(
     # ── Step 5: OFO comparison ──
     if compare_ofo and result.pv_locations:
         compare_with_ofo(
-            config_path=config_path,
+            sys=sys,
+            dc_sites=dc_sites,
             pv_locations=result.pv_locations,
             pv_capacities_kw=result.pv_capacities_kw,
             tap_schedule_by_scenario=result.tap_schedules,
@@ -2293,10 +2202,8 @@ if __name__ == "__main__":
 
     @dataclass
     class Args:
-        config: str
-        """Path to the config JSON file."""
         system: str = "ieee34"
-        """System name for output directory."""
+        """System name (ieee34 or ieee123)."""
         n_pv: int = 5
         """Max number of PV sites to place."""
         s_max_kw: float = 2000.0
@@ -2320,7 +2227,7 @@ if __name__ == "__main__":
         no_taps: bool = False
         """Skip tap co-optimisation."""
         max_tap_delta: int = 8
-        """Max tap change from initial (±steps)."""
+        """Max tap change from initial (+-steps)."""
         time_limit: float = 300.0
         """Solver time limit (seconds)."""
         days_per_year: float = 365.0
@@ -2346,7 +2253,6 @@ if __name__ == "__main__":
     bus_list = [b.strip() for b in args.buses.split(",")] if args.buses else None
 
     main(
-        config_path=Path(args.config),
         system=args.system,
         n_pv=args.n_pv,
         s_max_kw=args.s_max_kw,

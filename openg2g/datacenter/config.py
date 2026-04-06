@@ -14,51 +14,71 @@ from openg2g.datacenter.workloads.training import TrainingTrace
 class InferenceModelSpec(BaseModel):
     """Specification for one LLM model served in the datacenter.
 
+    This is a pure model-identity object describing *what* is served, not
+    *how many* or *at what batch size*.  Deployment-specific parameters
+    (replica count, initial batch size) are specified via
+    :class:`ModelDeployment`.
+
     Attributes:
         model_label: Human-readable model identifier (e.g. `"Llama-3.1-70B"`).
         model_id: HuggingFace model ID (e.g. `"meta-llama/Llama-3.1-70B-Instruct"`).
             Used for benchmark data lookups and online API model fields.
-        initial_num_replicas: Initial number of replicas of this model in the datacenter.
-            Inference ramps with target > 1.0 can scale beyond this count.
         gpus_per_replica: GPUs allocated to each replica (determines model
             parallelism and per-replica power draw).
-        initial_batch_size: Initial batch size for this model.
         itl_deadline_s: Per-model inter-token latency deadline for the OFO
             latency dual (seconds).
         feasible_batch_sizes: Allowed batch sizes. Used by the OFO
             controller for discretizing continuous batch-size updates
             and by the online datacenter for load-generator sizing.
-            Defaults to `(initial_batch_size,)`.
     """
 
     model_config = ConfigDict(frozen=True)
 
     model_label: str
     model_id: str = ""
-    initial_num_replicas: int
     gpus_per_replica: int
-    initial_batch_size: int
     itl_deadline_s: float
-    feasible_batch_sizes: tuple[int, ...] = ()
+    feasible_batch_sizes: tuple[int, ...]
 
     @model_validator(mode="after")
     def _validate(self) -> InferenceModelSpec:
-        if not self.feasible_batch_sizes:
-            object.__setattr__(self, "feasible_batch_sizes", (self.initial_batch_size,))
-        elif self.initial_batch_size not in self.feasible_batch_sizes:
-            raise ValueError(
-                f"initial_batch_size ({self.initial_batch_size}) must be in "
-                f"feasible_batch_sizes ({self.feasible_batch_sizes})."
-            )
-        if self.initial_num_replicas < 0:
-            raise ValueError(f"initial_num_replicas must be >= 0, got {self.initial_num_replicas}.")
         if self.gpus_per_replica < 1:
             raise ValueError(f"gpus_per_replica must be >= 1, got {self.gpus_per_replica}.")
-        if self.initial_batch_size <= 0:
-            raise ValueError(f"initial_batch_size must be > 0, got {self.initial_batch_size}.")
         if self.itl_deadline_s <= 0:
             raise ValueError(f"itl_deadline_s must be > 0, got {self.itl_deadline_s}.")
+        if not self.feasible_batch_sizes:
+            raise ValueError("feasible_batch_sizes must not be empty.")
         return self
+
+
+@dataclass(frozen=True)
+class ModelDeployment:
+    """One model's deployment at a datacenter site.
+
+    Pairs an :class:`InferenceModelSpec` (model identity) with
+    deployment-specific parameters.
+
+    Attributes:
+        spec: The model specification.
+        num_replicas: Number of replicas deployed at this site.
+        initial_batch_size: Starting batch size for this deployment.
+            Must be in ``spec.feasible_batch_sizes``.
+    """
+
+    spec: InferenceModelSpec
+    num_replicas: int
+    initial_batch_size: int
+
+    def __post_init__(self) -> None:
+        if self.num_replicas < 0:
+            raise ValueError(f"num_replicas must be >= 0, got {self.num_replicas}.")
+        if self.initial_batch_size <= 0:
+            raise ValueError(f"initial_batch_size must be > 0, got {self.initial_batch_size}.")
+        if self.initial_batch_size not in self.spec.feasible_batch_sizes:
+            raise ValueError(
+                f"initial_batch_size ({self.initial_batch_size}) must be in "
+                f"feasible_batch_sizes ({self.spec.feasible_batch_sizes})."
+            )
 
 
 class TrainingRun:
@@ -184,31 +204,28 @@ class TrainingSchedule:
 class InferenceRamp:
     """Inference server ramp parameters.
 
-    Transitions the active inference server fraction to `target`. Combine with
-    [`at`][.at] and `|` to build an [`InferenceRampSchedule`][..InferenceRampSchedule]:
+    Transitions the active replica count for a specific model to `target`.
+    Combine with [`at`][.at] and `|` to build an
+    [`InferenceRampSchedule`][..InferenceRampSchedule]:
 
     ```python
     ramps = (
-        InferenceRamp(target=0.2).at(t_start=2500, t_end=3000)
-        | InferenceRamp(target=1.2, model="Llama-3.1-8B").at(t_start=3200, t_end=3400)
+        InferenceRamp(target=144, model="Llama-3.1-8B").at(t_start=2500, t_end=3000)
+        | InferenceRamp(target=864, model="Llama-3.1-8B").at(t_start=3200, t_end=3400)
     )
     ```
 
     Attributes:
-        target: Target active-server fraction after the ramp.
-            Values below 1.0 reduce active servers (ramp down),
-            values above 1.0 increase active servers beyond the
-            initial count (ramp up / scale out).
-        model: Model label this ramp applies to. ``None`` applies to all
-            models in the datacenter.
+        target: Target number of active replicas after the ramp completes.
+        model: Model label this ramp applies to.
     """
 
-    target: float
-    model: str | None = None
+    target: int
+    model: str
 
     def __post_init__(self) -> None:
-        if self.target < 0.0:
-            raise ValueError(f"InferenceRamp target must be >= 0.0, got {self.target}.")
+        if self.target < 0:
+            raise ValueError(f"InferenceRamp target must be >= 0, got {self.target}.")
 
     def at(self, t_start: float, t_end: float) -> InferenceRampSchedule:
         """Schedule this ramp over `[t_start, t_end]`.
@@ -226,38 +243,54 @@ class InferenceRamp:
 
 
 class InferenceRampSchedule:
-    """Ordered collection of [`InferenceRamp`][..InferenceRamp] events.
+    """Ordered collection of [`InferenceRamp`][..InferenceRamp] events for
+    a single model.
 
     Each entry is an `(InferenceRamp, t_start, t_end)` tuple. Entries are
     sorted by `t_start`.
 
     Built with [`InferenceRamp.at`][..InferenceRamp.at] and `|`.
 
-    Semantics: before the first ramp, fraction = 1.0. During each
-    `[t_start, t_end]` window, the fraction linearly interpolates from
-    the previous level to `target`. Between ramps, the fraction holds
-    at the last target.
+    Semantics: before the first ramp, the active count equals
+    ``initial_count``.  During each `[t_start, t_end]` window the count
+    linearly interpolates from the previous level to ``target``.  Between
+    ramps, the count holds at the last target.
 
-    An empty schedule means all servers are active (fraction = 1.0)
-    at all times.
+    An empty schedule means ``initial_count`` replicas are active at all
+    times.
 
     Example:
 
     ```python
     ramps = (
-        InferenceRamp(target=0.2).at(t_start=2500, t_end=3000)
-        | InferenceRamp(target=1.0).at(t_start=3200, t_end=3400)
+        InferenceRamp(target=144, model="Llama-3.1-8B").at(t_start=2500, t_end=3000)
+        | InferenceRamp(target=720, model="Llama-3.1-8B").at(t_start=3200, t_end=3400)
     )
     ```
     """
 
-    __slots__ = ("_entries",)
+    __slots__ = ("_entries", "_initial_count")
 
-    def __init__(self, entries: tuple[tuple[InferenceRamp, float, float], ...] = ()) -> None:
+    def __init__(
+        self,
+        entries: tuple[tuple[InferenceRamp, float, float], ...] = (),
+        *,
+        initial_count: int = 0,
+    ) -> None:
         self._entries = tuple(sorted(entries, key=lambda e: e[1]))
+        self._initial_count = initial_count
+
+    @property
+    def initial_count(self) -> int:
+        """Replica count before any ramp event."""
+        return self._initial_count
 
     def __or__(self, other: InferenceRampSchedule) -> InferenceRampSchedule:
-        return InferenceRampSchedule((*self._entries, *other._entries))
+        # Preserve initial_count from left operand (the one built first).
+        return InferenceRampSchedule(
+            (*self._entries, *other._entries),
+            initial_count=self._initial_count,
+        )
 
     def __iter__(self) -> Iterator[tuple[InferenceRamp, float, float]]:
         return iter(self._entries)
@@ -268,59 +301,62 @@ class InferenceRampSchedule:
     def __bool__(self) -> bool:
         return bool(self._entries)
 
-    def for_model(self, model_label: str) -> InferenceRampSchedule:
-        """Return a schedule containing only entries that apply to *model_label*.
+    def for_model(self, model_label: str, *, initial_count: int | None = None) -> InferenceRampSchedule:
+        """Return a schedule containing only entries for *model_label*.
 
-        An entry applies if its ``model`` is ``None`` (all models) or matches
-        *model_label* exactly.
+        Args:
+            model_label: Model to filter for.
+            initial_count: Override the initial replica count for this
+                per-model schedule.  If ``None``, inherits from ``self``.
         """
-        filtered = tuple(e for e in self._entries if e[0].model is None or e[0].model == model_label)
-        return InferenceRampSchedule(filtered)
+        filtered = tuple(e for e in self._entries if e[0].model == model_label)
+        ic = initial_count if initial_count is not None else self._initial_count
+        return InferenceRampSchedule(filtered, initial_count=ic)
 
-    def max_target(self) -> float:
-        """Return the maximum target across all entries, or 1.0 if empty."""
+    def max_count(self) -> int:
+        """Return the maximum target across all entries, or ``initial_count`` if empty."""
         if not self._entries:
-            return 1.0
-        return max(r.target for r, _, _ in self._entries)
+            return self._initial_count
+        return max(self._initial_count, *(r.target for r, _, _ in self._entries))
 
     def __repr__(self) -> str:
         parts = []
         for r, s, e in self._entries:
-            model_part = f", model={r.model!r}" if r.model else ""
-            parts.append(f"InferenceRamp(target={r.target}{model_part}).at(t_start={s}, t_end={e})")
-        return " | ".join(parts)
+            parts.append(f"InferenceRamp(target={r.target}, model={r.model!r}).at(t_start={s}, t_end={e})")
+        prefix = f"InferenceRampSchedule(initial_count={self._initial_count}): "
+        return prefix + (" | ".join(parts) if parts else "(empty)")
 
-    def fraction_at(self, t: float | np.ndarray) -> float | np.ndarray:
-        """Evaluate the active inference server fraction at time(s) *t*.
+    def count_at(self, t: float | np.ndarray) -> float | np.ndarray:
+        """Evaluate the active replica count at time(s) *t*.
 
         Piecewise-linear interpolation between ramp events.
-        Before the first ramp, fraction = 1.0.
+        Before the first ramp, returns ``initial_count``.
 
         Args:
             t: Scalar or array of global simulation times (seconds).
 
         Returns:
-            Active-server fraction(s), same shape as *t*.
+            Active replica count(s), same shape as *t*.
         """
         if isinstance(t, np.ndarray):
-            return self._fraction_array(t)
-        return float(self._fraction_scalar(float(t)))
+            return self._count_array(t)
+        return float(self._count_scalar(float(t)))
 
-    def _fraction_scalar(self, t: float) -> float:
-        level = 1.0
+    def _count_scalar(self, t: float) -> float:
+        level = float(self._initial_count)
         for ramp, t_start, t_end in self._entries:
             if t < t_start:
                 return level
             if t <= t_end:
                 if t_end == t_start:
-                    return ramp.target
+                    return float(ramp.target)
                 alpha = (t - t_start) / (t_end - t_start)
-                return level + (ramp.target - level) * alpha
-            level = ramp.target
+                return level + (float(ramp.target) - level) * alpha
+            level = float(ramp.target)
         return level
 
-    def _fraction_array(self, t: np.ndarray) -> np.ndarray:
-        vfunc = np.vectorize(self._fraction_scalar, otypes=[float])
+    def _count_array(self, t: np.ndarray) -> np.ndarray:
+        vfunc = np.vectorize(self._count_scalar, otypes=[float])
         return vfunc(t)
 
 

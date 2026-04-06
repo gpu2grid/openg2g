@@ -33,6 +33,7 @@ logger = logging.getLogger(__name__)
 _PHASES = (1, 2, 3)
 _PHASE_NAME = {1: "A", 2: "B", 3: "C"}
 _PHASE_TO_ATTR = {1: "a", 2: "b", 3: "c"}
+_ATTR_TO_PHASE = {v: k for k, v in _PHASE_TO_ATTR.items()}
 _DC_LOAD_NAMES = ("DataCenterA", "DataCenterB", "DataCenterC")
 
 
@@ -66,25 +67,26 @@ class OpenDSSGrid(GridBackend[GridState]):
       control loops (RegControls, CapControls, etc.) as defined in the case
       file. Use this when you want DSS-native control automation.
 
-    Supports both single-DC (legacy) and multi-DC modes:
-
-    - **Single-DC**: Pass ``dc_bus``, ``dc_bus_kv``, ``connection_type``.
-    - **Multi-DC**: Pass ``dc_loads`` dict mapping site IDs to
-      :class:`DCLoadSpec`.
+    Datacenter load connection points are specified via ``dc_loads`` (a dict
+    mapping site IDs to :class:`DCLoadSpec`). For convenience, a single DC
+    site can be specified with ``dc_bus`` and ``dc_bus_kv`` instead.
 
     Args:
         dss_case_dir: Absolute path to the directory containing OpenDSS case
             files (e.g. line codes, bus coordinates).
         dss_master_file: Name of the master DSS file, relative to
-            `dss_case_dir` (e.g. `"IEEE13Nodeckt.dss"`). OpenDSS resolves
+            `dss_case_dir` (e.g. `"IEEE13Bus.dss"`). OpenDSS resolves
             all `redirect` and `BusCoords` paths in the master file
             relative to this directory.
-        dc_bus: Bus name where the datacenter is connected (single-DC mode).
-        dc_bus_kv: Line-to-line voltage (kV) at the datacenter bus (single-DC mode).
-        dc_loads: Dict mapping site IDs to DCLoadSpec (multi-DC mode).
+        dc_bus: Bus name where the datacenter is connected (shorthand for
+            a single-entry ``dc_loads``).
+        dc_bus_kv: Line-to-line voltage (kV) at the datacenter bus (used
+            with ``dc_bus``).
+        dc_loads: Dict mapping site IDs to :class:`DCLoadSpec`.
         power_factor: Power factor of the datacenter loads.
         dt_s: Grid simulation timestep (seconds).
-        connection_type: Connection type for DC loads (default `"wye"`).
+        connection_type: Connection type for DC loads (default `"wye"`,
+            used with ``dc_bus``).
         dss_controls: Whether to let OpenDSS iterate its built-in control
             loops during each solve. Default False.
         initial_tap_position: Initial regulator tap position applied before
@@ -114,7 +116,6 @@ class OpenDSSGrid(GridBackend[GridState]):
         self._case_dir = str(Path(dss_case_dir).resolve())
         self._master = str(dss_master_file)
 
-        # Build dc_loads dict (multi-DC or legacy single-DC)
         if dc_loads is not None:
             self._dc_loads = dict(dc_loads)
         elif dc_bus is not None and dc_bus_kv is not None:
@@ -129,7 +130,7 @@ class OpenDSSGrid(GridBackend[GridState]):
         self._dss_controls = bool(dss_controls)
 
         self._initial_tap_position = initial_tap_position
-        self._reg_map: dict[str, tuple[str, int, int]] | None = None
+        self._reg_map: dict[str, tuple[str, int]] | None = None
         self._phase_to_reg: dict[int, str] | None = None
         self._exclude_buses = tuple(str(b) for b in exclude_buses)
 
@@ -173,12 +174,11 @@ class OpenDSSGrid(GridBackend[GridState]):
     ) -> GridState:
         """Advance one grid period and return the resulting grid state.
 
-        Accepts either a dict mapping site IDs to power sample lists (multi-DC)
-        or a flat list of ThreePhase samples (single-DC legacy mode).
+        Accepts a dict mapping site IDs to power sample lists. A flat list
+        of ThreePhase samples is also accepted and mapped to the first site.
         """
         # Normalize to dict form
         if isinstance(power_samples_w, list):
-            # Single-DC legacy: map the flat list to the first (only) site
             first_site = next(iter(self._dc_loads))
             samples: dict[str, list[ThreePhase]] = {first_site: power_samples_w}
         elif len(self._dc_loads) == 1 and len(power_samples_w) == 1:
@@ -422,63 +422,58 @@ class OpenDSSGrid(GridBackend[GridState]):
         return v_index
 
     @staticmethod
-    def _cache_regcontrol_map() -> dict[str, tuple[str, int, int]]:
-        """Enumerate RegControls and discover their transformer, winding, and phase.
+    def _cache_regcontrol_map() -> dict[str, tuple[str, int]]:
+        """Enumerate RegControls and discover their transformer and winding.
 
         Returns:
-            Mapping of `rc_name -> (transformer_name, winding, phase)` where
-                phase is 1/2/3 for A/B/C.
+            Mapping of ``rc_name -> (transformer_name, winding)``.
         """
-        reg_map: dict[str, tuple[str, int, int]] = {}
+        reg_map: dict[str, tuple[str, int]] = {}
         for rc in dss.RegControls:
             rc_name = rc.Name().lower()
             xf = rc.Transformer()
             w = int(rc.Winding())
+            reg_map[rc_name] = (xf, w)
+        return reg_map
 
+    @staticmethod
+    def _build_phase_to_reg_map(reg_map: dict[str, tuple[str, int]]) -> dict[int, str]:
+        """Build a best-effort mapping from phase (1/2/3) to RegControl name.
+
+        Phase is determined from the bus node suffix on the regulator's
+        transformer (e.g., ``bus.1`` → phase 1).  Regulators whose phase
+        cannot be determined from bus data are silently skipped — users
+        must address those by regulator name in ``TapPosition``.
+
+        Returns:
+            Mapping of phase number to RegControl name.
+        """
+        phase_to_reg: dict[int, str] = {}
+        for rc_name, (xf, _wdg) in reg_map.items():
             dss.Transformers.Name(xf)
-            n_phases = int(dss.CktElement.NumPhases())
             bus_names = list(dss.CktElement.BusNames())
             phase = 0
             for bus_str in bus_names:
                 parts = str(bus_str).split(".")
                 if len(parts) >= 2:
-                    phase = int(parts[1])
-                    break
-
-            # For 3-phase regulators without explicit phase suffix,
-            # try to infer phase from the regcontrol name (e.g. creg1a -> A=1)
-            if phase not in (1, 2, 3):
-                name_lower = rc_name.lower()
-                if name_lower.endswith("a"):
-                    phase = 1
-                elif name_lower.endswith("b"):
-                    phase = 2
-                elif name_lower.endswith("c"):
-                    phase = 3
-                elif n_phases == 3:
-                    # 3-phase ganged regulator — assign to phase 1 as primary
-                    phase = 1
-                    logger.info(
-                        "RegControl '%s' is 3-phase (buses=%s); treating as phase A.",
-                        rc_name,
-                        bus_names,
-                    )
+                    try:
+                        phase = int(parts[1])
+                    except ValueError:
+                        continue
+                    if phase in (1, 2, 3):
+                        break
+                    phase = 0
 
             if phase not in (1, 2, 3):
-                raise RuntimeError(
-                    f"Cannot determine phase for RegControl '{rc_name}' "
-                    f"(transformer={xf}, buses={bus_names}). "
-                    f"Expected bus format 'name.phase' with phase in {{1,2,3}}."
+                logger.debug(
+                    "RegControl '%s' (transformer=%s, buses=%s): cannot determine "
+                    "phase from bus data; use regulator name in TapPosition.",
+                    rc_name,
+                    xf,
+                    bus_names,
                 )
+                continue
 
-            reg_map[rc_name] = (xf, w, phase)
-        return reg_map
-
-    @staticmethod
-    def _build_phase_to_reg_map(reg_map: dict[str, tuple[str, int, int]]) -> dict[int, str]:
-        """Build reverse mapping from phase (1/2/3) to RegControl name."""
-        phase_to_reg: dict[int, str] = {}
-        for rc_name, (_xf, _wdg, phase) in reg_map.items():
             if phase in phase_to_reg:
                 logger.warning(
                     "Multiple RegControls on phase %s: '%s' and '%s'. Using '%s'.",
@@ -493,24 +488,23 @@ class OpenDSSGrid(GridBackend[GridState]):
     def _tap_position_to_reg_dict(self, pos: TapPosition) -> dict[str, float]:
         """Map tap position to OpenDSS RegControl names.
 
-        Supports both legacy per-phase (a/b/c) and named-regulator modes.
+        Phase keys ``"a"``/``"b"``/``"c"`` in ``pos.regulators`` are
+        translated to actual RegControl names via ``_phase_to_reg``.
+        All other keys are passed through as-is (assumed to be
+        RegControl names already).
         """
         if self._phase_to_reg is None:
             raise RuntimeError("_phase_to_reg not initialized; call start() first")
 
         d: dict[str, float] = {}
-
-        # Named-regulator mode
-        if pos.regulators:
-            for reg_name, tap_val in pos.regulators.items():
-                d[reg_name.lower()] = tap_val
-
-        # Per-phase mode (legacy)
-        for phase, attr in _PHASE_TO_ATTR.items():
-            val = getattr(pos, attr)
-            if val is not None and phase in self._phase_to_reg:
-                d[self._phase_to_reg[phase]] = val
-
+        for reg_name, tap_val in pos.regulators.items():
+            key = reg_name.lower()
+            # Translate phase keys to actual RegControl names
+            phase = _ATTR_TO_PHASE.get(key)
+            if phase is not None and phase in self._phase_to_reg:
+                d[self._phase_to_reg[phase]] = tap_val
+            else:
+                d[key] = tap_val
         return d
 
     def _set_reg_taps(self, tap_map: dict[str, float]) -> None:
@@ -520,7 +514,7 @@ class OpenDSSGrid(GridBackend[GridState]):
 
         tap_map_lc = {str(k).lower(): float(v) for k, v in tap_map.items()}
 
-        for rc_key, (xfmr, wdg, _phase) in self._reg_map.items():
+        for rc_key, (xfmr, wdg) in self._reg_map.items():
             if rc_key in tap_map_lc:
                 tap_pu = tap_map_lc[rc_key]
                 dss.Text.Command(f"Edit Transformer.{xfmr} Wdg={wdg} Tap={tap_pu:.6f}")
@@ -529,25 +523,11 @@ class OpenDSSGrid(GridBackend[GridState]):
         """Read current regulator tap positions from OpenDSS."""
         if self._reg_map is None:
             self._reg_map = self._cache_regcontrol_map()
-        if self._phase_to_reg is None:
-            self._phase_to_reg = self._build_phase_to_reg_map(self._reg_map)
 
-        # Always populate the regulators dict for multi-bank support
         regulators: dict[str, float] = {}
-        phase_taps: dict[str, float | None] = {"a": None, "b": None, "c": None}
-
-        for rc_key, (xfmr, wdg, phase) in self._reg_map.items():
+        for rc_key, (xfmr, wdg) in self._reg_map.items():
             dss.Transformers.Name(xfmr)
             dss.Transformers.Wdg(wdg)
-            tap_val = float(dss.Transformers.Tap())
-            regulators[rc_key] = tap_val
-            attr = _PHASE_TO_ATTR.get(phase)
-            if attr is not None:
-                phase_taps[attr] = tap_val
+            regulators[rc_key] = float(dss.Transformers.Tap())
 
-        return TapPosition(
-            a=phase_taps["a"],
-            b=phase_taps["b"],
-            c=phase_taps["c"],
-            regulators=regulators,
-        )
+        return TapPosition(regulators=regulators)

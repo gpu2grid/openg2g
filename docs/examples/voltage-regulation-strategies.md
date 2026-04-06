@@ -30,7 +30,7 @@ The comparison script runs all three controllers on the same system. Only the ba
 
 ```bash
 python examples/offline/analyze_different_controllers.py \
-    --config examples/offline/config_ieee13.json --system ieee13
+    --system ieee13
 ```
 
 Outputs (in `outputs/ieee13/controller_comparison/`):
@@ -44,14 +44,14 @@ Outputs (in `outputs/ieee13/controller_comparison/`):
 
 ```bash
 # Run all 4 cases: baseline ± tap, OFO ± tap
-python examples/offline/run_ofo.py --config examples/offline/config_ieee13.json --system ieee13 --mode all
+python examples/offline/run_ofo.py --system ieee13 --mode all
 ```
 
 ### Multi-DC System (IEEE 123)
 
 ```bash
 python examples/offline/analyze_different_controllers.py \
-    --config examples/offline/config_ieee123.json --system ieee123
+    --system ieee123
 ```
 
 ### Tuning the Rule-Based Controller
@@ -63,7 +63,7 @@ The rule-based controller has two key parameters:
 
 ```bash
 python examples/offline/analyze_different_controllers.py \
-    --config examples/offline/config_ieee13.json --system ieee13 \
+    --system ieee13 \
     --rule-step-size 15.0 --rule-deadband 0.0005
 ```
 
@@ -85,4 +85,4 @@ OFO outperforms because it: (1) uses model-specific sensitivity to adjust the ri
 - `ofo`: OFO controller parameters
 - `initial_taps`: Starting tap positions for all modes
 
-See [Data Pipeline](../guide/data-pipeline.md) for the full config format.
+See [Building Simulators](../guide/building-simulators.md) and `examples/offline/systems.py` for configuration details.
