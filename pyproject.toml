@@ -25,12 +25,13 @@ Documentation = "https://gpu2grid.io/openg2g"
 
 [project.optional-dependencies]
 opendss = ["opendssdirect.py"]
+rl = ["stable-baselines3>=2.0", "gymnasium"]
 
 [dependency-groups]
 test = ["pytest"]
 lint = ["ruff", "ty"]
 docs = ["zensical", "mkdocstrings[python]", "tomlkit"]
-examples = ["openg2g[opendss]", "matplotlib", "datasets", "openai", "pyyaml", "tyro"]
+examples = ["openg2g[opendss]", "openg2g[rl]", "matplotlib", "datasets", "openai", "pyyaml", "tyro"]
 dev = [
     {include-group = "test"},
     {include-group = "lint"},

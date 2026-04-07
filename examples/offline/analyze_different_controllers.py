@@ -65,6 +65,57 @@ TOTAL_DURATION_S = 3600
 # ── Per-system experiment definitions ────────────────────────────────────────
 
 
+def experiment_ieee13() -> dict:
+    """IEEE 13-bus experiment: single DC at bus 671."""
+    sys = SYSTEMS["ieee13"]()
+    return dict(
+        sys=sys,
+        dc_sites={
+            "default": DCSite(
+                bus="671",
+                bus_kv=sys["bus_kv"],
+                base_kw_per_phase=500.0,
+                total_gpu_capacity=7200,
+                models=(
+                    deploy("Llama-3.1-8B", 720),
+                    deploy("Llama-3.1-70B", 180),
+                    deploy("Llama-3.1-405B", 90),
+                    deploy("Qwen3-30B-A3B", 480),
+                    deploy("Qwen3-235B-A22B", 210),
+                ),
+                seed=0,
+                inference_ramps=(
+                    InferenceRamp(target=144, model="Llama-3.1-8B").at(t_start=2500, t_end=3000)
+                    | InferenceRamp(target=36, model="Llama-3.1-70B").at(t_start=2500, t_end=3000)
+                    | InferenceRamp(target=18, model="Llama-3.1-405B").at(t_start=2500, t_end=3000)
+                    | InferenceRamp(target=96, model="Qwen3-30B-A3B").at(t_start=2500, t_end=3000)
+                    | InferenceRamp(target=42, model="Qwen3-235B-A22B").at(t_start=2500, t_end=3000)
+                ),
+            ),
+        },
+        ofo_config=OFOConfig(
+            primal_step_size=0.1,
+            w_throughput=0.001,
+            w_switch=1.0,
+            voltage_gradient_scale=1e6,
+            v_min=V_MIN,
+            v_max=V_MAX,
+            voltage_dual_step_size=1.0,
+            latency_dual_step_size=1.0,
+            sensitivity_update_interval=3600,
+            sensitivity_perturbation_kw=100.0,
+        ),
+        pv_systems=[PVSystemSpec(bus="675", bus_kv=4.16, peak_kw=10.0)],
+        time_varying_loads=[TimeVaryingLoadSpec(bus="680", bus_kv=4.16, peak_kw=10.0)],
+        tap_schedule=TapSchedule(
+            (
+                (1500, TapPosition(regulators={"creg1a": tap(16), "creg1b": tap(6), "creg1c": tap(17)})),
+                (3300, TapPosition(regulators={"creg1a": tap(10), "creg1b": tap(6), "creg1c": tap(10)})),
+            )
+        ),
+    )
+
+
 def experiment_ieee34() -> dict:
     """IEEE 34-bus experiment: two DC sites (upstream/downstream)."""
     sys = SYSTEMS["ieee34"]()
@@ -193,7 +244,7 @@ def experiment_ieee123() -> dict:
     )
 
 
-EXPERIMENTS = {"ieee34": experiment_ieee34, "ieee123": experiment_ieee123}
+EXPERIMENTS = {"ieee13": experiment_ieee13, "ieee34": experiment_ieee34, "ieee123": experiment_ieee123}
 
 
 # ── Simulation runner ────────────────────────────────────────────────────────
@@ -212,6 +263,7 @@ def run_simulation(
     time_varying_loads: list[TimeVaryingLoadSpec] | None = None,
     tap_schedule: TapSchedule | None = None,
     rule_based_config: RuleBasedConfig | None = None,
+    ppo_model: str = "",
     save_dir: Path,
 ) -> tuple[VoltageStats, object]:
     """Run a simulation with the specified controller mode.
@@ -334,6 +386,36 @@ def run_simulation(
                 exclude_buses=exclude_buses,
             )
             controllers.append(rb_ctrl)
+
+    elif mode == "ppo":
+        from openg2g.controller.ppo import PPOBatchSizeController
+        from openg2g.rl.env import ObservationConfig
+
+        # Resolve model path before grid.start() changes CWD
+        ppo_model_abs = str(Path(ppo_model).resolve())
+
+        # Infer n_bus_phases from saved model's observation space
+        from stable_baselines3 import PPO as SB3PPO
+
+        sb3_model = SB3PPO.load(ppo_model_abs)
+        saved_obs_dim = sb3_model.observation_space.shape[0]
+        n_models_total = sum(len(dc_sites[sid].models) for sid in site_ids)
+        n_bus_phases = saved_obs_dim - 3 - 5 * n_models_total
+
+        for site_id in site_ids:
+            specs = site_specs_map[site_id]
+            replica_counts = {md.spec.model_label: md.num_replicas for md in dc_sites[site_id].models}
+            obs_config = ObservationConfig.from_model_specs(
+                specs, replica_counts, n_bus_phases=n_bus_phases, v_min=V_MIN, v_max=V_MAX
+            )
+            ppo_ctrl = PPOBatchSizeController(
+                specs,
+                model_path=ppo_model_abs,
+                obs_config=obs_config,
+                dt_s=DT_CTRL,
+                site_id=site_id if len(site_ids) > 1 else None,
+            )
+            controllers.append(ppo_ctrl)
 
     # baseline: no batch controller added
 
@@ -526,7 +608,11 @@ def main(
     system: str,
     rule_step_size: float = 0.3,
     rule_deadband: float = 0.005,
+    ppo_model: str = "",
 ) -> None:
+    # Resolve ppo_model path early (before OpenDSS changes CWD)
+    if ppo_model:
+        ppo_model = str(Path(ppo_model).resolve())
     if system not in EXPERIMENTS:
         raise ValueError(f"Unknown system {system!r}; choose from {list(EXPERIMENTS)}")
 
@@ -580,6 +666,8 @@ def main(
 
     # ── Run all modes ──
     modes = ["baseline", "rule_based", "ofo"]
+    if ppo_model:
+        modes.append("ppo")
     all_stats: dict[str, VoltageStats] = {}
     all_logs: dict[str, object] = {}
 
@@ -601,6 +689,7 @@ def main(
             time_varying_loads=time_varying_loads,
             tap_schedule=tap_schedule,
             rule_based_config=rb_config if mode == "rule_based" else None,
+            ppo_model=ppo_model,
             save_dir=save_dir,
         )
         all_stats[mode] = vstats
@@ -658,11 +747,13 @@ if __name__ == "__main__":
     @dataclass
     class Args:
         system: str = "ieee123"
-        """System name: ieee34 or ieee123."""
+        """System name: ieee13, ieee34, or ieee123."""
         rule_step_size: float = 0.3
         """Proportional gain for the rule-based controller (log2 units per pu violation)."""
         rule_deadband: float = 0.005
         """Deadband for the rule-based controller (pu)."""
+        ppo_model: str = ""
+        """Path to trained PPO model (.zip). If set, adds PPO to comparison."""
         log_level: str = "INFO"
         """Logging verbosity."""
 
@@ -683,4 +774,5 @@ if __name__ == "__main__":
         system=args.system,
         rule_step_size=args.rule_step_size,
         rule_deadband=args.rule_deadband,
+        ppo_model=args.ppo_model,
     )
