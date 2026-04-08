@@ -128,7 +128,7 @@ def experiment_ieee34() -> dict:
                 base_kw_per_phase=120.0,
                 models=(deploy("Llama-3.1-8B", 720), deploy("Llama-3.1-70B", 180), deploy("Llama-3.1-405B", 90)),
                 seed=0,
-                total_gpu_capacity=520,
+                total_gpu_capacity=2400,
             ),
             "downstream": DCSite(
                 bus="834",
@@ -136,7 +136,7 @@ def experiment_ieee34() -> dict:
                 base_kw_per_phase=80.0,
                 models=(deploy("Qwen3-30B-A3B", 480), deploy("Qwen3-235B-A22B", 210)),
                 seed=42,
-                total_gpu_capacity=600,
+                total_gpu_capacity=2880,
             ),
         },
         ofo_config=OFOConfig(
@@ -191,7 +191,7 @@ def experiment_ieee123() -> dict:
                 base_kw_per_phase=310.0,
                 models=(deploy("Llama-3.1-8B", 120),),
                 seed=0,
-                total_gpu_capacity=120,
+                total_gpu_capacity=180,
                 inference_ramps=InferenceRamp(target=180, model="Llama-3.1-8B").at(t_start=500, t_end=1000),
             ),
             "z2_nw": DCSite(
@@ -200,7 +200,7 @@ def experiment_ieee123() -> dict:
                 base_kw_per_phase=265.0,
                 models=(deploy("Qwen3-30B-A3B", 80),),
                 seed=17,
-                total_gpu_capacity=160,
+                total_gpu_capacity=208,
                 inference_ramps=InferenceRamp(target=104, model="Qwen3-30B-A3B").at(t_start=1500, t_end=2500),
             ),
             "z3_se": DCSite(
@@ -209,7 +209,7 @@ def experiment_ieee123() -> dict:
                 base_kw_per_phase=295.0,
                 models=(deploy("Llama-3.1-70B", 30), deploy("Llama-3.1-405B", 35)),
                 seed=34,
-                total_gpu_capacity=400,
+                total_gpu_capacity=460,
                 inference_ramps=InferenceRamp(target=45, model="Llama-3.1-70B").at(t_start=700, t_end=1100),
             ),
             "z4_ne": DCSite(
@@ -388,34 +388,75 @@ def run_simulation(
             controllers.append(rb_ctrl)
 
     elif mode == "ppo":
-        from openg2g.controller.ppo import PPOBatchSizeController
+        from openg2g.controller.ppo import PPOBatchSizeController, SharedPPOBatchSizeController
         from openg2g.rl.env import ObservationConfig
 
-        # Resolve model path before grid.start() changes CWD
-        ppo_model_abs = str(Path(ppo_model).resolve())
+        ppo_path = Path(ppo_model).resolve()
 
-        # Infer n_bus_phases from saved model's observation space
-        from stable_baselines3 import PPO as SB3PPO
+        # Check if a shared model exists
+        shared_model = ppo_path / "ppo_model_shared.zip" if ppo_path.is_dir() else None
+        if shared_model is not None and shared_model.exists():
+            # Shared multi-site PPO
+            from stable_baselines3 import PPO as SB3PPO
 
-        sb3_model = SB3PPO.load(ppo_model_abs)
-        saved_obs_dim = sb3_model.observation_space.shape[0]
-        n_models_total = sum(len(dc_sites[sid].models) for sid in site_ids)
-        n_bus_phases = saved_obs_dim - 3 - 5 * n_models_total
+            sb3 = SB3PPO.load(str(shared_model.with_suffix("")))
+            saved_obs_dim = sb3.observation_space.shape[0]
+            n_models_all = sum(len(dc_sites[sid].models) for sid in site_ids)
+            n_bus_phases = saved_obs_dim - 3 - 5 * n_models_all
 
-        for site_id in site_ids:
-            specs = site_specs_map[site_id]
-            replica_counts = {md.spec.model_label: md.num_replicas for md in dc_sites[site_id].models}
-            obs_config = ObservationConfig.from_model_specs(
-                specs, replica_counts, n_bus_phases=n_bus_phases, v_min=V_MIN, v_max=V_MAX
+            site_model_mapping = {sid: [md.spec.model_label for md in dc_sites[sid].models] for sid in site_ids}
+            obs_config = ObservationConfig.from_multi_site(
+                site_specs_map,
+                {sid: {md.spec.model_label: md.num_replicas for md in dc_sites[sid].models} for sid in site_ids},
+                n_bus_phases=n_bus_phases,
+                v_min=V_MIN,
+                v_max=V_MAX,
             )
-            ppo_ctrl = PPOBatchSizeController(
-                specs,
-                model_path=ppo_model_abs,
+            ppo_ctrl = SharedPPOBatchSizeController(
+                model_path=str(shared_model),
                 obs_config=obs_config,
+                site_model_mapping=site_model_mapping,
                 dt_s=DT_CTRL,
-                site_id=site_id if len(site_ids) > 1 else None,
             )
             controllers.append(ppo_ctrl)
+        else:
+            # Per-site PPO
+            # Get zone info for zone-local obs
+            zones = sys.get("zones")
+
+            for site_id in site_ids:
+                if ppo_path.is_dir():
+                    site_model = str(ppo_path / f"ppo_model_{site_id}.zip")
+                elif ppo_path.suffix == ".zip" and len(site_ids) == 1:
+                    site_model = str(ppo_path)
+                else:
+                    site_model = str(ppo_path.parent / f"ppo_model_{site_id}.zip")
+
+                from stable_baselines3 import PPO as SB3PPO
+
+                sb3 = SB3PPO.load(str(Path(site_model).with_suffix("")))
+                saved_obs_dim = sb3.observation_space.shape[0]
+                n_models_site = len(dc_sites[site_id].models)
+                n_bus_phases = saved_obs_dim - 3 - 5 * n_models_site
+
+                # Reconstruct zone_buses if zone-local
+                zone_buses = None
+                if zones is not None and site_id in zones:
+                    zone_buses = tuple(zones[site_id])
+
+                specs = site_specs_map[site_id]
+                replica_counts = {md.spec.model_label: md.num_replicas for md in dc_sites[site_id].models}
+                obs_config = ObservationConfig.from_model_specs(
+                    specs, replica_counts, n_bus_phases=n_bus_phases, zone_buses=zone_buses, v_min=V_MIN, v_max=V_MAX
+                )
+                ppo_ctrl = PPOBatchSizeController(
+                    specs,
+                    model_path=site_model,
+                    obs_config=obs_config,
+                    dt_s=DT_CTRL,
+                    site_id=site_id if len(site_ids) > 1 else None,
+                )
+                controllers.append(ppo_ctrl)
 
     # baseline: no batch controller added
 

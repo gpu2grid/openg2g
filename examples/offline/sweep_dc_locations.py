@@ -2112,8 +2112,8 @@ def _experiment_ieee13(sys_const, training_trace):
         deploy("Llama-3.1-8B", 720),
         deploy("Llama-3.1-70B", 180),
         deploy("Llama-3.1-405B", 90),
-        deploy("Qwen2.5-Coder-32B", 480),
-        deploy("Qwen2.5-72B", 210),
+        deploy("Qwen3-30B-A3B", 480),
+        deploy("Qwen3-235B-A22B", 210),
     )
 
     # Per-model ramps: target = round(fraction * num_replicas) with fraction=0.2
@@ -2123,8 +2123,8 @@ def _experiment_ieee13(sys_const, training_trace):
         InferenceRamp(target=144, model="Llama-3.1-8B").at(t_start=2500, t_end=3000)
         | InferenceRamp(target=36, model="Llama-3.1-70B").at(t_start=2500, t_end=3000)
         | InferenceRamp(target=18, model="Llama-3.1-405B").at(t_start=2500, t_end=3000)
-        | InferenceRamp(target=96, model="Qwen2.5-Coder-32B").at(t_start=2500, t_end=3000)
-        | InferenceRamp(target=42, model="Qwen2.5-72B").at(t_start=2500, t_end=3000)
+        | InferenceRamp(target=96, model="Qwen3-30B-A3B").at(t_start=2500, t_end=3000)
+        | InferenceRamp(target=42, model="Qwen3-235B-A22B").at(t_start=2500, t_end=3000)
     )
 
     dc_sites = {
@@ -2191,8 +2191,8 @@ def _experiment_ieee34(sys_const, training_trace):
         deploy("Llama-3.1-405B", 90),
     )
     downstream_models = (
-        deploy("Qwen2.5-Coder-32B", 480),
-        deploy("Qwen2.5-72B", 210),
+        deploy("Qwen3-30B-A3B", 480),
+        deploy("Qwen3-235B-A22B", 210),
     )
 
     dc_sites = {
@@ -2265,11 +2265,11 @@ def _experiment_ieee123(sys_const, training_trace):
             bus="23",
             bus_kv=sys_const["bus_kv"],
             base_kw_per_phase=265.0,
-            models=(deploy("Qwen2.5-Coder-32B", 80),),
+            models=(deploy("Qwen3-30B-A3B", 80),),
             seed=17,
             total_gpu_capacity=160,
             # 30B: round(1.3 * 80) = 104
-            inference_ramps=InferenceRamp(target=104, model="Qwen2.5-Coder-32B").at(t_start=1500, t_end=2500),
+            inference_ramps=InferenceRamp(target=104, model="Qwen3-30B-A3B").at(t_start=1500, t_end=2500),
         ),
         "z3_se": DCSite(
             bus="60",
@@ -2288,11 +2288,11 @@ def _experiment_ieee123(sys_const, training_trace):
             bus="105",
             bus_kv=sys_const["bus_kv"],
             base_kw_per_phase=325.0,
-            models=(deploy("Qwen2.5-72B", 55),),
+            models=(deploy("Qwen3-235B-A22B", 55),),
             seed=51,
             total_gpu_capacity=440,
             # 235B: round(0.5 * 55) = 27
-            inference_ramps=InferenceRamp(target=27, model="Qwen2.5-72B").at(t_start=2000, t_end=2500),
+            inference_ramps=InferenceRamp(target=27, model="Qwen3-235B-A22B").at(t_start=2000, t_end=2500),
         ),
     }
 

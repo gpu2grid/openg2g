@@ -574,11 +574,15 @@ def _experiment_ieee13(sys, inference_data, training_trace, logistic_models):
         ),
     }
 
-    training = TrainingRun(
-        n_gpus=2400,
-        trace=training_trace,
-        target_peak_W_per_gpu=400.0,
-    ).at(t_start=1000.0, t_end=2000.0)
+    training = (
+        TrainingRun(
+            n_gpus=2400,
+            trace=training_trace,
+            target_peak_W_per_gpu=400.0,
+        ).at(t_start=1000.0, t_end=2000.0)
+        if training_trace is not None
+        else None
+    )
 
     ofo_config = OFOConfig(
         primal_step_size=0.1,

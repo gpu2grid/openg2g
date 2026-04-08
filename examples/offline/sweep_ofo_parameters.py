@@ -568,8 +568,8 @@ def _experiment_ieee13(
         deploy("Llama-3.1-8B", 720),
         deploy("Llama-3.1-70B", 180),
         deploy("Llama-3.1-405B", 90),
-        deploy("Qwen2.5-32B", 480),
-        deploy("Qwen2.5-235B-A22B", 210),
+        deploy("Qwen3-30B-A3B", 480),
+        deploy("Qwen3-235B-A22B", 210),
     )
 
     # Ramp target=0.2 of initial replicas: 144, 36, 18, 96, 42
@@ -577,8 +577,8 @@ def _experiment_ieee13(
         InferenceRamp(target=144, model="Llama-3.1-8B").at(t_start=2500, t_end=3000)
         | InferenceRamp(target=36, model="Llama-3.1-70B").at(t_start=2500, t_end=3000)
         | InferenceRamp(target=18, model="Llama-3.1-405B").at(t_start=2500, t_end=3000)
-        | InferenceRamp(target=96, model="Qwen2.5-32B").at(t_start=2500, t_end=3000)
-        | InferenceRamp(target=42, model="Qwen2.5-235B-A22B").at(t_start=2500, t_end=3000)
+        | InferenceRamp(target=96, model="Qwen3-30B-A3B").at(t_start=2500, t_end=3000)
+        | InferenceRamp(target=42, model="Qwen3-235B-A22B").at(t_start=2500, t_end=3000)
     )
 
     dc_sites = {
@@ -637,8 +637,8 @@ def _experiment_ieee34(
         deploy("Llama-3.1-405B", 90),
     )
     downstream_models = (
-        deploy("Qwen2.5-32B", 480),
-        deploy("Qwen2.5-235B-A22B", 210),
+        deploy("Qwen3-30B-A3B", 480),
+        deploy("Qwen3-235B-A22B", 210),
     )
 
     dc_sites = {
@@ -715,10 +715,10 @@ def _experiment_ieee123(
             bus="23",
             bus_kv=sys["bus_kv"],
             base_kw_per_phase=265.0,
-            models=(deploy("Qwen2.5-32B", 80),),
+            models=(deploy("Qwen3-30B-A3B", 80),),
             seed=17,
             total_gpu_capacity=160,
-            inference_ramps=InferenceRamp(target=104, model="Qwen2.5-32B").at(t_start=1500, t_end=2500),
+            inference_ramps=InferenceRamp(target=104, model="Qwen3-30B-A3B").at(t_start=1500, t_end=2500),
         ),
         "z3_se": DCSite(
             bus="60",
@@ -736,10 +736,10 @@ def _experiment_ieee123(
             bus="105",
             bus_kv=sys["bus_kv"],
             base_kw_per_phase=325.0,
-            models=(deploy("Qwen2.5-235B-A22B", 55),),
+            models=(deploy("Qwen3-235B-A22B", 55),),
             seed=51,
             total_gpu_capacity=440,
-            inference_ramps=InferenceRamp(target=27, model="Qwen2.5-235B-A22B").at(t_start=2000, t_end=2500),
+            inference_ramps=InferenceRamp(target=27, model="Qwen3-235B-A22B").at(t_start=2000, t_end=2500),
         ),
     }
 
@@ -860,8 +860,9 @@ def _setup(
     primary_bus = ""
 
     for site_id, site in dc_sites.items():
-        site_models_map[site_id] = site.models
-        site_inference = inference_data.filter_models(site.models)
+        site_specs = tuple(md.spec for md in site.models)
+        site_models_map[site_id] = site_specs
+        site_inference = inference_data.filter_models(site_specs)
 
         dc_config = DatacenterConfig(gpus_per_server=8, base_kw_per_phase=site.base_kw_per_phase)
 

@@ -49,7 +49,7 @@ LOAD_SHIFT_DC_SITES: dict[str, DCSite] = {
         bus_kv=4.16,
         base_kw_per_phase=210,
         models=(deploy("Llama-3.1-8B", 120), deploy("Qwen3-30B-A3B", 120), deploy("Llama-3.1-70B", 120)),
-        total_gpu_capacity=520,
+        total_gpu_capacity=1092,
         load_shift_headroom=0.3,
     ),
     "z2_nw": DCSite(
@@ -70,7 +70,7 @@ LOAD_SHIFT_DC_SITES: dict[str, DCSite] = {
             deploy("Llama-3.1-405B", 40),
             deploy("Qwen3-235B-A22B", 40),
         ),
-        total_gpu_capacity=1300,
+        total_gpu_capacity=1768,
         load_shift_headroom=0.3,
     ),
     "z4_ne": DCSite(
