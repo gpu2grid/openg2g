@@ -624,7 +624,7 @@ def _experiment_ieee34(sys, inference_data, training_trace, logistic_models):
             bus="850",
             bus_kv=sys["bus_kv"],
             base_kw_per_phase=120.0,
-            total_gpu_capacity=520,
+            total_gpu_capacity=2400,
             models=(
                 deploy("Llama-3.1-8B", 720),
                 deploy("Llama-3.1-70B", 180),
@@ -636,7 +636,7 @@ def _experiment_ieee34(sys, inference_data, training_trace, logistic_models):
             bus="834",
             bus_kv=sys["bus_kv"],
             base_kw_per_phase=80.0,
-            total_gpu_capacity=600,
+            total_gpu_capacity=2880,
             models=(
                 deploy("Qwen3-30B-A3B", 480),
                 deploy("Qwen3-235B-A22B", 210),
