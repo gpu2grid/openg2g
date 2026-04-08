@@ -46,13 +46,14 @@ def _make_deployment(
 ) -> VLLMDeployment:
     spec = InferenceModelSpec(
         model_label=label,
-        num_replicas=num_replicas,
         gpus_per_replica=gpus_per_replica,
-        initial_batch_size=128,
         itl_deadline_s=0.1,
+        feasible_batch_sizes=(64, 128),
     )
     return VLLMDeployment(
         spec=spec,
+        simulated_num_replicas=num_replicas,
+        initial_batch_size=128,
         vllm_base_url=f"http://{host}:8000",
         gpu_endpoints=(GPUEndpointMapping(host=host, port=port, gpu_indices=gpu_indices),),
     )
@@ -205,7 +206,13 @@ class TestOnlineAugmentationPipeline:
         phase_list = np.asarray(([0] * sA) + ([1] * sB) + ([2] * sC), dtype=int)
         rng.shuffle(phase_list)
 
-        policy = RampActivationPolicy(InferenceRampSchedule(), num_servers, rng)
+        policy = RampActivationPolicy(
+            InferenceRampSchedule(initial_count=num_replicas),
+            num_servers,
+            rng,
+            gpus_per_replica=gpus_per_replica,
+            gpus_per_server=gpus_per_server,
+        )
 
         stagger_offsets = rng.uniform(0.0, 10.0, size=num_servers)
         amplitude_scales = rng.uniform(

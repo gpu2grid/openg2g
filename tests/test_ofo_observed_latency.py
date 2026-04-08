@@ -100,9 +100,7 @@ def _make_model_store() -> LogisticModelStore:
 def _build_controller() -> OFOBatchSizeController:
     model = InferenceModelSpec(
         model_label="M1",
-        num_replicas=10,
         gpus_per_replica=1,
-        initial_batch_size=64,
         itl_deadline_s=0.1,
         feasible_batch_sizes=(8, 16, 32, 64, 128),
     )
@@ -119,6 +117,7 @@ def _build_controller() -> OFOBatchSizeController:
             latency_dual_step_size=1.0,
         ),
         dt_s=Fraction(1),
+        initial_batch_sizes={"M1": 64},
     )
 
 

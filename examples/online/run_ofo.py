@@ -21,6 +21,7 @@ from pathlib import Path
 import numpy as np
 from pydantic import BaseModel
 
+from openg2g import PROJECT_ROOT
 from openg2g.controller.ofo import (
     LogisticModelStore,
     OFOBatchSizeController,
@@ -94,7 +95,7 @@ def main(*, config_path: Path) -> None:
     RequestStore.ensure(requests_dir, [d.spec for d in config.deployments], config.requests)
 
     data_sources = {s.model_label: s for s in config.data_sources} if config.data_sources else None
-    data_dir = config.data_dir or Path("data/offline") / config.data_hash
+    data_dir = config.data_dir or PROJECT_ROOT / "data" / "offline" / config.data_hash
     logistic_models = LogisticModelStore.ensure(
         data_dir / "logistic_fits.csv",
         models,
@@ -124,7 +125,7 @@ def main(*, config_path: Path) -> None:
     logger.info("Initializing OpenDSSGrid...")
     grid = OpenDSSGrid(
         dss_case_dir=config.ieee_case_dir,
-        dss_master_file="IEEE13Nodeckt.dss",
+        dss_master_file="IEEE13Bus.dss",
         dc_bus=DC_BUS,
         dc_bus_kv=4.16,
         power_factor=dc_config.power_factor,

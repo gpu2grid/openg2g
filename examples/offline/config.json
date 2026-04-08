@@ -1,11 +1,9 @@
 {
-  "models": [
+  "model_specs": [
     {
       "model_label": "Llama-3.1-8B",
       "model_id": "meta-llama/Llama-3.1-8B-Instruct",
       "gpus_per_replica": 1,
-      "num_replicas": 720,
-      "initial_batch_size": 128,
       "itl_deadline_s": 0.08,
       "feasible_batch_sizes": [8, 16, 32, 64, 128, 256, 512]
     },
@@ -13,8 +11,6 @@
       "model_label": "Llama-3.1-70B",
       "model_id": "meta-llama/Llama-3.1-70B-Instruct",
       "gpus_per_replica": 4,
-      "num_replicas": 180,
-      "initial_batch_size": 128,
       "itl_deadline_s": 0.10,
       "feasible_batch_sizes": [8, 16, 32, 64, 128, 256, 512]
     },
@@ -22,8 +18,6 @@
       "model_label": "Llama-3.1-405B",
       "model_id": "meta-llama/Llama-3.1-405B-Instruct-FP8",
       "gpus_per_replica": 8,
-      "num_replicas": 90,
-      "initial_batch_size": 128,
       "itl_deadline_s": 0.12,
       "feasible_batch_sizes": [8, 16, 32, 64, 128, 256, 512]
     },
@@ -31,8 +25,6 @@
       "model_label": "Qwen3-30B-A3B",
       "model_id": "Qwen/Qwen3-30B-A3B-Thinking-2507",
       "gpus_per_replica": 2,
-      "num_replicas": 480,
-      "initial_batch_size": 128,
       "itl_deadline_s": 0.06,
       "feasible_batch_sizes": [8, 16, 32, 64, 128, 256, 512]
     },
@@ -40,8 +32,6 @@
       "model_label": "Qwen3-235B-A22B",
       "model_id": "Qwen/Qwen3-235B-A22B-Thinking-2507",
       "gpus_per_replica": 8,
-      "num_replicas": 210,
-      "initial_batch_size": 128,
       "itl_deadline_s": 0.14,
       "feasible_batch_sizes": [8, 16, 32, 64, 128, 256, 512]
     }
@@ -53,8 +43,5 @@
     {"model_label": "Qwen3-30B-A3B", "task": "gpqa", "gpu": "H100", "batch_sizes": [8, 16, 32, 64, 96, 128, 192, 256, 384, 512]},
     {"model_label": "Qwen3-235B-A22B", "task": "gpqa", "gpu": "H100", "batch_sizes": [8, 16, 32, 64, 96, 128, 192, 256, 384, 512]}
   ],
-  "training_trace_params": {},
-  "data_dir": null,
-  "ieee_case_dir": "examples/ieee13",
-  "mlenergy_data_dir": null
+  "training_trace_params": {}
 }

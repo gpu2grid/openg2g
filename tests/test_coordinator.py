@@ -61,7 +61,7 @@ class _StubGrid(GridBackend[GridState]):
         super().__init__()
         self._dt_s = dt_s
         self.step_count = 0
-        self.step_calls: list[tuple[SimulationClock, list[ThreePhase]]] = []
+        self.step_calls: list[tuple[SimulationClock, dict[str, list[ThreePhase]] | list[ThreePhase]]] = []
 
     @property
     def dt_s(self) -> Fraction:
@@ -74,11 +74,11 @@ class _StubGrid(GridBackend[GridState]):
     def step(
         self,
         clock: SimulationClock,
-        power_samples_w: list[ThreePhase],
+        power_samples_w: dict[str, list[ThreePhase]] | list[ThreePhase],
         events: EventEmitter,
     ) -> GridState:
         self.step_count += 1
-        self.step_calls.append((clock, list(power_samples_w)))
+        self.step_calls.append((clock, power_samples_w))
         return GridState(
             time_s=clock.time_s,
             voltages=BusVoltages({"671": PhaseVoltages(a=1.0, b=1.0, c=1.0)}),
@@ -164,7 +164,7 @@ def test_coordinator_dc_buffer_flush():
     assert grid.step_count == 2
     # First grid call (step 0): 1 DC sample accumulated
     # Second grid call (step 5): 5 DC samples (steps 1-5)
-    sizes = [len(call[1]) for call in grid.step_calls]
+    sizes = [len(next(iter(call[1].values()))) for call in grid.step_calls]
     assert sizes == [1, 5]
 
 
@@ -181,7 +181,7 @@ def test_coordinator_controller_order():
         def step(
             self,
             clock: SimulationClock,
-            power_samples_w: list[ThreePhase],
+            power_samples_w: dict[str, list[ThreePhase]] | list[ThreePhase],
             events: EventEmitter,
         ) -> GridState:
             call_order.append("grid")

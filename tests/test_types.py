@@ -3,6 +3,8 @@ InferenceRampSchedule, ActivationPolicy, TrainingRun, TrainingSchedule."""
 
 from __future__ import annotations
 
+import typing
+
 import numpy as np
 import pytest
 
@@ -46,7 +48,7 @@ class TestTapPosition:
 
     def test_no_phase_raises(self) -> None:
         """Constructing with no phases should raise ValueError."""
-        with pytest.raises(ValueError, match="at least one phase"):
+        with pytest.raises(ValueError, match="at least one"):
             TapPosition()
 
     def test_at_returns_schedule(self) -> None:
@@ -118,98 +120,114 @@ class TestTapSchedule:
 
 class TestInferenceRamp:
     def test_basic(self) -> None:
-        """InferenceRamp should store its target fraction."""
-        r = InferenceRamp(target=0.5)
-        assert r.target == 0.5
+        """InferenceRamp should store its target count and model."""
+        r = InferenceRamp(target=50, model="M")
+        assert r.target == 50
+        assert r.model == "M"
 
     def test_invalid_target_low(self) -> None:
-        """Negative target fraction should raise ValueError."""
-        with pytest.raises(ValueError, match="target must be in"):
-            InferenceRamp(target=-0.1)
+        """Negative target should raise ValueError."""
+        with pytest.raises(ValueError, match=r"target must be >= 0"):
+            InferenceRamp(target=-1, model="M")
 
-    def test_invalid_target_high(self) -> None:
-        """Target fraction above 1.0 should raise ValueError."""
-        with pytest.raises(ValueError, match="target must be in"):
-            InferenceRamp(target=1.5)
+    def test_target_above_initial_is_valid(self) -> None:
+        """Target above initial count is valid (scale out)."""
+        r = InferenceRamp(target=150, model="M")
+        assert r.target == 150
 
     def test_at_returns_schedule(self) -> None:
         """Calling .at() should wrap in a single-entry InferenceRampSchedule."""
-        s = InferenceRamp(target=0.5).at(t_start=1000, t_end=2000)
+        s = InferenceRamp(target=50, model="M").at(t_start=1000, t_end=2000)
         assert isinstance(s, InferenceRampSchedule)
         assert len(s) == 1
 
     def test_at_invalid_time_order(self) -> None:
         """t_end before t_start should raise ValueError."""
         with pytest.raises(ValueError, match=r"t_end.*must be >= t_start"):
-            InferenceRamp(target=0.5).at(t_start=2000, t_end=1000)
+            InferenceRamp(target=50, model="M").at(t_start=2000, t_end=1000)
 
     def test_pipe_creates_schedule(self) -> None:
         """Piping two scheduled ramps should produce an InferenceRampSchedule."""
-        s = InferenceRamp(target=0.5).at(t_start=100, t_end=200) | InferenceRamp(target=1.0).at(t_start=300, t_end=400)
+        s = InferenceRamp(target=50, model="M").at(t_start=100, t_end=200) | InferenceRamp(target=100, model="M").at(
+            t_start=300, t_end=400
+        )
         assert isinstance(s, InferenceRampSchedule)
         assert len(s) == 2
 
     def test_pipe_three(self) -> None:
         """Chaining three ramps with | should accumulate all entries."""
         s = (
-            InferenceRamp(target=0.5).at(t_start=100, t_end=200)
-            | InferenceRamp(target=1.0).at(t_start=300, t_end=400)
-            | InferenceRamp(target=0.3).at(t_start=500, t_end=600)
+            InferenceRamp(target=50, model="M").at(t_start=100, t_end=200)
+            | InferenceRamp(target=100, model="M").at(t_start=300, t_end=400)
+            | InferenceRamp(target=30, model="M").at(t_start=500, t_end=600)
         )
         assert isinstance(s, InferenceRampSchedule)
         assert len(s) == 3
 
 
 class TestInferenceRampSchedule:
-    def test_fraction_before_first_ramp(self) -> None:
-        """Before the first ramp starts, the active fraction should be 1.0."""
-        s = InferenceRamp(target=0.5).at(t_start=1000, t_end=2000)
-        assert s.fraction_at(0.0) == 1.0
-        assert s.fraction_at(999.0) == 1.0
+    def test_count_before_first_ramp(self) -> None:
+        """Before the first ramp starts, count should be initial_count."""
+        s = InferenceRamp(target=50, model="M").at(t_start=1000, t_end=2000)
+        s = InferenceRampSchedule(s._entries, initial_count=100)
+        assert s.count_at(0.0) == 100.0
+        assert s.count_at(999.0) == 100.0
 
-    def test_fraction_during_ramp(self) -> None:
-        """During a ramp, the fraction should linearly interpolate from
-        the previous level to the target."""
-        s = InferenceRamp(target=0.0).at(t_start=1000, t_end=2000)
-        assert s.fraction_at(1000.0) == 1.0
-        assert s.fraction_at(1500.0) == pytest.approx(0.5)
-        assert s.fraction_at(2000.0) == pytest.approx(0.0)
+    def test_count_during_ramp(self) -> None:
+        """During a ramp, the count should linearly interpolate."""
+        s = InferenceRampSchedule(
+            ((InferenceRamp(target=0, model="M"), 1000.0, 2000.0),),
+            initial_count=100,
+        )
+        assert s.count_at(1000.0) == 100.0
+        assert s.count_at(1500.0) == pytest.approx(50.0)
+        assert s.count_at(2000.0) == pytest.approx(0.0)
 
-    def test_fraction_after_ramp(self) -> None:
-        """After a ramp completes, the fraction should hold at the target."""
-        s = InferenceRamp(target=0.2).at(t_start=1000, t_end=2000)
-        assert s.fraction_at(3000.0) == pytest.approx(0.2)
+    def test_count_after_ramp(self) -> None:
+        """After a ramp completes, the count should hold at the target."""
+        s = InferenceRampSchedule(
+            ((InferenceRamp(target=20, model="M"), 1000.0, 2000.0),),
+            initial_count=100,
+        )
+        assert s.count_at(3000.0) == pytest.approx(20.0)
 
     def test_two_ramps(self) -> None:
-        """Two sequential ramps: first ramps down to 0.2, second ramps back
-        up to 1.0. The fraction should hold between ramps."""
-        s = InferenceRamp(target=0.2).at(t_start=1000, t_end=2000) | InferenceRamp(target=1.0).at(
+        """Two sequential ramps: first ramps down to 20, second ramps back
+        up to 100. The count should hold between ramps."""
+        s = InferenceRamp(target=20, model="M").at(t_start=1000, t_end=2000) | InferenceRamp(target=100, model="M").at(
             t_start=3000, t_end=3500
         )
-        assert s.fraction_at(0.0) == 1.0
-        assert s.fraction_at(1500.0) == pytest.approx(0.6)
-        assert s.fraction_at(2500.0) == pytest.approx(0.2)
-        assert s.fraction_at(3250.0) == pytest.approx(0.6)
-        assert s.fraction_at(4000.0) == pytest.approx(1.0)
+        s = InferenceRampSchedule(s._entries, initial_count=100)
+        assert s.count_at(0.0) == 100.0
+        assert s.count_at(1500.0) == pytest.approx(60.0)
+        assert s.count_at(2500.0) == pytest.approx(20.0)
+        assert s.count_at(3250.0) == pytest.approx(60.0)
+        assert s.count_at(4000.0) == pytest.approx(100.0)
 
     def test_instant_ramp(self) -> None:
         """A ramp with t_start == t_end should produce an instant step change."""
-        s = InferenceRamp(target=0.5).at(t_start=1000, t_end=1000)
-        assert s.fraction_at(999.0) == 1.0
-        assert s.fraction_at(1000.0) == 0.5
-        assert s.fraction_at(1001.0) == 0.5
+        s = InferenceRampSchedule(
+            ((InferenceRamp(target=50, model="M"), 1000.0, 1000.0),),
+            initial_count=100,
+        )
+        assert s.count_at(999.0) == 100.0
+        assert s.count_at(1000.0) == 50.0
+        assert s.count_at(1001.0) == 50.0
 
-    def test_fraction_array(self) -> None:
-        """fraction_at should accept a numpy array and return element-wise results."""
-        s = InferenceRamp(target=0.0).at(t_start=1000, t_end=2000)
+    def test_count_array(self) -> None:
+        """count_at should accept a numpy array and return element-wise results."""
+        s = InferenceRampSchedule(
+            ((InferenceRamp(target=0, model="M"), 1000.0, 2000.0),),
+            initial_count=100,
+        )
         t = np.array([0.0, 1000.0, 1500.0, 2000.0, 3000.0])
-        result = s.fraction_at(t)
-        expected = np.array([1.0, 1.0, 0.5, 0.0, 0.0])
+        result = s.count_at(t)
+        expected = np.array([100.0, 100.0, 50.0, 0.0, 0.0])
         np.testing.assert_allclose(result, expected)
 
     def test_sorted_by_start(self) -> None:
         """Ramps piped in reverse order should still be sorted by t_start."""
-        s = InferenceRamp(target=1.0).at(t_start=3000, t_end=3500) | InferenceRamp(target=0.2).at(
+        s = InferenceRamp(target=100, model="M").at(t_start=3000, t_end=3500) | InferenceRamp(target=20, model="M").at(
             t_start=1000, t_end=2000
         )
         starts = [t_start for _, t_start, _ in s]
@@ -343,46 +361,67 @@ class TestOnlineDatacenterState:
 
 
 class TestRampActivationPolicy:
+    # 10 replicas, 1 GPU/replica, 8 GPUs/server → ceil(10/8) = 2 servers
+    _POLICY_KWARGS: typing.ClassVar[dict[str, int]] = dict(gpus_per_replica=1, gpus_per_server=8)
+
     def test_all_active_before_ramp(self) -> None:
         """Before the first ramp, all servers should be active."""
-        schedule = InferenceRamp(target=0.5).at(t_start=1000, t_end=2000)
-        policy = RampActivationPolicy(schedule, num_servers=10, rng=np.random.default_rng(42))
+        schedule = InferenceRampSchedule(
+            ((InferenceRamp(target=5, model="M"), 1000.0, 2000.0),),
+            initial_count=10,
+        )
+        # 10 replicas × 1 GPU = 10 GPUs → ceil(10/8) = 2 servers
+        policy = RampActivationPolicy(schedule, num_servers=2, rng=np.random.default_rng(42), **self._POLICY_KWARGS)
         mask = policy.active_mask(0.0)
-        assert mask.sum() == 10
+        assert mask.sum() == 2
 
     def test_ramp_down(self) -> None:
-        """After ramp completes, only the target fraction of servers should be active."""
-        schedule = InferenceRamp(target=0.5).at(t_start=0, t_end=0)
-        policy = RampActivationPolicy(schedule, num_servers=10, rng=np.random.default_rng(42))
+        """After ramp to 5 replicas, only 1 server should be active (ceil(5/8))."""
+        schedule = InferenceRampSchedule(
+            ((InferenceRamp(target=5, model="M"), 0.0, 0.0),),
+            initial_count=10,
+        )
+        policy = RampActivationPolicy(schedule, num_servers=2, rng=np.random.default_rng(42), **self._POLICY_KWARGS)
         mask = policy.active_mask(1.0)
-        assert mask.sum() == 5
+        assert mask.sum() == 1  # ceil(5*1/8) = 1
 
     def test_ramp_up(self) -> None:
-        """Ramp up: start at 0.2, ramp to 1.0."""
-        schedule = InferenceRamp(target=0.2).at(t_start=0, t_end=0) | InferenceRamp(target=1.0).at(
-            t_start=100, t_end=100
+        """Ramp up: start at 2 replicas, ramp to 10."""
+        schedule = InferenceRampSchedule(
+            (
+                (InferenceRamp(target=2, model="M"), 0.0, 0.0),
+                (InferenceRamp(target=10, model="M"), 100.0, 100.0),
+            ),
+            initial_count=10,
         )
-        policy = RampActivationPolicy(schedule, num_servers=10, rng=np.random.default_rng(42))
+        policy = RampActivationPolicy(schedule, num_servers=2, rng=np.random.default_rng(42), **self._POLICY_KWARGS)
         mask_low = policy.active_mask(50.0)
         mask_high = policy.active_mask(200.0)
-        assert mask_low.sum() == 2
-        assert mask_high.sum() == 10
+        assert mask_low.sum() == 1  # ceil(2/8) = 1
+        assert mask_high.sum() == 2  # ceil(10/8) = 2
 
     def test_ramp_up_servers_superset(self) -> None:
-        """Servers active at low fraction should be a subset of those active at high fraction."""
-        schedule = InferenceRamp(target=0.3).at(t_start=0, t_end=0) | InferenceRamp(target=0.7).at(
-            t_start=100, t_end=100
+        """Servers active at low count should be a subset of those active at high count."""
+        schedule = InferenceRampSchedule(
+            (
+                (InferenceRamp(target=3, model="M"), 0.0, 0.0),
+                (InferenceRamp(target=7, model="M"), 100.0, 100.0),
+            ),
+            initial_count=10,
         )
-        policy = RampActivationPolicy(schedule, num_servers=10, rng=np.random.default_rng(42))
+        policy = RampActivationPolicy(schedule, num_servers=2, rng=np.random.default_rng(42), **self._POLICY_KWARGS)
         mask_low = policy.active_mask(50.0)
         mask_high = policy.active_mask(200.0)
         assert np.all(mask_high[mask_low])
 
     def test_deterministic_with_same_seed(self) -> None:
         """Same seed should produce the same activation mask."""
-        schedule = InferenceRamp(target=0.5).at(t_start=0, t_end=0)
-        p1 = RampActivationPolicy(schedule, num_servers=20, rng=np.random.default_rng(0))
-        p2 = RampActivationPolicy(schedule, num_servers=20, rng=np.random.default_rng(0))
+        schedule = InferenceRampSchedule(
+            ((InferenceRamp(target=5, model="M"), 0.0, 0.0),),
+            initial_count=10,
+        )
+        p1 = RampActivationPolicy(schedule, num_servers=3, rng=np.random.default_rng(0), **self._POLICY_KWARGS)
+        p2 = RampActivationPolicy(schedule, num_servers=3, rng=np.random.default_rng(0), **self._POLICY_KWARGS)
         np.testing.assert_array_equal(p1.active_mask(1.0), p2.active_mask(1.0))
 
     def test_custom_policy_subclass(self) -> None:

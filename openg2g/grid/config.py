@@ -3,36 +3,83 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Literal
+
+_PHASE_KEYS = ("a", "b", "c")
+
+
+@dataclass(frozen=True)
+class DCLoadSpec:
+    """Specification for a datacenter load connection point on the grid.
+
+    Args:
+        bus: Bus name where the datacenter is connected.
+        bus_kv: Line-to-line voltage (kV) at the datacenter bus.
+        connection_type: Connection type for DC loads (default ``"wye"``).
+    """
+
+    bus: str
+    bus_kv: float
+    connection_type: Literal["wye", "delta"] = "wye"
 
 
 @dataclass(frozen=True)
 class TapPosition:
-    """Regulator tap position per phase, as per-unit tap ratios.
+    """Regulator tap position as a mapping of regulator names to tap ratios.
 
-    Each field is the tap ratio for the corresponding phase regulator.
-    Phases set to `None` are left unchanged when applied.  At least
-    one phase must be specified.
-
-    Combine with [`at`][.at] and `|` to build a [`TapSchedule`][..TapSchedule]:
+    All regulators are stored in a single ``regulators`` dict.  For
+    convenience, per-phase keyword arguments ``a``, ``b``, ``c`` are
+    accepted and stored under those keys:
 
     ```python
-    TAP_STEP = 0.00625  # standard 5/8% tap step
-    schedule = (
-        TapPosition(a=1.0 + 14 * TAP_STEP, b=1.0 + 6 * TAP_STEP, c=1.0 + 15 * TAP_STEP).at(t=0)
-        | TapPosition(a=1.1).at(t=1500)
-        | TapPosition(a=1.0625, c=1.0625).at(t=3300)
-    )
+    # These are equivalent:
+    TapPosition(a=1.075, b=1.05, c=1.075)
+    TapPosition(regulators={"a": 1.075, "b": 1.05, "c": 1.075})
     ```
+
+    Named regulators for multi-bank systems:
+
+    ```python
+    TapPosition(regulators={"creg1a": 1.075, "creg1b": 1.05, "creg2a": 1.0})
+    ```
+
+    Attributes:
+        regulators: Mapping of regulator name to tap ratio (pu).
     """
 
-    a: float | None = None
-    b: float | None = None
-    c: float | None = None
+    regulators: dict[str, float] = field(default_factory=dict)
 
-    def __post_init__(self) -> None:
-        if self.a is None and self.b is None and self.c is None:
-            raise ValueError("TapPosition requires at least one phase (a, b, or c).")
+    def __init__(
+        self,
+        *,
+        a: float | None = None,
+        b: float | None = None,
+        c: float | None = None,
+        regulators: dict[str, float] | None = None,
+    ) -> None:
+        merged = dict(regulators) if regulators else {}
+        for key, val in zip(_PHASE_KEYS, (a, b, c), strict=True):
+            if val is not None:
+                merged[key] = val
+        if not merged:
+            raise ValueError("TapPosition requires at least one regulator tap value.")
+        object.__setattr__(self, "regulators", merged)
+
+    @property
+    def a(self) -> float | None:
+        """Phase A tap ratio, or ``None`` if not set."""
+        return self.regulators.get("a")
+
+    @property
+    def b(self) -> float | None:
+        """Phase B tap ratio, or ``None`` if not set."""
+        return self.regulators.get("b")
+
+    @property
+    def c(self) -> float | None:
+        """Phase C tap ratio, or ``None`` if not set."""
+        return self.regulators.get("c")
 
     def at(self, t: float) -> TapSchedule:
         """Schedule this position at time `t` seconds."""
@@ -42,7 +89,7 @@ class TapPosition:
 class TapSchedule:
     """Ordered sequence of scheduled tap positions.
 
-    Build using [`TapPosition.at`][..TapPosition.at] and the `|` operator:
+    Build using [`TapPosition.at`][..TapPosition.at] and the ``|`` operator:
 
     ```python
     TAP_STEP = 0.00625  # standard 5/8% tap step
@@ -88,5 +135,9 @@ class TapSchedule:
                 fields.append(f"b={p.b}")
             if p.c is not None:
                 fields.append(f"c={p.c}")
+            # Show non-phase regulators
+            for name, val in p.regulators.items():
+                if name not in _PHASE_KEYS:
+                    fields.append(f"{name}={val}")
             parts.append(f"TapPosition({', '.join(fields)}).at(t={t})")
         return " | ".join(parts)

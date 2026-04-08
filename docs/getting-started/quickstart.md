@@ -14,7 +14,7 @@ The example scripts automatically download and process GPU benchmark data from t
 
 ## Clone the Repository
 
-This is to get the example scripts and config files.
+This is to get the example scripts and data files.
 
 ```bash
 git clone https://github.com/gpu2grid/openg2g.git
@@ -33,11 +33,11 @@ These three runs correspond to the evaluation cases in the [GPU-to-Grid paper](h
 - **`run_ofo.py`**: OFO closed-loop batch size optimization
 
 ```bash
-python examples/offline/run_baseline.py --config examples/offline/config.json --mode no-tap
+python examples/offline/run_baseline.py --system ieee13 --mode no-tap
 
-python examples/offline/run_baseline.py --config examples/offline/config.json --mode tap-change
+python examples/offline/run_baseline.py --system ieee13 --mode tap-change
 
-python examples/offline/run_ofo.py --config examples/offline/config.json
+python examples/offline/run_ofo.py --system ieee13
 ```
 
 The first run will download benchmark data and generate simulation artifacts (this takes a few minutes). Subsequent runs load from the cache directory (`data/offline/{hash}/`).
