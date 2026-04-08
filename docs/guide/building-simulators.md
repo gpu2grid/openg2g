@@ -488,4 +488,3 @@ The `examples/offline/` directory includes ready-to-run analysis scripts. For de
 | `analyze_LLM_load_shifting.py` | Cross-site LLM replica shifting comparison | [Multi-DC Coordination](../examples/multi-dc-coordination.md) |
 | `optimize_pv_locations_and_capacities.py` | PV placement + capacity MILP | [PV + DC Siting](../examples/pv-dc-siting.md) |
 | `optimize_pv_and_dc_locations.py` | Joint PV + DC location MILP | [PV + DC Siting](../examples/pv-dc-siting.md) |
-| `plot_all_figures.py` | Reusable plotting utilities | — |

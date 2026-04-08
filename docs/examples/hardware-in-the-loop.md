@@ -1,5 +1,8 @@
 # Hardware-in-the-Loop Validation
 
+!!! Warning
+    Hardware-in-the-loop is experimental and currently under active development.
+
 ## Research Question
 
 Do controllers work on real GPUs with a simulated grid?
