@@ -315,11 +315,12 @@ def _plot_sweep_summary(df: pd.DataFrame, save_dir: Path, model_labels: list[str
         ax4.set_xlabel(param, fontsize=11)
         ax4.set_ylabel("Avg Throughput (tokens/s)", fontsize=11)
         ax4.set_title("(d) Average Throughput per Model", fontsize=12)
-        throughput_vals = pd.concat(
-            [sub[f"avg_throughput_tokens_per_s__{l}"] for l in model_labels if f"avg_throughput_tokens_per_s__{l}" in sub.columns],
-            ignore_index=True,
-        )
-        if throughput_vals.dropna().gt(0).any():
+        tp_cols = [
+            sub[f"avg_throughput_tokens_per_s__{ml}"]
+            for ml in model_labels
+            if f"avg_throughput_tokens_per_s__{ml}" in sub.columns
+        ]
+        if tp_cols and pd.concat(tp_cols, ignore_index=True).dropna().gt(0).any():
             ax4.set_yscale("log")
         ax4.legend(fontsize=8, loc="best")
         ax4.grid(True, alpha=0.3)
