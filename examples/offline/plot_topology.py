@@ -49,6 +49,42 @@ def parse_bus_coords(path: Path) -> dict[str, tuple[float, float]]:
     return coords
 
 
+_SETBUSXY_RE = re.compile(r"setbusxy\s+bus\s*=\s*(\S+)\s+x\s*=\s*(-?\d+(?:\.\d+)?)\s+y\s*=\s*(-?\d+(?:\.\d+)?)")
+
+
+def parse_dss_bus_coords(dss_dir: Path, master_file: str) -> dict[str, tuple[float, float]]:
+    """Parse inline ``SetBusXY`` commands from DSS files (following redirects).
+
+    Used when bus coordinates are embedded in the master DSS file instead of a
+    separate CSV/DAT file.
+    """
+    coords: dict[str, tuple[float, float]] = {}
+    visited: set[str] = set()
+
+    def _parse_file(fpath: Path) -> None:
+        if not fpath.exists():
+            return
+        key = str(fpath.resolve()).lower()
+        if key in visited:
+            return
+        visited.add(key)
+
+        text = fpath.read_text(errors="replace")
+        for raw_line in text.splitlines():
+            line = raw_line.strip()
+            lower = line.lower()
+            for directive in ("redirect", "compile"):
+                if lower.startswith(directive):
+                    ref = line[len(directive) :].strip().strip('"').strip("'")
+                    _parse_file(fpath.parent / ref)
+            m = _SETBUSXY_RE.match(lower)
+            if m:
+                coords[m.group(1).lower()] = (float(m.group(2)), float(m.group(3)))
+
+    _parse_file(dss_dir / master_file)
+    return coords
+
+
 def _strip_bus_phases(bus_spec: str) -> str:
     """Strip phase suffixes from a bus specification (e.g., '632.1.2.3' -> '632')."""
     return bus_spec.split(".")[0].strip().lower()
@@ -288,19 +324,24 @@ def plot_topology(
     experiment_fn = _EXPERIMENTS[system]
     experiment = experiment_fn(sys, None, None, None)
 
-    # Find bus coordinate file
-    coord_file = None
-    for candidate in dss_dir.iterdir():
-        if candidate.suffix.lower() in (".csv", ".dat") and "coord" in candidate.name.lower():
-            coord_file = candidate
-            break
-        if "busxy" in candidate.name.lower():
-            coord_file = candidate
-            break
-    if coord_file is None:
-        raise FileNotFoundError(f"No bus coordinate file found in {dss_dir}")
-
-    coords = parse_bus_coords(coord_file)
+    # Try inline SetBusXY commands in the DSS files first; fall back to a
+    # separate CSV/DAT coordinate file if none were found.
+    coords = parse_dss_bus_coords(dss_dir, master_file)
+    if not coords:
+        coord_file = None
+        for candidate in dss_dir.iterdir():
+            if candidate.suffix.lower() in (".csv", ".dat") and "coord" in candidate.name.lower():
+                coord_file = candidate
+                break
+            if "busxy" in candidate.name.lower():
+                coord_file = candidate
+                break
+        if coord_file is None:
+            raise FileNotFoundError(
+                f"No bus coordinates found for '{system}': no SetBusXY commands "
+                f"in DSS files and no coord CSV/DAT file in {dss_dir}"
+            )
+        coords = parse_bus_coords(coord_file)
     edges = parse_dss_edges(dss_dir, master_file)
     parse_dss_regulators(dss_dir, master_file)
 
