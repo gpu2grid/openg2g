@@ -79,30 +79,27 @@ dc_config = DatacenterConfig()
 dc = OfflineDatacenter(
     dc_config,
     OfflineWorkload(inference_data=inference_data, replica_counts=replica_counts),
+    name="dc",
     dt_s=Fraction(1, 10),
     total_gpu_capacity=1440,
 )
 
-# 2. Set up the grid
+# 2. Set up the grid and attach the datacenter
 TAP_STEP = 0.00625
 grid = OpenDSSGrid(
-    dss_case_dir="examples/ieee13",
+    dss_case_dir="data/grid/ieee13",
     dss_master_file="IEEE13Bus.dss",
-    dc_bus="671",
-    dc_bus_kv=4.16,
-    power_factor=dc_config.power_factor,
     dt_s=Fraction(1, 10),
     initial_tap_position=TapPosition(a=1.0 + 14 * TAP_STEP, b=1.0 + 6 * TAP_STEP, c=1.0 + 15 * TAP_STEP),
-    connection_type="wye",
 )
+grid.attach_dc(dc, bus="671")
 
 # 3. Run the simulation
 coord = Coordinator(
-    datacenter=dc,
+    datacenters=[dc],
     grid=grid,
     controllers=[NoopController()],
     total_duration_s=3600,
-    dc_bus="671",
 )
 log = coord.run()
 ```

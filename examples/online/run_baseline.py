@@ -105,6 +105,7 @@ def main(*, config_path: Path, mode: str = "no-tap") -> None:
     dc = OnlineDatacenter(
         dc_config,
         config.deployments,
+        name="dc",
         dt_s=DT_DC,
         seed=0,
         power_augmentation=PowerAugmentationConfig(
@@ -122,23 +123,19 @@ def main(*, config_path: Path, mode: str = "no-tap") -> None:
     grid = OpenDSSGrid(
         dss_case_dir=config.ieee_case_dir,
         dss_master_file="IEEE13Bus.dss",
-        dc_bus=DC_BUS,
-        dc_bus_kv=4.16,
-        power_factor=dc_config.power_factor,
         dt_s=Fraction(1, 10),
-        connection_type="wye",
         initial_tap_position=INITIAL_TAPS,
     )
+    grid.attach_dc(dc, bus=DC_BUS, connection_type="wye", power_factor=dc_config.power_factor)
 
     tap_ctrl = TapScheduleController(schedule=tap_ctrl_schedule, dt_s=DT_CTRL)
 
     logger.info("Running online baseline simulation (mode=%s) for %d seconds...", mode, T_TOTAL_S)
     coord = Coordinator(
-        datacenter=dc,
+        datacenters=[dc],
         grid=grid,
         controllers=[tap_ctrl],
         total_duration_s=T_TOTAL_S,
-        dc_bus=DC_BUS,
         live=True,
     )
     log = coord.run()

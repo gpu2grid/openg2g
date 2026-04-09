@@ -21,7 +21,6 @@ from pathlib import Path
 import numpy as np
 from pydantic import BaseModel
 
-from openg2g import PROJECT_ROOT
 from openg2g.controller.ofo import (
     LogisticModelStore,
     OFOBatchSizeController,
@@ -38,6 +37,8 @@ from openg2g.datacenter.workloads.inference import MLEnergySource, RequestsConfi
 from openg2g.grid.config import TapPosition
 from openg2g.grid.opendss import OpenDSSGrid
 from openg2g.metrics.voltage import compute_allbus_voltage_stats
+
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
 logger = logging.getLogger("run_ofo")
 
@@ -95,7 +96,7 @@ def main(*, config_path: Path) -> None:
     RequestStore.ensure(requests_dir, [d.spec for d in config.deployments], config.requests)
 
     data_sources = {s.model_label: s for s in config.data_sources} if config.data_sources else None
-    data_dir = config.data_dir or PROJECT_ROOT / "data" / "offline" / config.data_hash
+    data_dir = config.data_dir or _PROJECT_ROOT / "data" / "offline" / config.data_hash
     logistic_models = LogisticModelStore.ensure(
         data_dir / "logistic_fits.csv",
         models,
@@ -109,6 +110,7 @@ def main(*, config_path: Path) -> None:
     dc = OnlineDatacenter(
         dc_config,
         config.deployments,
+        name="dc",
         dt_s=DT_DC,
         seed=0,
         power_augmentation=PowerAugmentationConfig(
@@ -126,16 +128,19 @@ def main(*, config_path: Path) -> None:
     grid = OpenDSSGrid(
         dss_case_dir=config.ieee_case_dir,
         dss_master_file="IEEE13Bus.dss",
-        dc_bus=DC_BUS,
-        dc_bus_kv=4.16,
-        power_factor=dc_config.power_factor,
         dt_s=Fraction(1, 10),
-        connection_type="wye",
         initial_tap_position=INITIAL_TAPS,
+    )
+    grid.attach_dc(
+        dc,
+        bus=DC_BUS,
+        connection_type="wye",
+        power_factor=dc_config.power_factor,
     )
 
     ofo_ctrl = OFOBatchSizeController(
         models,
+        datacenter=dc,
         models=logistic_models,
         config=OFOConfig(
             primal_step_size=0.1,
@@ -154,11 +159,10 @@ def main(*, config_path: Path) -> None:
 
     logger.info("Running online simulation for %d seconds...", T_TOTAL_S)
     coord = Coordinator(
-        datacenter=dc,
+        datacenters=[dc],
         grid=grid,
         controllers=[ofo_ctrl],
         total_duration_s=T_TOTAL_S,
-        dc_bus=DC_BUS,
         live=True,
     )
     log = coord.run()

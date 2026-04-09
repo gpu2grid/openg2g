@@ -12,11 +12,10 @@ You wire them together with the [`Coordinator`][openg2g.coordinator.Coordinator]
 from openg2g.coordinator import Coordinator
 
 coord = Coordinator(
-    datacenter=dc,
+    datacenters=[dc],
     grid=grid,
     controllers=[controller1, controller2, ...],
     total_duration_s=3600,
-    dc_bus="671",
 )
 log = coord.run()
 ```
@@ -71,6 +70,7 @@ dc_config = DatacenterConfig(gpus_per_server=8, base_kw_per_phase=500.0)
 dc = OfflineDatacenter(
     dc_config,
     workload,
+    name="dc",
     dt_s=Fraction(1, 10),
     seed=0,
     total_gpu_capacity=1440,
@@ -109,14 +109,14 @@ tap_schedule = (
 )
 
 grid = OpenDSSGrid(
-    dss_case_dir="examples/ieee13",
+    dss_case_dir="data/grid/ieee13",
     dss_master_file="IEEE13Bus.dss",
-    dc_bus="671",
-    dc_bus_kv=4.16,
-    power_factor=dc_config.power_factor,
     dt_s=Fraction(1, 10),
-    connection_type="wye",
+    initial_tap_position=TapPosition(
+        regulators={"creg1a": 1.0 + 14 * TAP_STEP, "creg1b": 1.0 + 6 * TAP_STEP, "creg1c": 1.0 + 15 * TAP_STEP}
+    ),
 )
+grid.attach_dc(dc, bus="671")
 ```
 
 #### Grid Data Files
@@ -163,14 +163,13 @@ from openg2g.controller.tap_schedule import TapScheduleController
 from openg2g.controller.ofo import OFOBatchSizeController
 
 coord = Coordinator(
-    datacenter=dc,
+    datacenters=[dc],
     grid=grid,
     controllers=[
         TapScheduleController(schedule=tap_schedule, dt_s=Fraction(1)),
-        OFOBatchSizeController(...),
+        OFOBatchSizeController(specs, datacenter=dc, ...),
     ],
     total_duration_s=3600,
-    dc_bus="671",
 )
 ```
 
@@ -197,7 +196,7 @@ kW_B = np.array([s.power_w.b / 1e3 for s in log.dc_states])
 kW_C = np.array([s.power_w.c / 1e3 for s in log.dc_states])
 ```
 
-See [`examples/offline/plot_all_figures.py`](https://github.com/gpu2grid/openg2g/blob/master/examples/offline/plot_all_figures.py) for reusable plot functions used by the example scripts.
+See [`examples/offline/plotting.py`](https://github.com/gpu2grid/openg2g/blob/master/examples/offline/plotting.py) for reusable plot functions used by the example scripts.
 
 ## Writing Custom Components
 
@@ -486,5 +485,4 @@ The `examples/offline/` directory includes ready-to-run analysis scripts. For de
 | `sweep_hosting_capacities.py` | Per-bus hosting capacity analysis | [Hosting Capacity](../examples/hosting-capacity.md) |
 | `sweep_dc_locations.py` | DC location sweep (1-D, 2-D, zone-constrained) | [DC Location Planning](../examples/dc-location-planning.md) |
 | `analyze_LLM_load_shifting.py` | Cross-site LLM replica shifting comparison | [Multi-DC Coordination](../examples/multi-dc-coordination.md) |
-| `optimize_pv_locations_and_capacities.py` | PV placement + capacity MILP | [PV + DC Siting](../examples/pv-dc-siting.md) |
-| `optimize_pv_and_dc_locations.py` | Joint PV + DC location MILP | [PV + DC Siting](../examples/pv-dc-siting.md) |
+| `optimize_pv_locations_and_capacities.py` | PV placement + capacity MILP (`--mode pv-only`) and joint PV + DC location MILP (`--mode pv-and-dc`) | [PV + DC Siting](../examples/pv-dc-siting.md) |

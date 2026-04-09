@@ -17,7 +17,7 @@ class InferenceModelSpec(BaseModel):
     This is a pure model-identity object describing *what* is served, not
     *how many* or *at what batch size*.  Deployment-specific parameters
     (replica count, initial batch size) are specified via
-    :class:`ModelDeployment`.
+    [`ModelDeployment`][openg2g.datacenter.config.ModelDeployment].
 
     Attributes:
         model_label: Human-readable model identifier (e.g. `"Llama-3.1-70B"`).
@@ -55,14 +55,14 @@ class InferenceModelSpec(BaseModel):
 class ModelDeployment:
     """One model's deployment at a datacenter site.
 
-    Pairs an :class:`InferenceModelSpec` (model identity) with
+    Pairs an [`InferenceModelSpec`][openg2g.datacenter.config.InferenceModelSpec] (model identity) with
     deployment-specific parameters.
 
     Attributes:
         spec: The model specification.
         num_replicas: Number of replicas deployed at this site.
         initial_batch_size: Starting batch size for this deployment.
-            Must be in ``spec.feasible_batch_sizes``.
+            Must be in `spec.feasible_batch_sizes`.
     """
 
     spec: InferenceModelSpec
@@ -252,11 +252,11 @@ class InferenceRampSchedule:
     Built with [`InferenceRamp.at`][..InferenceRamp.at] and `|`.
 
     Semantics: before the first ramp, the active count equals
-    ``initial_count``.  During each `[t_start, t_end]` window the count
-    linearly interpolates from the previous level to ``target``.  Between
+    `initial_count`.  During each `[t_start, t_end]` window the count
+    linearly interpolates from the previous level to `target`.  Between
     ramps, the count holds at the last target.
 
-    An empty schedule means ``initial_count`` replicas are active at all
+    An empty schedule means `initial_count` replicas are active at all
     times.
 
     Example:
@@ -307,14 +307,14 @@ class InferenceRampSchedule:
         Args:
             model_label: Model to filter for.
             initial_count: Override the initial replica count for this
-                per-model schedule.  If ``None``, inherits from ``self``.
+                per-model schedule.  If `None`, inherits from `self`.
         """
         filtered = tuple(e for e in self._entries if e[0].model == model_label)
         ic = initial_count if initial_count is not None else self._initial_count
         return InferenceRampSchedule(filtered, initial_count=ic)
 
     def max_count(self) -> int:
-        """Return the maximum target across all entries, or ``initial_count`` if empty."""
+        """Return the maximum target across all entries, or `initial_count` if empty."""
         if not self._entries:
             return self._initial_count
         return max(self._initial_count, *(r.target for r, _, _ in self._entries))
@@ -330,7 +330,7 @@ class InferenceRampSchedule:
         """Evaluate the active replica count at time(s) *t*.
 
         Piecewise-linear interpolation between ramp events.
-        Before the first ramp, returns ``initial_count``.
+        Before the first ramp, returns `initial_count`.
 
         Args:
             t: Scalar or array of global simulation times (seconds).

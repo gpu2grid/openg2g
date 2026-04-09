@@ -98,13 +98,14 @@ class OfflineDatacenter(LLMBatchSizeControlledDatacenter[OfflineDatacenterState]
         datacenter: DatacenterConfig,
         workload: OfflineWorkload,
         *,
+        name: str,
         dt_s: Fraction,
         seed: int = 0,
         power_augmentation: PowerAugmentationConfig | None = None,
         load_shift_headroom: float = 0.0,
         total_gpu_capacity: int,
     ) -> None:
-        super().__init__()
+        super().__init__(name=name)
         if power_augmentation is None:
             power_augmentation = PowerAugmentationConfig()
 

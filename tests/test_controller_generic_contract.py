@@ -20,7 +20,7 @@ from openg2g.grid.opendss import OpenDSSGrid
 
 class _DC(DatacenterBackend[DatacenterState]):
     def __init__(self) -> None:
-        super().__init__()
+        super().__init__(name="test")
 
     @property
     def dt_s(self) -> Fraction:

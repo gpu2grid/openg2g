@@ -121,9 +121,9 @@ class VLLMDeployment(BaseModel):
 
     Pairs a reusable
     [`InferenceModelSpec`][openg2g.datacenter.config.InferenceModelSpec]
-    with physical deployment details. ``simulated_num_replicas`` is the
+    with physical deployment details. `simulated_num_replicas` is the
     augmented replica count for grid simulation. The real replica
-    count is derived from ``gpu_endpoints`` and ``spec.gpus_per_replica``.
+    count is derived from `gpu_endpoints` and `spec.gpus_per_replica`.
 
     Tracks the current batch size (`max_num_seqs`) and provides
     `set_batch_size()` to update it on the vLLM server.
@@ -136,10 +136,10 @@ class VLLMDeployment(BaseModel):
         gpu_endpoints: GPU endpoint mappings for power monitoring.
         request_extra_body: Extra fields merged into every request dict
             for this model (e.g. `chat_template_kwargs`).
-        initial_batch_size: Starting batch size. The ``batch_size`` field
+        initial_batch_size: Starting batch size. The `batch_size` field
             is initialized from this value.
         batch_size: Current batch size (`max_num_seqs`). Initialized from
-            ``initial_batch_size`` if not set explicitly.
+            `initial_batch_size` if not set explicitly.
     """
 
     spec: InferenceModelSpec
@@ -708,13 +708,14 @@ class OnlineDatacenter(LLMBatchSizeControlledDatacenter[OnlineDatacenterState]):
         datacenter: DatacenterConfig,
         deployments: Sequence[VLLMDeployment],
         *,
+        name: str,
         dt_s: Fraction = Fraction(1, 10),
         seed: int = 0,
         power_augmentation: PowerAugmentationConfig | None = None,
         inference_ramps: InferenceRampSchedule | None = None,
         live_server: LiveServerConfig | None = None,
     ) -> None:
-        super().__init__()
+        super().__init__(name=name)
         if power_augmentation is None:
             power_augmentation = PowerAugmentationConfig()
         if live_server is None:

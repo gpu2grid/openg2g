@@ -66,7 +66,7 @@ def _make_workload(templates: InferenceTemplateStore, itl_fits: ITLFitStore | No
 
 def test_step_returns_offline_state():
     store = _make_simple_store()
-    dc = OfflineDatacenter(DC_CFG, _make_workload(store), dt_s=Fraction(1, 10), total_gpu_capacity=10)
+    dc = OfflineDatacenter(DC_CFG, _make_workload(store), name="test", dt_s=Fraction(1, 10), total_gpu_capacity=10)
 
     clock = SimulationClock(tick_s=Fraction(1, 10))
     state = dc.step(clock, _EVENTS)
@@ -82,7 +82,7 @@ def test_step_returns_offline_state():
 def test_step_produces_correct_number_of_states():
     """Stepping produces one state per call with monotonically increasing times."""
     store = _make_simple_store()
-    dc = OfflineDatacenter(DC_CFG, _make_workload(store), dt_s=Fraction(1, 10), total_gpu_capacity=10)
+    dc = OfflineDatacenter(DC_CFG, _make_workload(store), name="test", dt_s=Fraction(1, 10), total_gpu_capacity=10)
 
     clock = SimulationClock(tick_s=Fraction(1, 10))
     states = []
@@ -99,7 +99,7 @@ def test_step_produces_correct_number_of_states():
 def test_batch_change_takes_effect_immediately():
     """Batch size change via apply_control takes effect on the very next step."""
     store = _make_simple_store()
-    dc = OfflineDatacenter(DC_CFG, _make_workload(store), dt_s=Fraction(1, 10), total_gpu_capacity=10)
+    dc = OfflineDatacenter(DC_CFG, _make_workload(store), name="test", dt_s=Fraction(1, 10), total_gpu_capacity=10)
 
     clock = SimulationClock(tick_s=Fraction(1, 10))
 
@@ -140,7 +140,7 @@ def test_offline_datacenter_emits_observed_itl_when_latency_fits_is_set():
     )
     latency_fits = ITLFitStore({"TestModel": {128: fake_params}})
     dc = OfflineDatacenter(
-        DC_CFG, _make_workload(store, itl_fits=latency_fits), dt_s=Fraction(1, 10), total_gpu_capacity=10
+        DC_CFG, _make_workload(store, itl_fits=latency_fits), name="test", dt_s=Fraction(1, 10), total_gpu_capacity=10
     )
 
     state = dc.step(SimulationClock(tick_s=Fraction(1, 10)), _EVENTS)
@@ -155,7 +155,7 @@ def test_apply_control_rejects_unknown_command():
         pass
 
     store = _make_simple_store()
-    dc = OfflineDatacenter(DC_CFG, _make_workload(store), dt_s=Fraction(1, 10), total_gpu_capacity=10)
+    dc = OfflineDatacenter(DC_CFG, _make_workload(store), name="test", dt_s=Fraction(1, 10), total_gpu_capacity=10)
 
     with pytest.raises(TypeError, match="OfflineDatacenter does not support"):
         dc.apply_control(_CustomCommand(), _EVENTS)

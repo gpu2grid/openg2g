@@ -33,38 +33,20 @@ Usage:
 
 from __future__ import annotations
 
+import hashlib
 import itertools
+import json
 import logging
 import math
 import time
+from dataclasses import dataclass
 from fractions import Fraction
 from pathlib import Path
 from typing import Any, Literal
 
 import numpy as np
 import pandas as pd
-from plot_all_figures import (
-    extract_per_model_timeseries,
-    plot_allbus_voltages_per_phase,
-    plot_model_timeseries_4panel,
-)
-from sweep_dc_locations import ScenarioOpenDSSGrid
-from systems import (
-    DT_CTRL,
-    DT_DC,
-    DT_GRID,
-    POWER_AUG,
-    SYSTEMS,
-    TOTAL_DURATION_S,
-    V_MAX,
-    V_MIN,
-    DCSite,
-    PVSystemSpec,
-    TimeVaryingLoadSpec,
-    all_model_specs,
-    deploy,
-    load_data_sources,
-)
+from systems import SYSTEMS
 
 from openg2g.controller.ofo import (
     LogisticModelStore,
@@ -76,17 +58,106 @@ from openg2g.datacenter.config import (
     DatacenterConfig,
     InferenceModelSpec,
     InferenceRamp,
+    InferenceRampSchedule,
+    ModelDeployment,
+    PowerAugmentationConfig,
     TrainingRun,
 )
 from openg2g.datacenter.offline import OfflineDatacenter, OfflineWorkload
-from openg2g.datacenter.workloads.inference import InferenceData
-from openg2g.datacenter.workloads.training import TrainingTrace
-from openg2g.grid.config import DCLoadSpec
+from openg2g.datacenter.workloads.inference import InferenceData, MLEnergySource
+from openg2g.datacenter.workloads.training import TrainingTrace, TrainingTraceParams
+from openg2g.grid.generator import SyntheticPV
+from openg2g.grid.load import SyntheticLoad
+from openg2g.grid.opendss import OpenDSSGrid
 from openg2g.metrics.voltage import compute_allbus_voltage_stats
+
+from plotting import (
+    plot_allbus_voltages_per_phase,
+    plot_model_timeseries_4panel,
+)
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+
+DT_DC = Fraction(1, 10)
+DT_GRID = Fraction(1, 10)
+DT_CTRL = Fraction(1)
+V_MIN, V_MAX = 0.95, 1.05
+TOTAL_DURATION_S = 3600
+POWER_AUG = PowerAugmentationConfig(amplitude_scale_range=(0.98, 1.02), noise_fraction=0.005)
+
+LLAMA_8B = InferenceModelSpec(
+    model_label="Llama-3.1-8B",
+    model_id="meta-llama/Llama-3.1-8B-Instruct",
+    gpus_per_replica=1,
+    itl_deadline_s=0.08,
+    feasible_batch_sizes=[8, 16, 32, 64, 128, 256, 512],
+)
+LLAMA_70B = InferenceModelSpec(
+    model_label="Llama-3.1-70B",
+    model_id="meta-llama/Llama-3.1-70B-Instruct",
+    gpus_per_replica=4,
+    itl_deadline_s=0.10,
+    feasible_batch_sizes=[8, 16, 32, 64, 128, 256, 512],
+)
+LLAMA_405B = InferenceModelSpec(
+    model_label="Llama-3.1-405B",
+    model_id="meta-llama/Llama-3.1-405B-Instruct-FP8",
+    gpus_per_replica=8,
+    itl_deadline_s=0.12,
+    feasible_batch_sizes=[8, 16, 32, 64, 128, 256, 512],
+)
+QWEN_30B = InferenceModelSpec(
+    model_label="Qwen3-30B-A3B",
+    model_id="Qwen/Qwen3-30B-A3B-Thinking-2507",
+    gpus_per_replica=2,
+    itl_deadline_s=0.06,
+    feasible_batch_sizes=[8, 16, 32, 64, 128, 256, 512],
+)
+QWEN_235B = InferenceModelSpec(
+    model_label="Qwen3-235B-A22B",
+    model_id="Qwen/Qwen3-235B-A22B-Thinking-2507",
+    gpus_per_replica=8,
+    itl_deadline_s=0.14,
+    feasible_batch_sizes=[8, 16, 32, 64, 128, 256, 512],
+)
+ALL_MODEL_SPECS = (LLAMA_8B, LLAMA_70B, LLAMA_405B, QWEN_30B, QWEN_235B)
+MODEL_SPECS = {s.model_label: s for s in ALL_MODEL_SPECS}
+
+
+def deploy(label, num_replicas, initial_batch_size=128):
+    return ModelDeployment(spec=MODEL_SPECS[label], num_replicas=num_replicas, initial_batch_size=initial_batch_size)
+
+
+def load_data_sources(config_path=None):
+    if config_path is None:
+        config_path = Path(__file__).resolve().parent / "config.json"
+    with open(config_path) as f:
+        cfg = json.load(f)
+    sources_raw = cfg["data_sources"]
+    data_sources = {s["model_label"]: MLEnergySource(**s) for s in sources_raw}
+    ttp = TrainingTraceParams(**(cfg.get("training_trace_params") or {}))
+    blob = json.dumps(
+        (sorted(sources_raw, key=lambda s: s["model_label"]), cfg.get("training_trace_params") or {}), sort_keys=True
+    ).encode()
+    data_dir = _REPO_ROOT / "data" / "offline" / hashlib.sha256(blob).hexdigest()[:16]
+    return data_sources, ttp, data_dir
+
+
+@dataclass
+class _DCSiteConfig:
+    bus: str
+    base_kw_per_phase: float
+    total_gpu_capacity: int
+    models: tuple[ModelDeployment, ...] = ()
+    seed: int = 0
+    connection_type: str = "wye"
+    inference_ramps: InferenceRampSchedule | None = None
+    load_shift_headroom: float = 0.0
+
 
 logger = logging.getLogger("sweep_ofo")
 
-# ── Default sweep multipliers (centred on baseline value) ────────────────────
+# Default sweep multipliers (centred on baseline value)
 
 DEFAULT_SWEEP_MULTIPLIERS: dict[str, list[float]] = {
     "primal_step_size": [0.2, 0.5, 1.0, 2.0, 5.0],
@@ -174,7 +245,7 @@ def build_sweep_grid_2d(
     return runs
 
 
-# ── Helpers ──────────────────────────────────────────────────────────────────
+# Helpers
 
 
 def _run_id(param: str, value: float) -> str:
@@ -220,19 +291,19 @@ def _collect_metrics(
         kW = np.array([(s.power_w.a + s.power_w.b + s.power_w.c) / 3e3 for s in site_states])
         row[f"avg_power_kw_per_phase__{site_id}"] = float(kW.mean())
 
-        per_model = extract_per_model_timeseries(site_states)
-        for label in sorted(per_model.batch_size):
-            batches = per_model.batch_size[label]
+        model_labels = sorted(site_states[0].batch_size_by_model.keys())
+        for label in model_labels:
+            batches = np.array([s.batch_size_by_model.get(label, 0) for s in site_states])
             row[f"avg_batch__{label}"] = float(np.mean(batches)) if batches.size else float("nan")
             row[f"n_batch_changes__{label}"] = int(np.sum(np.diff(batches) != 0)) if batches.size > 1 else 0
 
-            itl = per_model.itl_s.get(label, np.array([]))
+            itl = np.array([s.observed_itl_s_by_model.get(label, float("nan")) for s in site_states])
             deadline = deadlines.get(label, float("nan"))
             finite = itl[np.isfinite(itl)]
             row[f"itl_violation_frac__{label}"] = float(np.mean(finite > deadline)) if finite.size > 0 else float("nan")
 
             # Average throughput (tokens/s) = batch_size * active_replicas / itl
-            wrep = per_model.active_replicas.get(label, np.array([]))
+            wrep = np.array([s.active_replicas_by_model.get(label, 0) for s in site_states])
             if itl.size > 0 and wrep.size > 0 and batches.size > 0:
                 with np.errstate(divide="ignore", invalid="ignore"):
                     throughput = np.where(itl > 0, batches.astype(float) * wrep.astype(float) / itl, np.nan)
@@ -395,7 +466,7 @@ def _plot_sweep_summary_2d(
             pair_tag = f"{s0}_vs_{s1}"
             agg_note = " (mean over other sites)" if len(site_ids) > 2 else ""
 
-            # ── Voltage metrics heatmap ──────────────────────────────
+            # Voltage metrics heatmap
             fig, axes = plt.subplots(2, 2, figsize=(14, 12), dpi=150)
 
             for ax, (metric_col, metric_label) in zip(axes.flat, voltage_metrics, strict=False):
@@ -447,7 +518,7 @@ def _plot_sweep_summary_2d(
             plt.close(fig)
             logger.info("Saved heatmap: sweep_2d_%s_%s.png", param, pair_tag)
 
-            # ── Per-model heatmap ────────────────────────────────────
+            # Per-model heatmap
             model_metrics = []
             for label in model_labels:
                 itl_col = f"itl_violation_frac__{label}"
@@ -532,10 +603,8 @@ def _save_plots(
         if not site_models:
             continue
         bus = site_bus_map.get(site_id, site_id)
-        per_model = extract_per_model_timeseries(site_states)
         plot_model_timeseries_4panel(
-            per_model.time_s,
-            per_model,
+            site_states,
             model_labels=[ms.model_label for ms in site_models],
             regime_shading=False,
             save_path=run_dir / f"OFO_results_{bus}.png",
@@ -558,9 +627,7 @@ def _save_plots(
     )
 
 
-# ══════════════════════════════════════════════════════════════════════════════
 # Per-system experiment definitions
-# ══════════════════════════════════════════════════════════════════════════════
 
 
 def _experiment_ieee13(
@@ -588,9 +655,8 @@ def _experiment_ieee13(
     )
 
     dc_sites = {
-        "default": DCSite(
+        "default": _DCSiteConfig(
             bus="671",
-            bus_kv=sys["bus_kv"],
             base_kw_per_phase=500.0,
             models=models,
             seed=0,
@@ -618,8 +684,8 @@ def _experiment_ieee13(
         sensitivity_perturbation_kw=100.0,
     )
 
-    pv_systems = [PVSystemSpec(bus="675", bus_kv=4.16, peak_kw=10.0)]
-    time_varying_loads = [TimeVaryingLoadSpec(bus="680", bus_kv=4.16, peak_kw=10.0)]
+    pv_systems = [("675", SyntheticPV(peak_kw=10.0))]
+    time_varying_loads = [("680", SyntheticLoad(peak_kw=10.0))]
 
     return dict(
         dc_sites=dc_sites,
@@ -648,17 +714,15 @@ def _experiment_ieee34(
     )
 
     dc_sites = {
-        "upstream": DCSite(
+        "upstream": _DCSiteConfig(
             bus="850",
-            bus_kv=sys["bus_kv"],
             base_kw_per_phase=120.0,
             models=upstream_models,
             seed=0,
             total_gpu_capacity=520,
         ),
-        "downstream": DCSite(
+        "downstream": _DCSiteConfig(
             bus="834",
-            bus_kv=sys["bus_kv"],
             base_kw_per_phase=80.0,
             models=downstream_models,
             seed=42,
@@ -680,15 +744,15 @@ def _experiment_ieee34(
     )
 
     pv_systems = [
-        PVSystemSpec(bus="848", bus_kv=24.9, peak_kw=130.0),
-        PVSystemSpec(bus="830", bus_kv=24.9, peak_kw=65.0),
+        ("848", SyntheticPV(peak_kw=130.0, site_idx=0)),
+        ("830", SyntheticPV(peak_kw=65.0, site_idx=1)),
     ]
     time_varying_loads = [
-        TimeVaryingLoadSpec(bus="860", bus_kv=24.9, peak_kw=80.0),
-        TimeVaryingLoadSpec(bus="844", bus_kv=24.9, peak_kw=120.0),
-        TimeVaryingLoadSpec(bus="840", bus_kv=24.9, peak_kw=60.0),
-        TimeVaryingLoadSpec(bus="858", bus_kv=24.9, peak_kw=50.0),
-        TimeVaryingLoadSpec(bus="854", bus_kv=24.9, peak_kw=40.0),
+        ("860", SyntheticLoad(peak_kw=80.0, site_idx=0)),
+        ("844", SyntheticLoad(peak_kw=120.0, site_idx=1)),
+        ("840", SyntheticLoad(peak_kw=60.0, site_idx=2)),
+        ("858", SyntheticLoad(peak_kw=50.0, site_idx=3)),
+        ("854", SyntheticLoad(peak_kw=40.0, site_idx=4)),
     ]
 
     return dict(
@@ -708,27 +772,24 @@ def _experiment_ieee123(
 ) -> dict[str, Any]:
     """IEEE 123-bus: four DC zones with per-site ramps."""
     dc_sites = {
-        "z1_sw": DCSite(
+        "z1_sw": _DCSiteConfig(
             bus="8",
-            bus_kv=sys["bus_kv"],
             base_kw_per_phase=310.0,
             models=(deploy("Llama-3.1-8B", 120),),
             seed=0,
             total_gpu_capacity=120,
             inference_ramps=InferenceRamp(target=180, model="Llama-3.1-8B").at(t_start=500, t_end=1000),
         ),
-        "z2_nw": DCSite(
+        "z2_nw": _DCSiteConfig(
             bus="23",
-            bus_kv=sys["bus_kv"],
             base_kw_per_phase=265.0,
             models=(deploy("Qwen3-30B-A3B", 80),),
             seed=17,
             total_gpu_capacity=160,
             inference_ramps=InferenceRamp(target=104, model="Qwen3-30B-A3B").at(t_start=1500, t_end=2500),
         ),
-        "z3_se": DCSite(
+        "z3_se": _DCSiteConfig(
             bus="60",
-            bus_kv=sys["bus_kv"],
             base_kw_per_phase=295.0,
             models=(deploy("Llama-3.1-70B", 30), deploy("Llama-3.1-405B", 35)),
             seed=34,
@@ -738,9 +799,8 @@ def _experiment_ieee123(
                 | InferenceRamp(target=52, model="Llama-3.1-405B").at(t_start=700, t_end=1100)
             ),
         ),
-        "z4_ne": DCSite(
+        "z4_ne": _DCSiteConfig(
             bus="105",
-            bus_kv=sys["bus_kv"],
             base_kw_per_phase=325.0,
             models=(deploy("Qwen3-235B-A22B", 55),),
             seed=51,
@@ -763,9 +823,9 @@ def _experiment_ieee123(
     )
 
     pv_systems = [
-        PVSystemSpec(bus="1", bus_kv=4.16, peak_kw=333.3),
-        PVSystemSpec(bus="48", bus_kv=4.16, peak_kw=333.3),
-        PVSystemSpec(bus="99", bus_kv=4.16, peak_kw=333.3),
+        ("1", SyntheticPV(peak_kw=333.3, site_idx=0)),
+        ("48", SyntheticPV(peak_kw=333.3, site_idx=1)),
+        ("99", SyntheticPV(peak_kw=333.3, site_idx=2)),
     ]
 
     return dict(
@@ -784,7 +844,7 @@ _EXPERIMENTS = {
 }
 
 
-# ── Shared setup ─────────────────────────────────────────────────────────────
+# Shared setup
 
 
 def _setup(
@@ -820,11 +880,11 @@ def _setup(
         save_dir = Path(__file__).resolve().parent / "outputs" / system / "sweep_ofo_parameters"
     # Don't mkdir yet -- main() may append _1d/_2d suffix before creating
 
-    # ── Load shared data (done once) ─────────────────────────────────────
+    # Load shared data (done once)
 
     data_sources, training_trace_params, data_dir = load_data_sources()
 
-    all_models = all_model_specs()
+    all_models = ALL_MODEL_SPECS
 
     logger.info("Loading inference data...")
     inference_data = InferenceData.ensure(
@@ -846,24 +906,22 @@ def _setup(
         plot=False,
     )
 
-    # ── Build experiment config ──────────────────────────────────────────
+    # Build experiment config
 
     experiment = experiment_fn(sys, inference_data, training_trace, logistic_models)
-    dc_sites: dict[str, DCSite] = experiment["dc_sites"]
+    dc_sites: dict[str, _DCSiteConfig] = experiment["dc_sites"]
     baseline_ofo: OFOConfig = experiment["baseline_ofo"]
     training: TrainingRun | None = experiment.get("training")
-    pv_systems: list[PVSystemSpec] = experiment.get("pv_systems", [])
-    time_varying_loads: list[TimeVaryingLoadSpec] = experiment.get("time_varying_loads", [])
+    pv_systems: list = experiment.get("pv_systems", [])
+    time_varying_loads: list = experiment.get("time_varying_loads", [])
 
     logger.info("Baseline OFO config: %s", baseline_ofo)
 
-    # ── Build shared datacenters and grid ────────────────────────────────
+    # Build shared datacenters and grid
 
     site_ids = list(dc_sites.keys())
-    dc_loads: dict[str, DCLoadSpec] = {}
     datacenters: dict[str, OfflineDatacenter] = {}
     site_models_map: dict[str, tuple[InferenceModelSpec, ...]] = {}
-    primary_bus = ""
 
     for site_id, site in dc_sites.items():
         site_specs = tuple(md.spec for md in site.models)
@@ -888,6 +946,7 @@ def _setup(
         dc = OfflineDatacenter(
             dc_config,
             workload,
+            name=site_id,
             dt_s=dt_dc,
             seed=site.seed,
             power_augmentation=POWER_AUG,
@@ -895,46 +954,25 @@ def _setup(
             load_shift_headroom=site.load_shift_headroom,
         )
         datacenters[site_id] = dc
-        dc_loads[site_id] = DCLoadSpec(
-            bus=site.bus,
-            bus_kv=site.bus_kv,
-            connection_type=site.connection_type,
-        )
-        if not primary_bus:
-            primary_bus = site.bus
 
     site_bus_map = {sid: dc_sites[sid].bus for sid in dc_sites}
     exclude_buses = tuple(sys["exclude_buses"])
 
-    if len(site_ids) == 1:
-        sid = site_ids[0]
-        site = dc_sites[sid]
-        grid = ScenarioOpenDSSGrid(
-            pv_systems=pv_systems,
-            time_varying_loads=time_varying_loads,
-            source_pu=sys["source_pu"],
-            dss_case_dir=sys["dss_case_dir"],
-            dss_master_file=sys["dss_master_file"],
-            dc_bus=site.bus,
-            dc_bus_kv=site.bus_kv,
-            power_factor=DatacenterConfig(base_kw_per_phase=0).power_factor,
-            dt_s=dt_grid,
-            connection_type=site.connection_type,
-            initial_tap_position=sys["initial_taps"],
-        )
-    else:
-        grid = ScenarioOpenDSSGrid(
-            pv_systems=pv_systems,
-            time_varying_loads=time_varying_loads,
-            source_pu=sys["source_pu"],
-            dss_case_dir=sys["dss_case_dir"],
-            dss_master_file=sys["dss_master_file"],
-            dc_loads=dc_loads,
-            power_factor=DatacenterConfig(base_kw_per_phase=0).power_factor,
-            dt_s=dt_grid,
-            initial_tap_position=sys["initial_taps"],
-            exclude_buses=exclude_buses,
-        )
+    grid = OpenDSSGrid(
+        dss_case_dir=sys["dss_case_dir"],
+        dss_master_file=sys["dss_master_file"],
+        source_pu=sys["source_pu"],
+        dt_s=dt_grid,
+        initial_tap_position=sys["initial_taps"],
+        exclude_buses=exclude_buses,
+    )
+    pf = DatacenterConfig(base_kw_per_phase=0).power_factor
+    for site_id, site in dc_sites.items():
+        grid.attach_dc(datacenters[site_id], bus=site.bus, connection_type=site.connection_type, power_factor=pf)
+    for bus, gen in pv_systems:
+        grid.attach_generator(gen, bus=bus)
+    for bus, ld in time_varying_loads:
+        grid.attach_load(ld, bus=bus)
 
     return dict(
         all_models=all_models,
@@ -945,7 +983,6 @@ def _setup(
         site_bus_map=site_bus_map,
         datacenters=datacenters,
         grid=grid,
-        primary_bus=primary_bus,
         exclude_buses=exclude_buses,
         save_dir=save_dir,
         dt_ctrl=dt_ctrl,
@@ -953,7 +990,7 @@ def _setup(
     )
 
 
-# ── 1-D sweep (single DC site) ──────────────────────────────────────────────
+# 1-D sweep (single DC site)
 
 
 def _run_single_sim(
@@ -965,7 +1002,6 @@ def _run_single_sim(
     site_bus_map,
     datacenters,
     grid,
-    primary_bus,
     exclude_buses,
     dt_ctrl,
     all_models,
@@ -981,29 +1017,19 @@ def _run_single_sim(
         ofo_cfg = site_ofo_cfgs[site_id]
         ofo_ctrl = OFOBatchSizeController(
             site_models,
+            datacenter=datacenters[site_id],
             models=logistic_models,
             config=ofo_cfg,
             dt_s=dt_ctrl,
-            site_id=site_id if len(site_ids) > 1 else None,
         )
         controllers.append(ofo_ctrl)
 
-    if len(datacenters) == 1 and "default" in datacenters:
-        coord = Coordinator(
-            datacenter=datacenters["default"],
-            grid=grid,
-            controllers=controllers,
-            total_duration_s=total_duration_s,
-            dc_bus=primary_bus,
-        )
-    else:
-        coord = Coordinator(
-            datacenters=datacenters,
-            grid=grid,
-            controllers=controllers,
-            total_duration_s=total_duration_s,
-            dc_bus=primary_bus,
-        )
+    coord = Coordinator(
+        datacenters=list(datacenters.values()),
+        grid=grid,
+        controllers=controllers,
+        total_duration_s=total_duration_s,
+    )
 
     t0 = time.monotonic()
     log = coord.run()
@@ -1049,7 +1075,6 @@ def _run_sweep_1d(ctx: dict) -> None:
                 site_bus_map=ctx["site_bus_map"],
                 datacenters=ctx["datacenters"],
                 grid=ctx["grid"],
-                primary_bus=ctx["primary_bus"],
                 exclude_buses=ctx["exclude_buses"],
                 dt_ctrl=ctx["dt_ctrl"],
                 all_models=all_models,
@@ -1092,7 +1117,7 @@ def _run_sweep_1d(ctx: dict) -> None:
     logger.info("All outputs in: %s", save_dir)
 
 
-# ── 2-D sweep (multiple DC sites) ───────────────────────────────────────────
+# 2-D sweep (multiple DC sites)
 
 
 def _run_sweep_2d(ctx: dict) -> None:
@@ -1128,7 +1153,6 @@ def _run_sweep_2d(ctx: dict) -> None:
                 site_bus_map=ctx["site_bus_map"],
                 datacenters=ctx["datacenters"],
                 grid=ctx["grid"],
-                primary_bus=ctx["primary_bus"],
                 exclude_buses=ctx["exclude_buses"],
                 dt_ctrl=ctx["dt_ctrl"],
                 all_models=all_models,
@@ -1177,7 +1201,7 @@ def _run_sweep_2d(ctx: dict) -> None:
     logger.info("All outputs in: %s", save_dir)
 
 
-# ── Main ─────────────────────────────────────────────────────────────────────
+# Main
 
 
 def main(

@@ -5,7 +5,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from fractions import Fraction
-from typing import Generic, TypeVar, final
+from typing import TYPE_CHECKING, Generic, TypeVar, final
 
 import numpy as np
 
@@ -14,6 +14,9 @@ from openg2g.common import ThreePhase
 from openg2g.events import EventEmitter
 from openg2g.grid.command import GridCommand
 from openg2g.grid.config import TapPosition
+
+if TYPE_CHECKING:
+    from openg2g.datacenter.base import DatacenterBackend
 
 
 @dataclass(frozen=True)
@@ -119,7 +122,7 @@ class GridBackend(Generic[GridStateT], ABC):
     def do_step(
         self,
         clock: SimulationClock,
-        power_samples_w: dict[str, list[ThreePhase]] | list[ThreePhase],
+        power_samples_w: dict[DatacenterBackend, list[ThreePhase]],
         events: EventEmitter,
     ) -> GridStateT:
         """Call `step`, record the state, and return it.
@@ -136,7 +139,7 @@ class GridBackend(Generic[GridStateT], ABC):
     def step(
         self,
         clock: SimulationClock,
-        power_samples_w: dict[str, list[ThreePhase]] | list[ThreePhase],
+        power_samples_w: dict[DatacenterBackend, list[ThreePhase]],
         events: EventEmitter,
     ) -> GridStateT:
         """Advance one native timestep and return state for this step."""
@@ -150,7 +153,9 @@ class GridBackend(Generic[GridStateT], ABC):
         """Return voltage magnitudes in `v_index` order."""
 
     @abstractmethod
-    def estimate_sensitivity(self, perturbation_kw: float = 100.0) -> tuple[np.ndarray, np.ndarray]:
+    def estimate_sensitivity(
+        self, perturbation_kw: float = 100.0, dc: DatacenterBackend | None = None
+    ) -> tuple[np.ndarray, np.ndarray]:
         """Estimate voltage sensitivity matrix (H = dv/dp) and return `(H, v0)`."""
 
     @property

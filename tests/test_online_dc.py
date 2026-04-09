@@ -108,6 +108,7 @@ def _online_dc(
         dc = OnlineDatacenter(
             DatacenterConfig(gpus_per_server=8, base_kw_per_phase=0.0),
             deployments,
+            name="test",
             dt_s=Fraction(1, 10),
             seed=42,
             power_augmentation=PowerAugmentationConfig(

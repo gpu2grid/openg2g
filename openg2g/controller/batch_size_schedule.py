@@ -121,7 +121,6 @@ class BatchSizeScheduleController(Controller[DatacenterBackend, GridBackend]):
     def step(
         self,
         clock: SimulationClock,
-        datacenter: DatacenterBackend,
         grid: GridBackend,
         events: EventEmitter,
     ) -> list[DatacenterCommand | GridCommand]:

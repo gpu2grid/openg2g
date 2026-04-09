@@ -8,19 +8,19 @@ How does co-located solar PV interact with datacenter loads? Where should PV sys
 
 This analysis uses sensitivity-based Mixed-Integer Linear Programming (MILP) to optimally place PV systems and/or datacenters on a distribution feeder. The MILP minimizes annualized cost (PV investment minus operational savings) plus voltage violation penalties, subject to linearized voltage constraints derived from OpenDSS power flow sensitivities.
 
-Two scripts are available:
+Two modes are available via `--mode`:
 
-- **PV-only optimization** (`optimize_pv_locations_and_capacities.py`): Optimizes PV placement and capacity with fixed DC locations. Includes PV curtailment and regulator tap co-optimization.
-- **PV + DC co-optimization** (`optimize_pv_and_dc_locations.py`): Jointly optimizes both PV and DC bus assignments. PV and DC capacities are fixed; only locations are decision variables.
+- **PV-only optimization** (`--mode pv-only`, default): Optimizes PV placement and capacity with fixed DC locations. Includes PV curtailment and regulator tap co-optimization.
+- **PV + DC co-optimization** (`--mode pv-and-dc`): Jointly optimizes both PV and DC bus assignments. PV and DC capacities are fixed; only locations are decision variables.
 
-Both scripts use [Gurobi](https://www.gurobi.com/) as the MIP solver (requires a license; academic licenses are free). The MILP formulation uses standard Gurobi API calls and could be adapted to other solvers (e.g., CPLEX, HiGHS, SCIP) by replacing the `gurobipy` interface.
+The script uses [Gurobi](https://www.gurobi.com/) as the MIP solver (requires a license; academic licenses are free). The MILP formulation uses standard Gurobi API calls and could be adapted to other solvers (e.g., CPLEX, HiGHS, SCIP) by replacing the `gurobipy` interface.
 
-## Scripts
+## Script
 
-| Script | Purpose |
-|--------|---------|
-| `optimize_pv_locations_and_capacities.py` | PV placement + capacity + tap co-optimization |
-| `optimize_pv_and_dc_locations.py` | Joint PV + DC location co-optimization |
+| Command | Purpose |
+|---------|---------|
+| `optimize_pv_locations_and_capacities.py --mode pv-only` | PV placement + capacity + tap co-optimization |
+| `optimize_pv_locations_and_capacities.py --mode pv-and-dc` | Joint PV + DC location co-optimization |
 
 ## Pipeline
 
@@ -109,13 +109,13 @@ python examples/offline/optimize_pv_locations_and_capacities.py \
 
 ```bash
 # Zone-constrained DC placement (default)
-python examples/offline/optimize_pv_and_dc_locations.py \
-    --system ieee123 \
+python examples/offline/optimize_pv_locations_and_capacities.py \
+    --mode pv-and-dc --system ieee123 \
     --n-pv 3 --s-max-kw 500
 
 # Custom cost parameters
-python examples/offline/optimize_pv_and_dc_locations.py \
-    --system ieee123 \
+python examples/offline/optimize_pv_locations_and_capacities.py \
+    --mode pv-and-dc --system ieee123 \
     --n-pv 3 --s-max-kw 500 --c-inv 100 --c-viol 10000
 ```
 

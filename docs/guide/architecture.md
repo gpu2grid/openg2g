@@ -35,7 +35,7 @@ The coordinator supports **multiple datacenter sites**, each connected to a diff
 Controllers return a list of [`GridCommand`][openg2g.grid.command.GridCommand] (e.g., [`SetTaps`][openg2g.grid.command.SetTaps]) and/or [`DatacenterCommand`][openg2g.datacenter.command.DatacenterCommand] (e.g., [`SetBatchSize`][openg2g.datacenter.command.SetBatchSize], [`ShiftReplicas`][openg2g.datacenter.command.ShiftReplicas]) that the coordinator dispatches to the appropriate backend before the next tick.
 Multiple controllers run in sequence each control step, so their actions compose naturally.
 
-Commands with a `target_site_id` attribute are routed to the specified datacenter site, enabling cross-site controllers (like [`LoadShiftController`][openg2g.controller.load_shift.LoadShiftController]) to send commands to multiple datacenters in a single step.
+Each [`DatacenterCommand`][openg2g.datacenter.command.DatacenterCommand] carries a `target` reference to the datacenter it should be applied to. The coordinator dispatches via `command.target.apply_control()`. This enables cross-site controllers (like [`LoadShiftController`][openg2g.controller.load_shift.LoadShiftController]) to send commands to multiple datacenters in a single step.
 
 ## Simulation Loop
 
@@ -157,10 +157,11 @@ This is mainly to allow reuse component objects across multiple [`Coordinator.ru
 
 ```python
 grid = OpenDSSGrid(...)                    # stores config only
-ctrl = OFOBatchSizeController(...)         # stores fits + tuning
 for workload in workloads:
-    dc = OfflineDatacenter(dc_config, workload, dt_s=dt)  # builds power templates
-    coord = Coordinator(dc, grid, [ctrl], total_duration_s=3600, dc_bus="671")
+    dc = OfflineDatacenter(dc_config, workload, name="dc", dt_s=dt)
+    grid.attach_dc(dc, bus="671")
+    ctrl = OFOBatchSizeController(specs, datacenter=dc, ...)
+    coord = Coordinator(datacenters=[dc], grid=grid, controllers=[ctrl], total_duration_s=3600)
     log = coord.run()                      # reset -> start -> loop -> stop
 ```
 
