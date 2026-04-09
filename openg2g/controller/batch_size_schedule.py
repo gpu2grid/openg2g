@@ -104,9 +104,11 @@ class BatchSizeScheduleController(Controller[DatacenterBackend, GridBackend]):
     def __init__(
         self,
         *,
+        datacenter: DatacenterBackend,
         schedules: dict[str, BatchSizeSchedule],
         dt_s: Fraction = Fraction(1),
     ) -> None:
+        self._datacenter = datacenter
         self._dt_s = dt_s
         self._schedules = dict(schedules)
         self._indices: dict[str, int] = {label: 0 for label in schedules}
@@ -117,6 +119,10 @@ class BatchSizeScheduleController(Controller[DatacenterBackend, GridBackend]):
     @property
     def dt_s(self) -> Fraction:
         return self._dt_s
+
+    @property
+    def datacenters(self) -> list:
+        return [self._datacenter]
 
     def step(
         self,

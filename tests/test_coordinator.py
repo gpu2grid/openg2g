@@ -91,7 +91,7 @@ class _StubGrid(GridBackend[GridState]):
     def voltages_vector(self) -> np.ndarray:
         return np.array([1.0, 1.0, 1.0])
 
-    def estimate_sensitivity(self, perturbation_kw: float = 100.0) -> tuple[np.ndarray, np.ndarray]:
+    def estimate_sensitivity(self, perturbation_kw: float = 100.0, dc=None) -> tuple[np.ndarray, np.ndarray]:
         return np.zeros((3, 3)), np.ones(3)
 
     def dc_bus(self, dc: DatacenterBackend) -> str:
@@ -125,6 +125,10 @@ class _StubController(Controller[DatacenterBackend, GridBackend]):
     @property
     def dt_s(self) -> Fraction:
         return self._dt_s
+
+    @property
+    def datacenters(self) -> list:
+        return []
 
     def step(
         self,
@@ -298,6 +302,10 @@ def test_controller_generic_types_auto_extracted():
         @property
         def dt_s(self) -> Fraction:
             return Fraction(1)
+
+        @property
+        def datacenters(self) -> list:
+            return []
 
         def reset(self) -> None:
             pass

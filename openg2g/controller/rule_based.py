@@ -113,6 +113,10 @@ class RuleBasedBatchSizeController(
     def dt_s(self) -> Fraction:
         return self._dt_s
 
+    @property
+    def datacenters(self) -> list:
+        return [self._datacenter]
+
     def reset(self) -> None:
         self._log2_batch = {
             ms.model_label: math.log2(self._initial_batch_sizes.get(ms.model_label, ms.feasible_batch_sizes[0]))
@@ -209,4 +213,4 @@ class RuleBasedBatchSizeController(
             {"time_s": clock.time_s, "pressure": pressure, "batch": dict(new_batches)},
         )
 
-        return [SetBatchSize(batch_size_by_model=new_batches, target=self._datacenter)]
+        return [SetBatchSize(batch_size_by_model=new_batches)]

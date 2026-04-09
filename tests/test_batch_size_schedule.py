@@ -87,7 +87,9 @@ class TestBatchSizeScheduleController:
 
     def test_emits_at_scheduled_time(self) -> None:
         schedule = BatchSizeChange(48).at(10) | BatchSizeChange(32).at(20)
+        dc = MagicMock()
         ctrl = BatchSizeScheduleController(
+            datacenter=dc,
             schedules={"model-a": schedule},
             dt_s=Fraction(1),
         )
@@ -120,7 +122,8 @@ class TestBatchSizeScheduleController:
             "model-a": BatchSizeChange(48).at(10),
             "model-b": BatchSizeChange(64).at(10),
         }
-        ctrl = BatchSizeScheduleController(schedules=schedules, dt_s=Fraction(1))
+        dc = MagicMock()
+        ctrl = BatchSizeScheduleController(datacenter=dc, schedules=schedules, dt_s=Fraction(1))
         grid = MagicMock()
         events = MagicMock()
 
@@ -133,7 +136,9 @@ class TestBatchSizeScheduleController:
 
     def test_ramp_up_rate_per_model(self) -> None:
         schedule = BatchSizeChange(32, ramp_up_rate=4.0).at(10)
+        dc = MagicMock()
         ctrl = BatchSizeScheduleController(
+            datacenter=dc,
             schedules={"model-a": schedule},
             dt_s=Fraction(1),
         )
@@ -147,7 +152,9 @@ class TestBatchSizeScheduleController:
 
     def test_no_ramp_up_rate_when_zero(self) -> None:
         schedule = BatchSizeChange(32).at(10)
+        dc = MagicMock()
         ctrl = BatchSizeScheduleController(
+            datacenter=dc,
             schedules={"model-a": schedule},
             dt_s=Fraction(1),
         )
@@ -165,7 +172,8 @@ class TestBatchSizeScheduleController:
             "model-b": BatchSizeChange(64, ramp_up_rate=8.0).at(10),
             "model-c": BatchSizeChange(128).at(10),
         }
-        ctrl = BatchSizeScheduleController(schedules=schedules, dt_s=Fraction(1))
+        dc = MagicMock()
+        ctrl = BatchSizeScheduleController(datacenter=dc, schedules=schedules, dt_s=Fraction(1))
         grid = MagicMock()
         events = MagicMock()
 
@@ -176,11 +184,13 @@ class TestBatchSizeScheduleController:
         assert "model-c" not in cmd.ramp_up_rate_by_model
 
     def test_dt_s(self) -> None:
-        ctrl = BatchSizeScheduleController(schedules={}, dt_s=Fraction(2))
+        dc = MagicMock()
+        ctrl = BatchSizeScheduleController(datacenter=dc, schedules={}, dt_s=Fraction(2))
         assert ctrl.dt_s == Fraction(2)
 
     def test_empty_schedule(self) -> None:
-        ctrl = BatchSizeScheduleController(schedules={}, dt_s=Fraction(1))
+        dc = MagicMock()
+        ctrl = BatchSizeScheduleController(datacenter=dc, schedules={}, dt_s=Fraction(1))
         grid = MagicMock()
         events = MagicMock()
 

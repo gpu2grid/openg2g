@@ -639,6 +639,10 @@ class OFOBatchSizeController(Controller[LLMBatchSizeControlledDatacenter[LLMData
     def dt_s(self) -> Fraction:
         return self._dt_s
 
+    @property
+    def datacenters(self) -> list:
+        return [self._datacenter]
+
     def step(
         self,
         clock: SimulationClock,
@@ -729,7 +733,7 @@ class OFOBatchSizeController(Controller[LLMBatchSizeControlledDatacenter[LLMData
                 "latency_dual_by_model": dict(self._latency_dual_by_model),
             },
         )
-        return [SetBatchSize(batch_size_by_model=batch_next, target=self._datacenter)]
+        return [SetBatchSize(batch_size_by_model=batch_next)]
 
 
 def _plot_logistic_fits(

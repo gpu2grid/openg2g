@@ -16,8 +16,9 @@ class DatacenterCommand:
     The coordinator applies commands via `command.target.apply_control()`.
 
     Attributes:
-        target: Datacenter backend this command targets. Set by the
-            controller that creates the command.
+        target: Datacenter backend this command targets. When None, the
+            coordinator infers the target from the controller's
+            `datacenters` property (must be exactly one DC).
     """
 
     target: DatacenterBackend | None

@@ -73,6 +73,10 @@ class LoadShiftController(Controller[LLMBatchSizeControlledDatacenter, OpenDSSGr
     def dt_s(self) -> Fraction:
         return self._dt_s
 
+    @property
+    def datacenters(self) -> list:
+        return list(self._datacenters)
+
     def step(
         self,
         clock: SimulationClock,

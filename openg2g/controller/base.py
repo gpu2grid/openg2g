@@ -114,6 +114,20 @@ class Controller(Generic[DCBackendT, GridBackendT], ABC):
     def dt_s(self) -> Fraction:
         """Control interval as a Fraction (seconds)."""
 
+    @property
+    @abstractmethod
+    def datacenters(self) -> list[DatacenterBackend]:
+        """Datacenters this controller operates on.
+
+        The coordinator uses this to fill in `command.target` when a
+        command is returned without an explicit target. If exactly one
+        DC, that DC is used. If multiple, the controller must set
+        `target` on each command explicitly.
+
+        Return an empty list for global controllers that only emit
+        grid commands.
+        """
+
     @abstractmethod
     def reset(self) -> None:
         """Reset simulation state to initial conditions.

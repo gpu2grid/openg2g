@@ -268,12 +268,18 @@ class Coordinator(Generic[DCStateT, GridStateT]):
                         commands = ctrl.step(self.clock, self.grid, controller_events)
                         for command in commands:
                             if isinstance(command, DatacenterCommand):
-                                if command.target is None:
-                                    raise ValueError(
-                                        f"DatacenterCommand {type(command).__name__} has no target. "
-                                        "Controllers must set command.target to the datacenter backend."
-                                    )
-                                command.target.apply_control(command, dc_events)
+                                target = command.target
+                                if target is None:
+                                    ctrl_dcs = ctrl.datacenters
+                                    if len(ctrl_dcs) == 1:
+                                        target = ctrl_dcs[0]
+                                    else:
+                                        raise ValueError(
+                                            f"{type(ctrl).__name__} returned {type(command).__name__} "
+                                            f"without target, but has {len(ctrl_dcs)} datacenters. "
+                                            "Multi-DC controllers must set command.target explicitly."
+                                        )
+                                target.apply_control(command, dc_events)
                             elif isinstance(command, GridCommand):
                                 self.grid.apply_control(command, grid_events)
                             else:

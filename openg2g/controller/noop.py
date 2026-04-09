@@ -23,6 +23,10 @@ class NoopController(Controller[DatacenterBackend, GridBackend]):
     def dt_s(self) -> Fraction:
         return self._dt_s
 
+    @property
+    def datacenters(self) -> list:
+        return []
+
     def reset(self) -> None:
         pass
 
