@@ -1,8 +1,8 @@
-"""Plot distribution system topology from DSS files with DC locations, PV, and regulators.
+"""Plot distribution system topology from DSS files.
 
-Automatically parses bus coordinates, line/transformer connections, and regulator
-definitions from OpenDSS files. Overlays DC sites, PV systems, and zone coloring
-from experiment definitions in run_ofo.py.
+Automatically parses bus coordinates, line/transformer connections, regulators,
+capacitors, switches, and source bus from OpenDSS files.  Overlays DC sites,
+PV systems, and zone coloring from experiment definitions in run_ofo.py.
 
 Usage:
     python plot_topology.py --system ieee13
@@ -12,6 +12,7 @@ Usage:
 
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -49,7 +50,7 @@ def parse_bus_coords(path: Path) -> dict[str, tuple[float, float]]:
     return coords
 
 
-_SETBUSXY_RE = re.compile(r"setbusxy\s+bus\s*=\s*(\S+)\s+x\s*=\s*(-?\d+(?:\.\d+)?)\s+y\s*=\s*(-?\d+(?:\.\d+)?)")
+_SETBUSXY_RE = re.compile(r"setbusxy\s+bus\s*=\s*([^,\s!]+)[,\s]+x\s*=\s*([^,\s!]+)[,\s]+y\s*=\s*([^,\s!]+)")
 
 
 def parse_dss_bus_coords(dss_dir: Path, master_file: str) -> dict[str, tuple[float, float]]:
@@ -70,16 +71,28 @@ def parse_dss_bus_coords(dss_dir: Path, master_file: str) -> dict[str, tuple[flo
         visited.add(key)
 
         text = fpath.read_text(errors="replace")
+        joined_lines: list[str] = []
         for raw_line in text.splitlines():
-            line = raw_line.strip()
+            stripped = raw_line.strip()
+            if stripped.startswith("~"):
+                if joined_lines:
+                    joined_lines[-1] += " " + stripped[1:]
+                continue
+            joined_lines.append(stripped)
+
+        for line in joined_lines:
             lower = line.lower()
             for directive in ("redirect", "compile"):
                 if lower.startswith(directive):
-                    ref = line[len(directive) :].strip().strip('"').strip("'")
+                    ref = line[len(directive) :].split("!")[0].strip().strip('"').strip("'")
                     _parse_file(fpath.parent / ref)
             m = _SETBUSXY_RE.match(lower)
             if m:
-                coords[m.group(1).lower()] = (float(m.group(2)), float(m.group(3)))
+                try:
+                    bus_name = _strip_bus_phases(m.group(1))
+                    coords[bus_name] = (float(m.group(2)), float(m.group(3)))
+                except ValueError:
+                    continue
 
     _parse_file(dss_dir / master_file)
     return coords
@@ -123,7 +136,7 @@ def parse_dss_edges(dss_dir: Path, master_file: str) -> list[tuple[str, str]]:
             # Follow redirect/compile directives
             for directive in ("redirect", "compile"):
                 if lower.startswith(directive):
-                    ref = line[len(directive) :].strip().strip('"').strip("'")
+                    ref = line[len(directive) :].split("!")[0].strip().strip('"').strip("'")
                     _parse_file(fpath.parent / ref)
 
             # Parse New Line.xxx Bus1=... Bus2=...
@@ -204,7 +217,7 @@ def parse_dss_regulators(dss_dir: Path, master_file: str) -> list[RegulatorInfo]
             lower = line.lower()
             for directive in ("redirect", "compile"):
                 if lower.startswith(directive):
-                    ref = line[len(directive) :].strip().strip('"').strip("'")
+                    ref = line[len(directive) :].split("!")[0].strip().strip('"').strip("'")
                     _parse_file(fpath.parent / ref)
 
             # Parse transformers
@@ -288,6 +301,170 @@ def parse_dss_regulators(dss_dir: Path, master_file: str) -> list[RegulatorInfo]
     return regs
 
 
+@dataclass
+class CapacitorInfo:
+    name: str
+    bus: str
+    phases: int
+    kvar: float
+
+
+def parse_dss_capacitors(dss_dir: Path, master_file: str) -> list[CapacitorInfo]:
+    """Parse shunt capacitor banks from DSS files (following redirects)."""
+    caps: list[CapacitorInfo] = []
+    visited: set[str] = set()
+
+    def _parse_file(fpath: Path) -> None:
+        if not fpath.exists():
+            return
+        key = str(fpath.resolve()).lower()
+        if key in visited:
+            return
+        visited.add(key)
+
+        text = fpath.read_text(errors="replace")
+        joined_lines: list[str] = []
+        for raw_line in text.splitlines():
+            stripped = raw_line.strip()
+            if stripped.startswith("~"):
+                if joined_lines:
+                    joined_lines[-1] += " " + stripped[1:]
+                continue
+            joined_lines.append(stripped)
+
+        for line in joined_lines:
+            lower = line.lower()
+            for directive in ("redirect", "compile"):
+                if lower.startswith(directive):
+                    ref = line[len(directive) :].split("!")[0].strip().strip('"').strip("'")
+                    _parse_file(fpath.parent / ref)
+
+            m_cap = re.match(r"new\s+capacitor\.(\S+)", lower)
+            if m_cap:
+                cap_name = m_cap.group(1)
+                m_bus = re.search(r"bus1\s*=\s*(\S+)", lower)
+                m_phases = re.search(r"phases\s*=\s*(\d+)", lower)
+                m_kvar = re.search(r"kvar\s*=\s*(\S+)", lower)
+                if m_bus:
+                    caps.append(
+                        CapacitorInfo(
+                            name=cap_name,
+                            bus=_strip_bus_phases(m_bus.group(1)),
+                            phases=int(m_phases.group(1)) if m_phases else 3,
+                            kvar=float(m_kvar.group(1)) if m_kvar else 0,
+                        )
+                    )
+
+    _parse_file(dss_dir / master_file)
+    return caps
+
+
+@dataclass
+class SwitchInfo:
+    name: str
+    bus1: str
+    bus2: str
+
+
+def parse_dss_switches(dss_dir: Path, master_file: str) -> list[SwitchInfo]:
+    """Parse switch definitions from DSS files.
+
+    Detects lines with ``Switch=y`` or ``Switch=yes`` property, and also lines
+    whose name starts with ``sw`` with near-zero impedance (common IEEE 123
+    convention).
+    """
+    switches: list[SwitchInfo] = []
+    visited: set[str] = set()
+
+    def _parse_file(fpath: Path) -> None:
+        if not fpath.exists():
+            return
+        key = str(fpath.resolve()).lower()
+        if key in visited:
+            return
+        visited.add(key)
+
+        text = fpath.read_text(errors="replace")
+        joined_lines: list[str] = []
+        for raw_line in text.splitlines():
+            stripped = raw_line.strip()
+            if stripped.startswith("~"):
+                if joined_lines:
+                    joined_lines[-1] += " " + stripped[1:]
+                continue
+            joined_lines.append(stripped)
+
+        for line in joined_lines:
+            lower = line.lower()
+            for directive in ("redirect", "compile"):
+                if lower.startswith(directive):
+                    ref = line[len(directive) :].split("!")[0].strip().strip('"').strip("'")
+                    _parse_file(fpath.parent / ref)
+
+            m_line = re.match(r"new\s+line\.(\S+)", lower)
+            if not m_line:
+                continue
+            line_name = m_line.group(1)
+            is_switch = bool(re.search(r"switch\s*=\s*y", lower))
+            is_sw_name = line_name.startswith("sw")
+            if is_switch or is_sw_name:
+                m1 = re.search(r"bus1\s*=\s*(\S+)", lower)
+                m2 = re.search(r"bus2\s*=\s*(\S+)", lower)
+                if m1 and m2:
+                    switches.append(
+                        SwitchInfo(
+                            name=line_name,
+                            bus1=_strip_bus_phases(m1.group(1)),
+                            bus2=_strip_bus_phases(m2.group(1)),
+                        )
+                    )
+
+    _parse_file(dss_dir / master_file)
+    return switches
+
+
+def parse_dss_source_bus(dss_dir: Path, master_file: str) -> str | None:
+    """Return the source bus name from the ``New Circuit`` definition."""
+    visited: set[str] = set()
+
+    def _parse_file(fpath: Path) -> str | None:
+        if not fpath.exists():
+            return None
+        key = str(fpath.resolve()).lower()
+        if key in visited:
+            return None
+        visited.add(key)
+
+        text = fpath.read_text(errors="replace")
+        joined_lines: list[str] = []
+        for raw_line in text.splitlines():
+            stripped = raw_line.strip()
+            if stripped.startswith("~"):
+                if joined_lines:
+                    joined_lines[-1] += " " + stripped[1:]
+                continue
+            joined_lines.append(stripped)
+
+        for line in joined_lines:
+            lower = line.lower()
+            for directive in ("redirect", "compile"):
+                if lower.startswith(directive):
+                    ref = line[len(directive) :].split("!")[0].strip().strip('"').strip("'")
+                    result = _parse_file(fpath.parent / ref)
+                    if result:
+                        return result
+
+            if re.match(r"new\s+(object\s*=\s*)?circuit\.", lower):
+                m_bus = re.search(r"bus1\s*=\s*(\S+)", lower)
+                if m_bus:
+                    return _strip_bus_phases(m_bus.group(1))
+                # If no Bus1= specified, OpenDSS defaults to "sourcebus"
+                return "sourcebus"
+        return None
+
+    return _parse_file(dss_dir / master_file)
+
+
 # ── Zone color palette ───────────────────────────────────────────────────────
 
 ZONE_PALETTE = [
@@ -343,7 +520,10 @@ def plot_topology(
             )
         coords = parse_bus_coords(coord_file)
     edges = parse_dss_edges(dss_dir, master_file)
-    parse_dss_regulators(dss_dir, master_file)
+    regulators = parse_dss_regulators(dss_dir, master_file)
+    capacitors = parse_dss_capacitors(dss_dir, master_file)
+    switches = parse_dss_switches(dss_dir, master_file)
+    source_bus = parse_dss_source_bus(dss_dir, master_file)
 
     # Overlays from experiment
     zones_cfg = experiment.get("zones") or sys.get("zones") or {}
@@ -354,6 +534,8 @@ def plot_topology(
     dc_sites = {sid: {"bus": site.bus} for sid, site in dc_sites_obj.items()}
     dc_buses = {site.bus.lower(): sid for sid, site in dc_sites_obj.items()}
     pv_buses = {pv.bus.lower(): f"{pv.peak_kw:.0f} kW/ph" for pv in pv_systems_list}
+    cap_buses = {cap.bus: cap for cap in capacitors}
+    switch_edges = {(sw.bus1, sw.bus2) for sw in switches} | {(sw.bus2, sw.bus1) for sw in switches}
 
     # Zone coloring
     zone_ids = list(zones_cfg.keys()) if zones_cfg else list(dc_sites.keys())
@@ -377,29 +559,35 @@ def plot_topology(
             x = [coords[a][0], coords[b][0]]
             y = [coords[a][1], coords[b][1]]
             za, zb = bus_zone.get(a), bus_zone.get(b)
-            if za and za == zb:
-                color, alpha = zone_colors[za], 0.5
+            is_sw = (a, b) in switch_edges
+            if is_sw:
+                color, alpha, lw, ls = "#E91E63", 0.8, 2.5, "--"
+            elif za and za == zb:
+                color, alpha, lw, ls = zone_colors[za], 0.5, 3.0, "-"
             else:
-                color, alpha = "#BDBDBD", 0.7
-            # ax.plot(x, y, "-", color=color, linewidth=1.2, alpha=alpha, zorder=1)
-            ax.plot(x, y, "-", color=color, linewidth=3.0, alpha=alpha, zorder=1)
+                color, alpha, lw, ls = "#BDBDBD", 0.7, 3.0, "-"
+            ax.plot(x, y, ls, color=color, linewidth=lw, alpha=alpha, zorder=1)
 
     # Draw buses
-    {b.lower() for b in sys.get("exclude_buses", ())}
     for bus_name, (x, y) in coords.items():
         zid = bus_zone.get(bus_name)
         is_dc = bus_name in dc_buses
         is_pv = bus_name in pv_buses
+        is_cap = bus_name in cap_buses
+        is_source = bus_name == source_bus
+        is_special = is_dc or is_pv or is_cap or is_source
 
+        if is_source:
+            ax.plot(x, y, "h", color="#F44336", markersize=24, markeredgecolor="black", markeredgewidth=2.0, zorder=7)
         if is_dc:
             color = zone_colors.get(zid, "#999999")
-            # ax.plot(x, y, "*", color=color, markersize=24, markeredgecolor="black",
-            #         markeredgewidth=1.5, zorder=5)
             ax.plot(x, y, "*", color=color, markersize=48, markeredgecolor="black", markeredgewidth=2.0, zorder=5)
         elif is_pv:
-            # ax.plot(x, y, "^", color="#FFD600", markersize=14, markeredgecolor="black",
-            #         markeredgewidth=1.2, zorder=5)
             ax.plot(x, y, "^", color="#FFD600", markersize=28, markeredgecolor="black", markeredgewidth=1.8, zorder=5)
+        elif is_cap:
+            ax.plot(x, y, "p", color="#00BFA5", markersize=18, markeredgecolor="black", markeredgewidth=1.2, zorder=5)
+        elif is_source:
+            pass  # already drawn above
         elif zid:
             ax.plot(
                 x, y, "o", color=zone_colors[zid], markersize=6, markeredgecolor="black", markeredgewidth=0.4, zorder=3
@@ -407,41 +595,46 @@ def plot_topology(
         else:
             ax.plot(x, y, "s", color="#CCCCCC", markersize=5, markeredgecolor="#888", markeredgewidth=0.3, zorder=2)
 
-        fontsize = (9 if (is_dc or is_pv) else 6) * fs
-        fontweight = "bold" if (is_dc or is_pv) else "normal"
+        fontsize = (12 if is_special else 9) * fs
+        fontweight = "bold" if is_special else "normal"
+        label = bus_name
+        if is_cap:
+            cap = cap_buses[bus_name]
+            label = f"{bus_name}\n({cap.kvar:.0f} kVAR)"
         ax.annotate(
-            bus_name,
+            label,
             (x, y),
             textcoords="offset points",
-            xytext=(0, (8 if (is_dc or is_pv) else 5) * fs),
+            xytext=(0, (8 if is_special else 5) * fs),
             ha="center",
             fontsize=fontsize,
             fontweight=fontweight,
             zorder=6,
         )
 
-    # Draw regulators (temporarily disabled)
-    # for i, reg in enumerate(regulators):
-    #     fb, tb = reg.from_bus, reg.to_bus
-    #     if fb in coords and tb in coords:
-    #         mx = (coords[fb][0] + coords[tb][0]) / 2
-    #         my = (coords[fb][1] + coords[tb][1]) / 2
-    #         ax.plot(mx, my, "D", color="red", markersize=14, markeredgecolor="darkred",
-    #                 markeredgewidth=2, zorder=10)
-    #         # Alternate annotation placement
-    #         angle = 45 + (i % 4) * 90
-    #         import math
-    #         ox = 20 * math.cos(math.radians(angle))
-    #         oy = 20 * math.sin(math.radians(angle))
-    #         ax.annotate(
-    #             f"{reg.name}\n({reg.ctrl_name}, {reg.phases})",
-    #             (mx, my), textcoords="offset points",
-    #             xytext=(ox, oy), ha="left", fontsize=8 * fs, fontweight="bold",
-    #             color="darkred", zorder=11,
-    #             bbox=dict(boxstyle="round,pad=0.3", facecolor="lightyellow",
-    #                       edgecolor="darkred", alpha=0.9),
-    #             arrowprops=dict(arrowstyle="->", color="darkred", lw=1.5),
-    #         )
+    # Draw regulators
+    for i, reg in enumerate(regulators):
+        fb, tb = reg.from_bus, reg.to_bus
+        if fb in coords and tb in coords:
+            mx = (coords[fb][0] + coords[tb][0]) / 2
+            my = (coords[fb][1] + coords[tb][1]) / 2
+            ax.plot(mx, my, "D", color="red", markersize=14, markeredgecolor="darkred", markeredgewidth=2, zorder=10)
+            angle = 45 + (i % 4) * 90
+            ox = 20 * math.cos(math.radians(angle))
+            oy = 20 * math.sin(math.radians(angle))
+            ax.annotate(
+                f"{reg.name}\n({reg.phases})",
+                (mx, my),
+                textcoords="offset points",
+                xytext=(ox, oy),
+                ha="left",
+                fontsize=8 * fs,
+                fontweight="bold",
+                color="darkred",
+                zorder=11,
+                bbox=dict(boxstyle="round,pad=0.3", facecolor="lightyellow", edgecolor="darkred", alpha=0.9),
+                arrowprops=dict(arrowstyle="->", color="darkred", lw=1.5),
+            )
 
     # Legend
     handles = []
@@ -462,6 +655,18 @@ def plot_topology(
                     label=f"DC '{sid}' @ bus {site['bus']}",
                 )
             )
+    handles.append(
+        plt.Line2D(
+            [0],
+            [0],
+            marker="h",
+            color="w",
+            markerfacecolor="#F44336",
+            markersize=12,
+            markeredgecolor="black",
+            label="Source / Substation",
+        )
+    )
     handles.append(
         plt.Line2D(
             [0],
@@ -487,9 +692,35 @@ def plot_topology(
                 label="PV System",
             )
         )
-    # handles.append(plt.Line2D([0], [0], marker="D", color="w", markerfacecolor="red",
-    #                markersize=10, markeredgecolor="darkred", label="Voltage Regulator"))
-    handles.append(mpatches.Patch(color="#CCCCCC", label="Unzoned / Source"))
+    if regulators:
+        handles.append(
+            plt.Line2D(
+                [0],
+                [0],
+                marker="D",
+                color="w",
+                markerfacecolor="red",
+                markersize=10,
+                markeredgecolor="darkred",
+                label="Voltage Regulator",
+            )
+        )
+    if capacitors:
+        handles.append(
+            plt.Line2D(
+                [0],
+                [0],
+                marker="p",
+                color="w",
+                markerfacecolor="#00BFA5",
+                markersize=12,
+                markeredgecolor="black",
+                label="Capacitor Bank",
+            )
+        )
+    if switches:
+        handles.append(plt.Line2D([0], [0], ls="--", color="#E91E63", linewidth=2, label="Switch"))
+    handles.append(mpatches.Patch(color="#CCCCCC", label="Unzoned Bus"))
     # ax.legend(handles=handles, loc="best", fontsize=11 * fs, framealpha=0.9)
     # ax.legend(handles=handles, loc="lower right", fontsize=11 * fs, framealpha=0.9)
     ax.legend(
