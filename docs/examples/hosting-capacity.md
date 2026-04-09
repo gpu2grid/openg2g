@@ -87,11 +87,11 @@ Buses closer to the substation typically have higher hosting capacity due to low
 
 ## Configuration
 
-Key config fields:
+Experiment parameters are defined inline in the script:
 
-- `dc_sites`: Template for DC power levels (base_kw_per_phase)
-- `initial_taps`: Starting regulator positions (optimized per bus during analysis)
-- `regulator_zones`: Maps regulators to downstream buses for zone-aware tap optimization
-- `exclude_buses`: Buses to exclude from both candidates and voltage metrics
+- **DC power levels**: `base_kw_per_phase` on `DatacenterConfig`
+- **Initial taps**: `TapPosition(regulators={...})` from `systems.py` feeder constants (optimized per bus during analysis)
+- **Regulator zones**: `regulator_zones` from `systems.py` feeder constants — maps regulators to downstream buses for zone-aware tap optimization
+- **Exclude buses**: From `systems.py` feeder constants
 
-See [Building Simulators](../guide/building-simulators.md) and `examples/offline/systems.py` for configuration details.
+See [Building Simulators](../guide/building-simulators.md) for the full component API.

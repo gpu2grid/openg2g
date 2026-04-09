@@ -149,13 +149,16 @@ def test_controller_inherits_compatibility_from_typed_parent():
         def dt_s(self) -> Fraction:
             return Fraction(1)
 
+        @property
+        def datacenters(self) -> list:
+            return []
+
         def reset(self) -> None:
             pass
 
         def step(
             self,
             clock: SimulationClock,
-            datacenter: _DC,
             grid: _Grid,
             events: EventEmitter,
         ) -> list[DatacenterCommand | GridCommand]:
@@ -176,13 +179,16 @@ def test_controller_accepts_parameterized_backend_generics():
         def dt_s(self) -> Fraction:
             return Fraction(1)
 
+        @property
+        def datacenters(self) -> list:
+            return []
+
         def reset(self) -> None:
             pass
 
         def step(
             self,
             clock: SimulationClock,
-            datacenter: LLMBatchSizeControlledDatacenter[OfflineDatacenterState],
             grid: GridBackend[GridState],
             events: EventEmitter,
         ) -> list[DatacenterCommand | GridCommand]:

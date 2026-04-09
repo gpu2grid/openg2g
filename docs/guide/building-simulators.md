@@ -470,7 +470,7 @@ controllers = [
 ]
 ```
 
-The `ShiftReplicas` command includes a `target_site_id` field, and the coordinator routes it to the correct datacenter automatically.
+The `ShiftReplicas` command includes a `target` field referencing the destination datacenter. When omitted, the coordinator infers the target from the controller's `datacenters` property.
 
 ## Example Analysis Scripts
 
@@ -478,7 +478,7 @@ The `examples/offline/` directory includes ready-to-run analysis scripts. For de
 
 | Script | Topic | Details |
 |--------|-------|---------|
-| `run_baseline.py`, `run_ofo.py` | Baseline and OFO simulations (all systems) | [GPU Flexibility](../examples/gpu-flexibility.md), [Voltage Strategies](../examples/voltage-regulation-strategies.md) |
+| `run_ofo.py` | Baseline and OFO simulations (all systems, `--mode both` for baselines) | [GPU Flexibility](../examples/gpu-flexibility.md), [Voltage Strategies](../examples/voltage-regulation-strategies.md) |
 | `analyze_different_controllers.py` | Controller comparison (baseline, rule-based, OFO) | [Voltage Strategies](../examples/voltage-regulation-strategies.md) |
 | `sweep_ofo_parameters.py` | OFO parameter sensitivity sweep | [Parameter Sensitivity](../examples/controller-parameter-sensitivity.md) |
 | `plot_topology.py` | System topology visualization | [Grid Topology](../examples/grid-topology-effects.md) |

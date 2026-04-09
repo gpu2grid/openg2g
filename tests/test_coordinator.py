@@ -363,6 +363,10 @@ def test_controller_datacenter_mismatch_error_has_underlined_generic_snippet():
         def dt_s(self) -> Fraction:
             return Fraction(1)
 
+        @property
+        def datacenters(self) -> list:
+            return []
+
         def reset(self) -> None:
             pass
 

@@ -18,7 +18,7 @@ OpenG2G provides three IEEE test systems that represent different disturbance so
 
 | Script | Purpose |
 |--------|---------|
-| `run_baseline.py` | Run without batch-size control (fixed batch sizes) |
+| `run_ofo.py --mode both` | Run without batch-size control (fixed batch sizes) |
 | `run_ofo.py` | Run with OFO batch-size control |
 
 ## Usage
@@ -29,7 +29,7 @@ The IEEE 13 config includes a training overlay (2400 GPUs, t=1000–2000s) and a
 
 ```bash
 # Baseline (no batch control, no tap changes)
-python examples/offline/run_baseline.py --system ieee13
+python examples/offline/run_ofo.py --mode both --system ieee13
 
 # OFO batch-size control
 python examples/offline/run_ofo.py --system ieee13
@@ -40,7 +40,7 @@ python examples/offline/run_ofo.py --system ieee13
 The IEEE 34 config has PV systems at buses 830 and 848 and time-varying loads at five buses. The datacenter load is steady (no ramps), so all voltage disturbances come from external sources.
 
 ```bash
-python examples/offline/run_baseline.py --system ieee34
+python examples/offline/run_ofo.py --mode both --system ieee34
 python examples/offline/run_ofo.py --system ieee34
 ```
 
@@ -49,7 +49,7 @@ python examples/offline/run_ofo.py --system ieee34
 The IEEE 123 config combines per-site inference ramps (four datacenters with different ramp schedules), three PV systems, and time-varying loads — representing the most realistic scenario.
 
 ```bash
-python examples/offline/run_baseline.py --system ieee123
+python examples/offline/run_ofo.py --mode both --system ieee123
 python examples/offline/run_ofo.py --system ieee123
 ```
 
@@ -65,12 +65,12 @@ OFO is most effective against slow, predictable disturbances (training ramps, in
 
 ## Configuration
 
-Key config fields for this analysis:
+Experiment parameters are defined inline in each script's experiment functions. Key parameters:
 
-- `dc_sites[].inference_ramps`: Per-site server activation schedules (internal disturbance)
-- `training`: Training workload overlay with `dc_site`, `n_gpus`, `t_start`/`t_end` (internal disturbance)
-- `pv_systems`: Solar PV injections (external disturbance)
-- `time_varying_loads`: Additional loads at arbitrary buses (external disturbance)
-- `ofo`: OFO controller parameters (see [Controller Parameter Sensitivity](controller-parameter-sensitivity.md))
+- **Inference ramps**: `InferenceRamp(target=..., model=...).at(t_start, t_end)` — per-site server activation schedules (internal disturbance)
+- **Training overlay**: `TrainingRun(n_gpus=..., trace=...).at(t_start, t_end)` — training workload (internal disturbance)
+- **Generators**: `SyntheticPV(peak_kw=...)` attached to grid buses — solar PV injection (external disturbance)
+- **External loads**: `SyntheticLoad(peak_kw=...)` attached to grid buses (external disturbance)
+- **OFO tuning**: `OFOConfig(...)` — see [Controller Parameter Sensitivity](controller-parameter-sensitivity.md)
 
-See [Building Simulators](../guide/building-simulators.md) and `examples/offline/systems.py` for configuration details.
+Feeder constants (DSS paths, initial taps, excluded buses) are in `examples/offline/systems.py`. See [Building Simulators](../guide/building-simulators.md) for the full component API.

@@ -28,16 +28,16 @@ A single command builds all data (power traces, latency fits, training trace) an
 
 These three runs correspond to the evaluation cases in the [GPU-to-Grid paper](https://arxiv.org/abs/2602.05116):
 
-- **`run_baseline.py --mode no-tap`**: Fixed taps, no OFO control
-- **`run_baseline.py --mode tap-change`**: Scheduled tap changes at 1500s and 3300s, no OFO
-- **`run_ofo.py`**: OFO closed-loop batch size optimization
+- **`run_ofo.py --mode no-tap`**: Baseline (no tap changes) + OFO comparison
+- **`run_ofo.py --mode tap-change`**: Baseline (with tap changes at 1500s and 3300s) + OFO comparison
+- **`run_ofo.py --mode both`**: Baselines only (no-tap + tap-change, no OFO)
 
 ```bash
-python examples/offline/run_baseline.py --system ieee13 --mode no-tap
+python examples/offline/run_ofo.py --system ieee13 --mode no-tap
 
-python examples/offline/run_baseline.py --system ieee13 --mode tap-change
+python examples/offline/run_ofo.py --system ieee13 --mode tap-change
 
-python examples/offline/run_ofo.py --system ieee13
+python examples/offline/run_ofo.py --system ieee13 --mode both
 ```
 
 The first run will download benchmark data and generate simulation artifacts (this takes a few minutes). Subsequent runs load from the cache directory (`data/offline/{hash}/`).
@@ -49,11 +49,11 @@ Outputs (plots and logs) are saved to `outputs/baseline_no-tap/`, `outputs/basel
 Both simulations log voltage violation statistics at the end of the run. Baseline (tap-change) example:
 
 ```
-21:00:09 run_baseline INFO === Voltage Statistics (all-bus) ===
-21:00:09 run_baseline INFO   voltage_violation_time = 1050.8 s
-21:00:09 run_baseline INFO   worst_vmin             = 0.935359
-21:00:09 run_baseline INFO   worst_vmax             = 1.063965
-21:00:09 run_baseline INFO   integral_violation     = 42.2543 pu·s
+21:00:09 run_ofo INFO === Voltage Statistics (all-bus) ===
+21:00:09 run_ofo INFO   voltage_violation_time = 1050.8 s
+21:00:09 run_ofo INFO   worst_vmin             = 0.935359
+21:00:09 run_ofo INFO   worst_vmax             = 1.063965
+21:00:09 run_ofo INFO   integral_violation     = 42.2543 pu·s
 ```
 
 The OFO simulation additionally prints a per-model batch schedule summary:

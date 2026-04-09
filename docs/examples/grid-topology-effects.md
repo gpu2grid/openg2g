@@ -20,7 +20,7 @@ OpenG2G includes three standard IEEE test feeders with pre-configured datacenter
 
 | Script | Purpose |
 |--------|---------|
-| `run_baseline.py` | Run baseline simulation for a specific system |
+| `run_ofo.py --mode both` | Run baseline simulation for a specific system |
 | `run_ofo.py` | Run OFO simulation for a specific system |
 | `plot_topology.py` | Visualize system topology with DC, PV, and regulator locations |
 

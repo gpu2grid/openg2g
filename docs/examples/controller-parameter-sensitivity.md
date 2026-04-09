@@ -51,13 +51,13 @@ python examples/offline/sweep_ofo_parameters.py \
 
 ## Parameters Swept
 
-| Parameter | Config Field | Effect |
-|-----------|-------------|--------|
-| `voltage_dual_step_size` | `ofo.voltage_dual_step_size` | Aggressiveness of voltage constraint enforcement. **Most impactful** — values 5–10 can cut violation time 3× vs baseline (1.0). |
-| `primal_step_size` | `ofo.primal_step_size` | Learning rate for batch-size updates. Sweet spot ~0.05; default 0.1 is slightly suboptimal. |
-| `latency_dual_step_size` | `ofo.latency_dual_step_size` | Aggressiveness of latency constraint enforcement. Nearly no effect under standard load (latency dual not binding). |
-| `w_throughput` | `ofo.w_throughput` | Weight on throughput preservation in objective. Values > 0.01 cause severe degradation; keep ≤ 1e-3. |
-| `w_switch` | `ofo.w_switch` | Regularization for batch-size changes. Value of 5.0 gives mild improvement over baseline 1.0. |
+| Parameter | `OFOConfig` field | Effect |
+|-----------|------------------|--------|
+| `voltage_dual_step_size` | `voltage_dual_step_size` | Aggressiveness of voltage constraint enforcement. **Most impactful** — values 5–10 can cut violation time 3x vs baseline (1.0). |
+| `primal_step_size` | `primal_step_size` | Learning rate for batch-size updates. Sweet spot ~0.05; default 0.1 is slightly suboptimal. |
+| `latency_dual_step_size` | `latency_dual_step_size` | Aggressiveness of latency constraint enforcement. Nearly no effect under standard load (latency dual not binding). |
+| `w_throughput` | `w_throughput` | Weight on throughput preservation in objective. Values > 0.01 cause severe degradation; keep <= 1e-3. |
+| `w_switch` | `w_switch` | Regularization for batch-size changes. Value of 5.0 gives mild improvement over baseline 1.0. |
 
 ## Key Results
 
@@ -69,9 +69,7 @@ Outputs are saved to `outputs/<system>/sweep_ofo_parameters/`:
 
 ## Configuration
 
-Key config fields:
+- **Baseline OFO parameters**: `OFOConfig(...)` — center of the sweep grid, defined inline in each script's experiment function
+- **Simulation length**: `TOTAL_DURATION_S` constant in each script (default 3600s)
 
-- `ofo.*`: Baseline parameter values (center of the sweep grid)
-- `simulation.total_duration_s`: Simulation length (affects sweep runtime)
-
-See [Building Simulators](../guide/building-simulators.md) and `examples/offline/systems.py` for configuration details.
+See [Building Simulators](../guide/building-simulators.md) for the full component API.

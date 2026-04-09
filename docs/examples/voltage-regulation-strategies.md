@@ -18,7 +18,7 @@ This analysis compares three control strategies:
 
 | Script | Purpose |
 |--------|---------|
-| `run_baseline.py` | Baseline with optional tap schedule (`--mode no-tap` or `--mode tap-change`) |
+| `run_ofo.py --mode both` | Baseline with optional tap schedule (`--mode no-tap` or `--mode tap-change`) |
 | `run_ofo.py` | OFO with optional tap schedule (`--mode no-tap` or `--mode tap-change`) |
 | `analyze_different_controllers.py` | Side-by-side comparison of baseline, rule-based, and OFO |
 
@@ -81,8 +81,10 @@ OFO outperforms because it: (1) uses model-specific sensitivity to adjust the ri
 
 ## Configuration
 
-- `tap_schedule`: Defines when and how regulator taps change (baseline only)
-- `ofo`: OFO controller parameters
-- `initial_taps`: Starting tap positions for all modes
+Experiment parameters are defined inline in each script's setup functions:
 
-See [Building Simulators](../guide/building-simulators.md) and `examples/offline/systems.py` for configuration details.
+- **Tap schedule**: `TapSchedule(...)` — defines when and how regulator taps change (baseline only)
+- **OFO tuning**: `OFOConfig(...)` — controller parameters
+- **Initial taps**: `TapPosition(regulators={...})` — starting tap positions (in `systems.py` feeder constants)
+
+See [Building Simulators](../guide/building-simulators.md) for the full component API.

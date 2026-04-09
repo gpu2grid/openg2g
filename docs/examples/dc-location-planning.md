@@ -74,12 +74,12 @@ Outputs follow a consistent naming convention:
 
 ## Configuration
 
-Key config fields:
+Experiment parameters are defined inline in each script's experiment functions:
 
-- `dc_sites`: DC site templates (bus, base_kw_per_phase, models, seed)
-- `zones`: Per-zone candidate bus lists (required for zone-constrained mode)
-- `initial_taps`: Starting regulator positions
-- `exclude_buses`: Buses to exclude from candidates and voltage metrics
-- `pv_systems`, `time_varying_loads`: External disturbances (included in stress test)
+- **DC sites**: Bus, `base_kw_per_phase`, model deployments, seed — constructed as `OfflineDatacenter` objects
+- **Zones**: Per-zone candidate bus lists from `systems.py` feeder constants (required for zone-constrained mode)
+- **Initial taps**: `TapPosition(regulators={...})` from `systems.py` feeder constants
+- **Exclude buses**: From `systems.py` feeder constants
+- **Generators and loads**: `SyntheticPV`/`SyntheticLoad` attached to grid (included in stress test)
 
-See [Building Simulators](../guide/building-simulators.md) and `examples/offline/systems.py` for configuration details.
+See [Building Simulators](../guide/building-simulators.md) for the full component API.

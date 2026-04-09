@@ -48,20 +48,16 @@ The `LoadShiftController` follows five rules:
 
 ## Configuration
 
-```json
-"load_shift": {
-    "enabled": true,
-    "gpus_per_shift": 8,
-    "headroom": 0.3
-}
+Load shifting is configured via `LoadShiftConfig` and `OfflineDatacenter` parameters:
+
+```python
+LoadShiftConfig(enabled=True, gpus_per_shift=8, headroom=0.3)
 ```
 
-Key config fields:
+- `enabled`: Enable/disable the load shifting controller
+- `gpus_per_shift`: GPUs moved per control step (default 8)
+- `headroom`: Fraction of extra server capacity to pre-allocate (default 0.3)
+- `total_gpu_capacity` on `OfflineDatacenter`: Maximum GPUs per site (enforced during shifting)
+- Each site must have at least 3 models for warm-start shifting
 
-- `load_shift.enabled`: Enable/disable the load shifting controller
-- `load_shift.gpus_per_shift`: GPUs moved per control step (default 8)
-- `load_shift.headroom`: Fraction of extra server capacity to pre-allocate (default 0.3)
-- `dc_sites[].total_gpu_capacity`: Maximum GPUs per site (enforced during shifting)
-- `dc_sites[].models`: Each site must have at least 3 models for warm-start shifting
-
-See [Building Simulators](../guide/building-simulators.md) and `examples/offline/systems.py` for configuration details.
+See [Building Simulators](../guide/building-simulators.md) for the full component API.
