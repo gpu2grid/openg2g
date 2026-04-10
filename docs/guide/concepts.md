@@ -41,7 +41,9 @@ In **online mode**, it reads live GPU power from live vLLM servers via [Zeus](ht
 ### Grid
 
 The grid backend runs AC power flow on standard IEEE test feeders using OpenDSS.
-It takes three-phase power injections from the datacenter and returns per-bus, per-phase voltages.
+The DSS case file defines the base network: lines, transformers, voltage regulators, and static loads.
+On top of this base network, dynamic components -- datacenters, generators (e.g., solar PV), and external loads -- are attached to specific buses before simulation starts.
+Each timestep, the grid updates the attached components' power injections and runs a power flow solve, returning per-bus, per-phase voltages.
 Voltage regulator tap positions can be scheduled statically or controlled dynamically.
 
 ### Controllers

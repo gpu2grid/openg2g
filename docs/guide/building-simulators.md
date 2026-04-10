@@ -36,7 +36,7 @@ from openg2g.datacenter.config import (
     ModelDeployment, PowerAugmentationConfig, TrainingRun,
 )
 from openg2g.datacenter.offline import OfflineDatacenter, OfflineWorkload
-from openg2g.datacenter.workloads.inference import InferenceData
+from openg2g.datacenter.workloads.inference import InferenceData, MLEnergySource
 from openg2g.datacenter.workloads.training import TrainingTrace
 
 spec_8b = InferenceModelSpec(
@@ -50,7 +50,17 @@ spec_70b = InferenceModelSpec(
 models = (spec_8b, spec_70b)
 
 data_dir = Path("data/offline")
-inference_data = InferenceData.ensure(data_dir, models, dt_s=0.1)
+data_sources = {
+    "Llama-3.1-8B": MLEnergySource(
+        model_label="Llama-3.1-8B", task="lm-arena-chat", gpu="H100",
+        batch_sizes=[8, 16, 32, 64, 128, 256, 512],
+    ),
+    "Llama-3.1-70B": MLEnergySource(
+        model_label="Llama-3.1-70B", task="lm-arena-chat", gpu="H100",
+        batch_sizes=[8, 16, 32, 64, 128, 256, 512],
+    ),
+}
+inference_data = InferenceData.ensure(data_dir, models, data_sources, dt_s=0.1)
 training_trace = TrainingTrace.ensure(data_dir / "training_trace.csv")
 
 # Replica counts are separate from model specs
@@ -88,25 +98,19 @@ dc = OfflineDatacenter(
 
 ### Grid
 
-Construct an [`OpenDSSGrid`][openg2g.grid.opendss.OpenDSSGrid] with a DSS case directory and initial tap position. Tap *schedules* are built using [`TapPosition`][openg2g.grid.config.TapPosition] and the `|` operator, and passed to a [`TapScheduleController`][openg2g.controller.tap_schedule.TapScheduleController]:
+Construct an [`OpenDSSGrid`][openg2g.grid.opendss.OpenDSSGrid] with a DSS case directory, then attach dynamic components to specific buses. The DSS file defines the base network (lines, transformers, regulators, static loads). Attached components add dynamic power sources and sinks on top -- their power is updated each timestep during simulation.
+
+The grid looks up bus voltage levels from the DSS model automatically, so you never need to specify `bus_kv`. See [`OpenDSSGrid`][openg2g.grid.opendss.OpenDSSGrid] for additional options (`source_pu`, `exclude_buses`, etc.).
 
 ```python
 from fractions import Fraction
 
 from openg2g.grid.opendss import OpenDSSGrid
 from openg2g.grid.config import TapPosition
+from openg2g.grid.generator import SyntheticPV
+from openg2g.grid.load import SyntheticLoad
 
 TAP_STEP = 0.00625  # standard 5/8% tap step
-
-# Fixed taps (single position at t=0)
-tap_schedule = TapPosition(a=1.0 + 14 * TAP_STEP, b=1.0 + 6 * TAP_STEP, c=1.0 + 15 * TAP_STEP).at(t=0)
-
-# Or scheduled changes at multiple times
-tap_schedule = (
-    TapPosition(a=1.0 + 14 * TAP_STEP, b=1.0 + 6 * TAP_STEP, c=1.0 + 15 * TAP_STEP).at(t=0)
-    | TapPosition(a=1.0 + 16 * TAP_STEP, b=1.0 + 6 * TAP_STEP, c=1.0 + 17 * TAP_STEP).at(t=25 * 60)
-    | TapPosition(a=1.0 + 10 * TAP_STEP, b=1.0 + 6 * TAP_STEP, c=1.0 + 10 * TAP_STEP).at(t=55 * 60)
-)
 
 grid = OpenDSSGrid(
     dss_case_dir="data/grid/ieee13",
@@ -116,8 +120,46 @@ grid = OpenDSSGrid(
         regulators={"creg1a": 1.0 + 14 * TAP_STEP, "creg1b": 1.0 + 6 * TAP_STEP, "creg1c": 1.0 + 15 * TAP_STEP}
     ),
 )
+
+# Attach a datacenter load at bus 671
 grid.attach_dc(dc, bus="671")
+
+# Attach a PV generator at bus 675 (injected as negative load)
+grid.attach_generator(SyntheticPV(peak_kw=10.0), bus="675")
+
+# Attach a time-varying external load at bus 680
+grid.attach_load(SyntheticLoad(peak_kw=500.0), bus="680")
 ```
+
+All `attach_*` calls must happen before `start()` (which the [`Coordinator`][openg2g.coordinator.Coordinator] calls automatically). Static loads defined in the DSS file coexist with attached dynamic components -- the power flow sees both.
+
+#### Generators and loads
+
+[`Generator`][openg2g.grid.generator.Generator] and [`ExternalLoad`][openg2g.grid.load.ExternalLoad] are abstract base classes with a single method `power_kw(t)` that returns real power at simulation time `t`. Built-in implementations:
+
+| Class | Description |
+|-------|-------------|
+| [`SyntheticPV`][openg2g.grid.generator.SyntheticPV] | Demonstration PV profile with cloud dips and trends |
+| [`ConstantGenerator`][openg2g.grid.generator.ConstantGenerator] | Fixed power output |
+| [`CSVProfileGenerator`][openg2g.grid.generator.CSVProfileGenerator] | Interpolated from a CSV time series |
+| [`SyntheticLoad`][openg2g.grid.load.SyntheticLoad] | Demonstration load with diurnal bumps |
+| [`ConstantLoad`][openg2g.grid.load.ConstantLoad] | Fixed power consumption |
+| [`CSVProfileLoad`][openg2g.grid.load.CSVProfileLoad] | Interpolated from a CSV time series |
+
+Subclass `Generator` or `ExternalLoad` to implement custom profiles (e.g., real weather-driven PV, measured load traces).
+
+#### Tap schedules
+
+Tap *schedules* are built using [`TapPosition`][openg2g.grid.config.TapPosition] and the `|` operator, and passed to a [`TapScheduleController`][openg2g.controller.tap_schedule.TapScheduleController]:
+
+```python
+tap_schedule = (
+    TapPosition(regulators={"creg1a": 1.0 + 16 * TAP_STEP, "creg1b": 1.0 + 6 * TAP_STEP}).at(t=25 * 60)
+    | TapPosition(regulators={"creg1a": 1.0 + 10 * TAP_STEP}).at(t=55 * 60)
+)
+```
+
+For single-bank systems, the phase shorthand `TapPosition(a=..., b=..., c=...)` can be used instead of regulator names. Multi-bank systems must use explicit regulator names.
 
 #### Grid Data Files
 
@@ -160,14 +202,23 @@ Controllers compose in order. Pass them as a list to the coordinator:
 
 ```python
 from openg2g.controller.tap_schedule import TapScheduleController
-from openg2g.controller.ofo import OFOBatchSizeController
+from openg2g.controller.ofo import LogisticModelStore, OFOBatchSizeController, OFOConfig
+
+logistic_models = LogisticModelStore.ensure(
+    data_dir / "logistic_fits.csv", models, data_sources,
+)
 
 coord = Coordinator(
     datacenters=[dc],
     grid=grid,
     controllers=[
         TapScheduleController(schedule=tap_schedule, dt_s=Fraction(1)),
-        OFOBatchSizeController(specs, datacenter=dc, ...),
+        OFOBatchSizeController(
+            models,
+            datacenter=dc,
+            models=logistic_models,
+            config=OFOConfig(v_min=0.95, v_max=1.05),
+        ),
     ],
     total_duration_s=3600,
 )

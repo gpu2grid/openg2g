@@ -43,14 +43,15 @@ from openg2g.datacenter.config import (
 )
 from openg2g.datacenter.offline import OfflineDatacenter, OfflineWorkload
 from openg2g.datacenter.workloads.inference import InferenceData, MLEnergySource
-from openg2g.datacenter.workloads.training import TrainingTrace, TrainingTraceParams
+from openg2g.datacenter.workloads.training import TrainingTrace
 from openg2g.grid.config import TapPosition, TapSchedule
 from openg2g.grid.opendss import OpenDSSGrid
 from openg2g.metrics.voltage import VoltageStats, compute_allbus_voltage_stats
 
+from plotting import plot_model_timeseries_4panel, plot_power_and_itl_2panel
 from systems import ieee123, tap
 
-logger = logging.getLogger("load_shift_comparison")
+logger = logging.getLogger("analyze_LLM_load_shifting")
 
 # Simulation defaults
 
@@ -105,30 +106,29 @@ MODEL_SPECS: dict[str, InferenceModelSpec] = {s.model_label: s for s in ALL_MODE
 
 
 def deploy(label: str, num_replicas: int, initial_batch_size: int = 128) -> ModelDeployment:
-    """Shorthand: ``deploy("Llama-3.1-8B", 720, 128)``."""
+    """Shorthand: `deploy("Llama-3.1-8B", 720, 128)`."""
     return ModelDeployment(spec=MODEL_SPECS[label], num_replicas=num_replicas, initial_batch_size=initial_batch_size)
 
 
-def load_data_sources(config_path: Path | None = None) -> tuple[dict[str, MLEnergySource], TrainingTraceParams, Path]:
-    """Load ML.ENERGY data sources from ``config.json``.
+def load_data_sources(config_path: Path | None = None) -> tuple[dict[str, MLEnergySource], Path]:
+    """Load ML.ENERGY data sources from `data_sources.json`.
 
     Returns:
-        (data_sources, training_trace_params, data_dir) where *data_dir* is a
-        hash-based cache directory under ``<repo_root>/data/offline``.
+        (data_sources, data_dir) where *data_dir* is a hash-based cache
+        directory under `<repo_root>/data/offline`.
     """
     if config_path is None:
-        config_path = Path(__file__).resolve().parent / "config.json"
+        config_path = Path(__file__).resolve().parent / "data_sources.json"
     with open(config_path) as f:
         cfg = json.load(f)
     sources_raw = cfg["data_sources"]
     data_sources = {s["model_label"]: MLEnergySource(**s) for s in sources_raw}
-    ttp = TrainingTraceParams(**(cfg.get("training_trace_params") or {}))
     blob = json.dumps(
-        (sorted(sources_raw, key=lambda s: s["model_label"]), cfg.get("training_trace_params") or {}),
+        sorted(sources_raw, key=lambda s: s["model_label"]),
         sort_keys=True,
     ).encode()
     data_dir = _REPO_ROOT / "data" / "offline" / hashlib.sha256(blob).hexdigest()[:16]
-    return data_sources, ttp, data_dir
+    return data_sources, data_dir
 
 
 # IEEE 123-bus load-shift experiment definition
@@ -177,7 +177,7 @@ LOAD_SHIFT_GPUS_PER_SHIFT = 8
 LOAD_SHIFT_HEADROOM = 0.3
 
 
-def _build_experiment(
+def _build_setup(
     inference_data: InferenceData,
     training_trace: TrainingTrace,
     logistic_models: LogisticModelStore,
@@ -366,7 +366,7 @@ def plot_load_shift_comparison(
     # Only generated when ShiftReplicas commands were issued
     n_shift_cmds = sum(1 for c in log_with_shift.commands if isinstance(c, ShiftReplicas))
     if n_shift_cmds == 0:
-        logger.info("No ShiftReplicas commands found — skipping replica shift plot")
+        logger.info("No ShiftReplicas commands found -- skipping replica shift plot")
     else:
         # Compute delta = active_replicas(with_shift) - active_replicas(no_shift)
         all_model_labels = sorted(set(m for ms in models_by_site.values() for m in ms))
@@ -540,7 +540,7 @@ def plot_load_shift_comparison(
     print(f"{'Integral violation (pu·s)':<30s} {iv1:>15.2f} {iv2:>15.2f} {(1 - iv2 / iv1) * 100 if iv1 else 0:>14.0f}%")
     print(f"{'Worst Vmin (pu)':<30s} {stats_no_shift.worst_vmin:>15.4f} {stats_with_shift.worst_vmin:>15.4f}")
     print(f"{'Worst Vmax (pu)':<30s} {stats_no_shift.worst_vmax:>15.4f} {stats_with_shift.worst_vmax:>15.4f}")
-    print(f"{'Load shift events':<30s} {'—':>15s} {n_shifts:>15d}")
+    print(f"{'Load shift events':<30s} {'--':>15s} {n_shifts:>15d}")
     print("-" * 80)
     print(f"Outputs: {save_dir}")
 
@@ -548,7 +548,7 @@ def plot_load_shift_comparison(
 # Main
 
 
-def _run_experiment(
+def _run_case(
     *,
     inference_data: InferenceData,
     training_trace: TrainingTrace,
@@ -560,8 +560,8 @@ def _run_experiment(
     save_dir: Path,
     case_name: str,
 ) -> tuple[VoltageStats, Any]:
-    """Build experiment, construct controllers, run simulation, return stats + log."""
-    exp = _build_experiment(
+    """Build setup, construct controllers, run simulation, return stats + log."""
+    exp = _build_setup(
         inference_data,
         training_trace,
         logistic_models,
@@ -627,11 +627,6 @@ def _run_experiment(
     )
 
     # Per-case plots and CSV
-    from plotting import (
-        plot_model_timeseries_4panel,
-        plot_power_and_itl_2panel,
-    )
-
     run_dir = save_dir / case_name
     run_dir.mkdir(parents=True, exist_ok=True)
     time_s = np.array(log.time_s)
@@ -677,7 +672,7 @@ def _run_experiment(
     ax.axhline(V_MAX, color="red", linestyle="--", linewidth=1, alpha=0.7)
     ax.set_xlabel("Time (s)")
     ax.set_ylabel("Voltage (pu)")
-    ax.set_title(f"{case_name} — Voltage Envelope")
+    ax.set_title(f"{case_name} -- Voltage Envelope")
     ax.legend(fontsize=9)
     ax.grid(True, alpha=0.2)
     fig.tight_layout()
@@ -699,7 +694,7 @@ def _run_experiment(
             ax.step(t_min, tap_int, where="post", color=tap_cmap(r_idx % 10), linewidth=2.0, alpha=0.8, label=reg_name)
         ax.set_xlabel("Time (minutes)")
         ax.set_ylabel("Tap Position (steps)")
-        ax.set_title(f"{case_name} — Tap Positions")
+        ax.set_title(f"{case_name} -- Tap Positions")
         ax.legend(fontsize=8, ncol=max(1, len(reg_names) // 2))
         ax.grid(True, alpha=0.3)
         fig.tight_layout()
@@ -729,7 +724,7 @@ def main(*, system: str = "ieee123") -> None:
     all_specs = tuple(m.spec for m in all_models)
 
     # Load data pipeline
-    data_sources, training_trace_params, data_dir = load_data_sources()
+    data_sources, data_dir = load_data_sources()
 
     logger.info("Loading inference data...")
     inference_data = InferenceData.ensure(
@@ -745,10 +740,7 @@ def main(*, system: str = "ieee123") -> None:
         data_sources,
         plot=False,
     )
-    training_trace = TrainingTrace.ensure(
-        data_dir / "training_trace.csv",
-        training_trace_params,
-    )
+    training_trace = TrainingTrace.ensure(data_dir / "training_trace.csv")
 
     save_dir = Path(__file__).resolve().parent / "outputs" / system / "load_shift_comparison"
     save_dir.mkdir(parents=True, exist_ok=True)
@@ -780,7 +772,7 @@ def main(*, system: str = "ieee123") -> None:
     logger.info("RUN 1: OFO without load shifting")
     logger.info("=" * 70)
 
-    stats_no_shift, log_no_shift = _run_experiment(
+    stats_no_shift, log_no_shift = _run_case(
         **shared,
         load_shift_enabled=False,
         load_shift_headroom=0.0,
@@ -794,7 +786,7 @@ def main(*, system: str = "ieee123") -> None:
     logger.info("RUN 2: OFO with load shifting")
     logger.info("=" * 70)
 
-    stats_with_shift, log_with_shift = _run_experiment(
+    stats_with_shift, log_with_shift = _run_case(
         **shared,
         load_shift_enabled=True,
         load_shift_headroom=LOAD_SHIFT_HEADROOM,
@@ -840,8 +832,14 @@ if __name__ == "__main__":
 
     @dataclass
     class Args:
+        """Command-line arguments.
+
+        Attributes:
+            system: System name (used for output directory).
+            log_level: Logging verbosity.
+        """
+
         system: str = "ieee123"
-        """System name (used for output directory)."""
         log_level: str = "INFO"
 
     args = tyro.cli(Args)

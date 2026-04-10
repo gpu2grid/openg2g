@@ -525,7 +525,7 @@ class InferenceData:
 
         Returns:
             A new `InferenceData` with generated traces and ITL fits (no
-            templates — call `InferenceTraceStore.build_templates()` on the
+            templates -- call `InferenceTraceStore.build_templates()` on the
             saved/loaded store to get templates).
         """
         if runs is None:

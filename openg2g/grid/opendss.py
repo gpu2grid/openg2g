@@ -5,6 +5,7 @@ from __future__ import annotations
 import functools
 import logging
 import math
+from collections.abc import Sequence
 from dataclasses import dataclass
 from fractions import Fraction
 from pathlib import Path
@@ -101,7 +102,7 @@ class OpenDSSGrid(GridBackend[GridState]):
         source_pu: float | None = None,
         dss_controls: bool = False,
         initial_tap_position: TapPosition | None = None,
-        exclude_buses: tuple[str, ...] = ("rg60",),
+        exclude_buses: Sequence[str] = ("rg60",),
     ) -> None:
         super().__init__()
         if dss is None:
@@ -116,7 +117,7 @@ class OpenDSSGrid(GridBackend[GridState]):
         self._exclude_buses = tuple(str(b) for b in exclude_buses)
 
         self._reg_map: dict[str, tuple[str, int]] | None = None
-        self._phase_to_reg: dict[int, str] | None = None
+        self._phase_to_reg: dict[int, str | None] | None = None
 
         # Attachments (populated before start)
         self._dc_attachments: dict[DatacenterBackend, _DCAttachment] = {}
@@ -545,9 +546,14 @@ class OpenDSSGrid(GridBackend[GridState]):
         return reg_map
 
     @staticmethod
-    def _build_phase_to_reg_map(reg_map: dict[str, tuple[str, int]]) -> dict[int, str]:
-        """Build a best-effort mapping from phase (1/2/3) to RegControl name."""
-        phase_to_reg: dict[int, str] = {}
+    def _build_phase_to_reg_map(reg_map: dict[str, tuple[str, int]]) -> dict[int, str | None]:
+        """Build a mapping from phase (1/2/3) to RegControl name.
+
+        When multiple RegControls share the same phase (multi-bank systems),
+        the phase entry is set to None to prevent the `a`/`b`/`c` shorthand
+        from silently targeting the wrong regulator.
+        """
+        phase_to_reg: dict[int, str | None] = {}
         for rc_name, (xf, _wdg) in reg_map.items():
             dss.Transformers.Name(xf)
             bus_names = list(dss.CktElement.BusNames())
@@ -574,14 +580,16 @@ class OpenDSSGrid(GridBackend[GridState]):
                 continue
 
             if phase in phase_to_reg:
-                logger.warning(
-                    "Multiple RegControls on phase %s: '%s' and '%s'. Using '%s'.",
+                logger.info(
+                    "Multiple RegControls on phase %s: '%s' and '%s'. "
+                    "Phase shorthand (a/b/c) disabled for this phase; use regulator names.",
                     _PHASE_NAME[phase],
                     phase_to_reg[phase],
                     rc_name,
-                    rc_name,
                 )
-            phase_to_reg[phase] = rc_name
+                phase_to_reg[phase] = None
+            else:
+                phase_to_reg[phase] = rc_name
         return phase_to_reg
 
     def _tap_position_to_reg_dict(self, pos: TapPosition) -> dict[str, float]:
@@ -594,7 +602,14 @@ class OpenDSSGrid(GridBackend[GridState]):
             key = reg_name.lower()
             phase = _ATTR_TO_PHASE.get(key)
             if phase is not None and phase in self._phase_to_reg:
-                d[self._phase_to_reg[phase]] = tap_val
+                rc_name = self._phase_to_reg[phase]
+                if rc_name is None:
+                    raise ValueError(
+                        f"TapPosition uses phase shorthand '{key}' but multiple "
+                        f"RegControls exist on phase {_PHASE_NAME[phase]}. "
+                        f"Use explicit regulator names instead."
+                    )
+                d[rc_name] = tap_val
             else:
                 d[key] = tap_val
         return d

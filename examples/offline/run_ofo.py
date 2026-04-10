@@ -27,9 +27,13 @@ import logging
 import math
 from fractions import Fraction
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
+import matplotlib
 import numpy as np
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 
 from openg2g.controller.ofo import (
     LogisticModelStore,
@@ -48,7 +52,7 @@ from openg2g.datacenter.config import (
 )
 from openg2g.datacenter.offline import OfflineDatacenter, OfflineWorkload
 from openg2g.datacenter.workloads.inference import InferenceData, MLEnergySource
-from openg2g.datacenter.workloads.training import TrainingTrace, TrainingTraceParams
+from openg2g.datacenter.workloads.training import TrainingTrace
 from openg2g.grid.config import TapPosition, TapSchedule
 from openg2g.grid.generator import Generator, SyntheticPV
 from openg2g.grid.load import ExternalLoad, SyntheticLoad
@@ -120,7 +124,7 @@ MODEL_SPECS: dict[str, InferenceModelSpec] = {s.model_label: s for s in ALL_MODE
 
 
 def deploy(label: str, num_replicas: int, initial_batch_size: int = 128) -> ModelDeployment:
-    """Shorthand: ``deploy("Llama-3.1-8B", 720, 128)``."""
+    """Shorthand: `deploy("Llama-3.1-8B", 720, 128)`."""
     return ModelDeployment(spec=MODEL_SPECS[label], num_replicas=num_replicas, initial_batch_size=initial_batch_size)
 
 
@@ -129,29 +133,28 @@ def deploy(label: str, num_replicas: int, initial_batch_size: int = 128) -> Mode
 
 def load_data_sources(
     config_path: Path | None = None,
-) -> tuple[dict[str, MLEnergySource], TrainingTraceParams, Path]:
-    """Load ML.ENERGY data sources from ``config.json``.
+) -> tuple[dict[str, MLEnergySource], Path]:
+    """Load ML.ENERGY data sources from `data_sources.json`.
 
     Returns:
-        (data_sources, training_trace_params, data_dir) where *data_dir* is a
-        hash-based cache directory under ``<repo_root>/data/offline``.
+        (data_sources, data_dir) where *data_dir* is a hash-based cache
+        directory under `<repo_root>/data/offline`.
     """
     if config_path is None:
-        config_path = Path(__file__).resolve().parent / "config.json"
+        config_path = Path(__file__).resolve().parent / "data_sources.json"
     with open(config_path) as f:
         cfg = json.load(f)
 
     sources_raw = cfg["data_sources"]
     data_sources = {s["model_label"]: MLEnergySource(**s) for s in sources_raw}
-    ttp = TrainingTraceParams(**(cfg.get("training_trace_params") or {}))
 
     blob = json.dumps(
-        (sorted(sources_raw, key=lambda s: s["model_label"]), cfg.get("training_trace_params") or {}),
+        sorted(sources_raw, key=lambda s: s["model_label"]),
         sort_keys=True,
     ).encode()
     data_dir = _REPO_ROOT / "data" / "offline" / hashlib.sha256(blob).hexdigest()[:16]
 
-    return data_sources, ttp, data_dir
+    return data_sources, data_dir
 
 
 # Plotting helpers
@@ -168,11 +171,6 @@ def _plot_voltage_envelope(
     title="Voltage Envelope",
 ) -> None:
     """Plot min/max voltage envelope across all monitored buses."""
-    import matplotlib
-
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-
     drop = {b.lower() for b in exclude_buses}
     v_min_arr = np.full(len(grid_states), np.inf)
     v_max_arr = np.full(len(grid_states), -np.inf)
@@ -205,11 +203,6 @@ def _plot_voltage_envelope(
 
 def _plot_tap_positions(grid_states, time_s, save_dir, *, title="Regulator Tap Positions"):
     """Plot regulator tap positions over time as step lines."""
-    import matplotlib
-
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-
     if not grid_states or grid_states[0].tap_positions is None:
         return
     if not grid_states[0].tap_positions.regulators:
@@ -240,11 +233,6 @@ def _plot_tap_positions(grid_states, time_s, save_dir, *, title="Regulator Tap P
 
 def _plot_pv_load_profiles(grid_states, time_s, generators, time_varying_loads, save_dir):
     """Plot PV output and time-varying load curves over the simulation."""
-    import matplotlib
-
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-
     if not grid_states:
         return
 
@@ -286,11 +274,6 @@ def _plot_pv_load_profiles(grid_states, time_s, generators, time_varying_loads, 
 
 
 def _plot_comparison(results: dict[str, VoltageStats], save_dir: Path, system: str) -> None:
-    import matplotlib
-
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-
     modes = list(results.keys())
     n = len(modes)
     fig, axes = plt.subplots(1, 3, figsize=(5 * n, 5))
@@ -388,7 +371,7 @@ def _build_dc(
     )
 
 
-def _experiment_ieee13(inference_data, training_trace, logistic_models):
+def setup_ieee13(inference_data, training_trace, logistic_models):
     """IEEE 13-bus: single DC at bus 671 with training overlay."""
     sys = SYSTEMS["ieee13"]()
 
@@ -471,7 +454,7 @@ def _experiment_ieee13(inference_data, training_trace, logistic_models):
     )
 
 
-def _experiment_ieee34(inference_data, training_trace, logistic_models):
+def setup_ieee34(inference_data, training_trace, logistic_models):
     """IEEE 34-bus: two DC sites (upstream + downstream)."""
     sys = SYSTEMS["ieee34"]()
 
@@ -558,7 +541,7 @@ def _experiment_ieee34(inference_data, training_trace, logistic_models):
     )
 
 
-def _experiment_ieee123(inference_data, training_trace, logistic_models):
+def setup_ieee123(inference_data, training_trace, logistic_models):
     """IEEE 123-bus: four DC zones with per-site ramps."""
     sys = SYSTEMS["ieee123"]()
 
@@ -658,51 +641,50 @@ def _experiment_ieee123(inference_data, training_trace, logistic_models):
     )
 
 
+SETUPS = {"ieee13": setup_ieee13, "ieee34": setup_ieee34, "ieee123": setup_ieee123}
+
+
 # Main
 
 
 def main(*, system: str, mode: str = "no-tap") -> None:
     # Load data pipeline
-    data_sources, training_trace_params, data_dir = load_data_sources()
+    data_sources, data_dir = load_data_sources()
 
     logger.info("Loading data for %s...", system)
     inference_data = InferenceData.ensure(data_dir, ALL_MODEL_SPECS, data_sources, plot=False, dt_s=float(DT_DC))
-    training_trace = TrainingTrace.ensure(data_dir / "training_trace.csv", training_trace_params)
+    training_trace = TrainingTrace.ensure(data_dir / "training_trace.csv")
     logistic_models = LogisticModelStore.ensure(
         data_dir / "logistic_fits.csv", ALL_MODEL_SPECS, data_sources, plot=False
     )
 
-    # Select experiment builder
-    if system == "ieee13":
-        experiment_fn = _experiment_ieee13
-    elif system == "ieee34":
-        experiment_fn = _experiment_ieee34
-    elif system == "ieee123":
-        experiment_fn = _experiment_ieee123
-    else:
-        raise ValueError(f"Unknown system {system!r}. Choose from: ieee13, ieee34, ieee123.")
+    if system not in SETUPS:
+        raise ValueError(f"Unknown system {system!r}. Choose from: {list(SETUPS)}")
+    setup_fn = SETUPS[system]
 
     # Probe experiment once for case planning (tap schedule, exclude_buses)
-    experiment = experiment_fn(inference_data, training_trace, logistic_models)
-    exp_tap_schedule: TapSchedule | None = experiment.get("tap_schedule")
+    config = setup_fn(inference_data, training_trace, logistic_models)
+    exp_tap_schedule: TapSchedule | None = config.get("tap_schedule")
     has_tap_schedule = bool(exp_tap_schedule)
-    exclude_buses: tuple[str, ...] = experiment["exclude_buses"]
+    exclude_buses: tuple[str, ...] = config["exclude_buses"]
 
     # Build cases: each mode runs exactly one case, "all" runs all four
     _ALL_CASES: list[tuple[str, str, TapSchedule | None]] = [
-        ("baseline", "baseline-no-tap", None),
-        ("ofo", "ofo-no-tap", None),
+        ("baseline", "baseline_no-tap", None),
+        ("ofo", "ofo_no-tap", None),
     ]
     if has_tap_schedule:
         _ALL_CASES += [
-            ("baseline", "baseline-tap-change", exp_tap_schedule),
-            ("ofo", "ofo-tap-change", exp_tap_schedule),
+            ("baseline", "baseline_tap-change", exp_tap_schedule),
+            ("ofo", "ofo_tap-change", exp_tap_schedule),
         ]
 
     if mode == "all":
         cases = list(_ALL_CASES)
     else:
-        cases = [c for c in _ALL_CASES if c[1] == mode]
+        # CLI uses hyphens (baseline-no-tap), case names use underscores (baseline_no-tap)
+        case_name = mode.replace("baseline-", "baseline_").replace("ofo-", "ofo_")
+        cases = [c for c in _ALL_CASES if c[1] == case_name]
     if not cases:
         logger.warning("No cases to run (mode=%s, has_tap_schedule=%s).", mode, has_tap_schedule)
         return
@@ -715,14 +697,14 @@ def main(*, system: str, mode: str = "no-tap") -> None:
     results: dict[str, VoltageStats] = {}
     for ctrl_mode, case_name, sched in cases:
         # Fresh DCs and grid per case (no state leakage between runs)
-        experiment = experiment_fn(inference_data, training_trace, logistic_models)
-        datacenters: list[OfflineDatacenter] = experiment["datacenters"]
-        dc_info: dict[OfflineDatacenter, _DCInfo] = experiment["dc_info"]
-        grid: OpenDSSGrid = experiment["grid"]
-        ofo_config: OFOConfig = experiment["ofo_config"]
-        generators: list[tuple[str, Generator]] = experiment.get("generators", [])
-        time_varying_loads: list[tuple[str, ExternalLoad]] = experiment.get("time_varying_loads", [])
-        zones: dict[str, list[str]] | None = experiment.get("zones")
+        config = setup_fn(inference_data, training_trace, logistic_models)
+        datacenters: list[OfflineDatacenter] = config["datacenters"]
+        dc_info: dict[OfflineDatacenter, _DCInfo] = config["dc_info"]
+        grid: OpenDSSGrid = config["grid"]
+        ofo_config: OFOConfig = config["ofo_config"]
+        generators: list[tuple[str, Generator]] = config.get("generators", [])
+        time_varying_loads: list[tuple[str, ExternalLoad]] = config.get("time_varying_loads", [])
+        zones: dict[str, list[str]] | None = config.get("zones")
         run_dir = save_dir / case_name
         run_dir.mkdir(parents=True, exist_ok=True)
 
@@ -786,7 +768,7 @@ def main(*, system: str, mode: str = "no-tap") -> None:
                 v_min=V_MIN,
                 v_max=V_MAX,
                 drop_buses=exclude_buses,
-                title_template=f"{case_name} — Voltage Envelope (Phase {{label}})",
+                title_template=f"{case_name} -- Voltage Envelope (Phase {{label}})",
             )
         elif len(all_buses) > MAX_BUSES_FOR_INDIVIDUAL_LINES:
             _plot_voltage_envelope(
@@ -796,7 +778,7 @@ def main(*, system: str, mode: str = "no-tap") -> None:
                 v_min=V_MIN,
                 v_max=V_MAX,
                 exclude_buses=exclude_buses,
-                title=f"{case_name} — Voltage Envelope",
+                title=f"{case_name} -- Voltage Envelope",
             )
         else:
             plot_allbus_voltages_per_phase(
@@ -805,7 +787,7 @@ def main(*, system: str, mode: str = "no-tap") -> None:
                 save_dir=run_dir,
                 v_min=V_MIN,
                 v_max=V_MAX,
-                title_template=f"{case_name} — Voltage (Phase {{label}})",
+                title_template=f"{case_name} -- Voltage (Phase {{label}})",
                 drop_buses=exclude_buses,
             )
 
@@ -837,7 +819,7 @@ def main(*, system: str, mode: str = "no-tap") -> None:
                 save_path=run_dir / f"power_latency{suffix}.png",
             )
 
-        _plot_tap_positions(log.grid_states, time_s, run_dir, title=f"{case_name} — Tap Positions")
+        _plot_tap_positions(log.grid_states, time_s, run_dir, title=f"{case_name} -- Tap Positions")
         _plot_pv_load_profiles(log.grid_states, time_s, generators, time_varying_loads, run_dir)
 
         with open(run_dir / f"result_{case_name}.csv", "w", newline="") as f:
@@ -886,18 +868,25 @@ def main(*, system: str, mode: str = "no-tap") -> None:
 
 
 if __name__ == "__main__":
-    from dataclasses import dataclass as dc
+    from dataclasses import dataclass
 
     import tyro
 
-    @dc
+    @dataclass
     class Args:
-        system: str = "ieee13"
-        """System name (ieee13, ieee34, ieee123)."""
-        mode: str = "baseline-no-tap"
-        """Case to run: baseline-no-tap, baseline-tap-change, ofo-no-tap, ofo-tap-change, or all."""
-        log_level: str = "INFO"
-        """Logging verbosity (DEBUG, INFO, WARNING)."""
+        """Command-line arguments.
+
+        Attributes:
+            system: System name (ieee13, ieee34, ieee123).
+            mode: Case to run: baseline-no-tap, baseline-tap-change, ofo-no-tap, ofo-tap-change, or all.
+            log_level: Logging verbosity (DEBUG, INFO, WARNING).
+        """
+
+        system: Literal["ieee13", "ieee34", "ieee123"] = "ieee13"
+        mode: Literal["baseline-no-tap", "baseline-tap-change", "ofo-no-tap", "ofo-tap-change", "all"] = (
+            "baseline-no-tap"
+        )
+        log_level: Literal["DEBUG", "INFO", "WARNING"] = "INFO"
 
     args = tyro.cli(Args)
 

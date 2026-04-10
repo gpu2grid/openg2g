@@ -2,7 +2,7 @@
 
 A proportional controller that adjusts LLM batch sizes based on observed
 voltage violations.  Unlike the OFO controller, it requires no sensitivity
-matrix, no logistic curve fits, and no dual variables — making it a natural
+matrix, no logistic curve fits, and no dual variables -- making it a natural
 "simple baseline" for comparison.
 
 Algorithm (each control step):

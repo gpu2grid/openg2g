@@ -216,12 +216,17 @@ if __name__ == "__main__":
 
     @dataclass
     class Args:
+        """Command-line arguments.
+
+        Attributes:
+            config: Path to the online config JSON file.
+            mode: Mode: baseline-no-tap, baseline-tap-change, or ofo.
+            log_level: Logging verbosity (DEBUG, INFO, WARNING).
+        """
+
         config: str
-        """Path to the online config JSON file."""
         mode: str = "ofo"
-        """Mode: baseline-no-tap, baseline-tap-change, or ofo."""
         log_level: str = "INFO"
-        """Logging verbosity (DEBUG, INFO, WARNING)."""
 
     args = tyro.cli(Args)
 

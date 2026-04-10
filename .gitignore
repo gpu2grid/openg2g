@@ -15,6 +15,3 @@ data/offline/
 data/online/
 .claude/
 examples/offline/outputs
-ref_offline_outputs/
-check_regression.sh
-run_all_examples.sh

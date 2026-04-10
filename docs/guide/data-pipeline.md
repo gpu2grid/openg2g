@@ -20,7 +20,7 @@ Each class provides an `ensure()` classmethod that generates data if it doesn't 
 
 ```python
 inference_data = InferenceData.ensure(data_dir, models, data_sources, dt_s=0.1)
-training_trace = TrainingTrace.ensure(data_dir / "training_trace.csv", training_params)
+training_trace = TrainingTrace.ensure(data_dir / "training_trace.csv")
 logistic_models = LogisticModelStore.ensure(data_dir / "logistic_fits.csv", models, data_sources)
 ```
 
@@ -29,7 +29,7 @@ logistic_models = LogisticModelStore.ensure(data_dir / "logistic_fits.csv", mode
 
 ## Config File
 
-A shared `config.json` (`examples/offline/config.json`) stores benchmark data sources for the ML.ENERGY data pipeline:
+A shared `data_sources.json` (`examples/offline/data_sources.json`) stores benchmark data sources for the ML.ENERGY data pipeline:
 
 ```json
 {
@@ -40,13 +40,12 @@ A shared `config.json` (`examples/offline/config.json`) stores benchmark data so
       "gpu": "H100",
       "batch_sizes": [8, 16, 32, 64, 96, 128, 192, 256, 384, 512, 768, 1024]
     }
-  ],
-  "training_trace_params": {}
+  ]
 }
 ```
 
 - `data_sources[]` entries are parsed as [`MLEnergySource`][openg2g.datacenter.workloads.inference.MLEnergySource], linked to models by `model_label`.
-- `training_trace_params` is parsed as [`TrainingTraceParams`][openg2g.datacenter.workloads.training.TrainingTraceParams]. Empty `{}` uses all defaults.
+- `task` selects which benchmark prompt dataset to use (e.g., `lm-arena-chat`, `gpqa`). Available tasks can be browsed in the [ML.ENERGY Benchmark v3 dataset](https://huggingface.co/datasets/ml-energy/benchmark-v3) on Hugging Face; see the [`mlenergy-data` toolkit](https://ml.energy/data) for details.
 - First run downloads benchmark data from the HuggingFace Hub and caches it in `data/offline/{hash}/`.
 
 Model specifications ([`InferenceModelSpec`][openg2g.datacenter.config.InferenceModelSpec]) are defined as Python constants inline in each example script. All other configuration — datacenter sizing, controller tuning, workload scenarios, grid setup — is also defined programmatically per-script. See [Building Simulators](building-simulators.md) for details.
@@ -64,7 +63,6 @@ inference_data = InferenceData.ensure(
 )
 training_trace = TrainingTrace.ensure(
     data_dir / "training_trace.csv",
-    training_trace_params,
 )
 logistic_models = LogisticModelStore.ensure(
     data_dir / "logistic_fits.csv",
@@ -76,7 +74,7 @@ Under the hood, `ensure()` checks whether the output file or directory exists. I
 
 ### Default data path
 
-Each example script defines a `load_data_sources()` helper that computes a hash-based cache path from the data-relevant config keys (data sources and training trace parameters). Different configs automatically get different cache directories, so you can switch configs without manually clearing the cache.
+Each example script defines a `load_data_sources()` helper that computes a hash-based cache path from the data source config. Different configs automatically get different cache directories, so you can switch configs without manually clearing the cache.
 
 ## Inference Data Generation
 
@@ -102,7 +100,7 @@ ML.ENERGY Benchmark Dataset                 mlenergy-data
                                   ┌───────────────────────────────────┐
          Config file              │ InferenceData.generate()          │
   ┌─────────────────────┐         │                                   │
-  │ config.json         │         │ For each model x batch size:      │
+  │ data_sources.json   │         │ For each model x batch size:      │
   │                     │────────>│  1. Extract power timelines       │
   │ data_sources[]      │         │  2. Resample to median-duration   │
   │                     │         │  3. Fit ITLMixtureModel           │

@@ -1,10 +1,10 @@
 """PV Expansion Planning (and optional joint DC siting) via Sensitivity-Based MILP.
 
-Supports two modes via ``--mode``:
+Supports two modes via `--mode`:
 
-- ``pv-only`` (default): PV placement, capacity, and regulator tap co-optimisation
+- `pv-only` (default): PV placement, capacity, and regulator tap co-optimisation
   with fixed datacenter locations.
-- ``pv-and-dc``: Joint PV + DC location co-optimisation where DC bus assignments
+- `pv-and-dc`: Joint PV + DC location co-optimisation where DC bus assignments
   are also decision variables.
 
 Uses OpenDSS-derived voltage sensitivity matrices and representative
@@ -53,17 +53,47 @@ Usage:
 
 from __future__ import annotations
 
+import copy
 import csv
+import hashlib
 import json
 import logging
 import math
 import time
+from collections import Counter
 from dataclasses import dataclass, field
+from fractions import Fraction
 from pathlib import Path
 
+import matplotlib
+import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.patches import Patch
+from opendssdirect import dss
 
-logger = logging.getLogger("pv_expansion")
+from openg2g.controller.ofo import LogisticModelStore, OFOBatchSizeController, OFOConfig
+from openg2g.controller.tap_schedule import TapScheduleController
+from openg2g.coordinator import Coordinator
+from openg2g.datacenter.config import (
+    DatacenterConfig,
+    InferenceModelSpec,
+    ModelDeployment,
+    PowerAugmentationConfig,
+)
+from openg2g.datacenter.offline import OfflineDatacenter, OfflineWorkload
+from openg2g.datacenter.workloads.inference import InferenceData, MLEnergySource
+from openg2g.datacenter.workloads.training import TrainingTrace
+from openg2g.grid.config import TapPosition, TapSchedule
+from openg2g.grid.generator import SyntheticPV
+from openg2g.grid.load import SyntheticLoad
+from openg2g.grid.opendss import OpenDSSGrid
+from openg2g.metrics.voltage import VoltageStats, compute_allbus_voltage_stats, discover_candidate_buses
+
+from systems import SYSTEMS, tap
+
+matplotlib.use("Agg")
+
+logger = logging.getLogger("optimize_pv_locations_and_capacities")
 
 
 # Scenario generation
@@ -74,9 +104,9 @@ class Scenario:
     """A representative operating scenario (e.g. one day)."""
 
     name: str
-    hours: np.ndarray  # shape (T,)  — hour of day
-    pv_profile: np.ndarray  # shape (T,)  — normalised PV output [0,1]
-    price_per_kwh: np.ndarray  # shape (T,)  — electricity price ($/kWh)
+    hours: np.ndarray  # shape (T,)  -- hour of day
+    pv_profile: np.ndarray  # shape (T,)  -- normalised PV output [0,1]
+    price_per_kwh: np.ndarray  # shape (T,)  -- electricity price ($/kWh)
     weight: float = 1.0  # scenario weight in objective
     hours_per_step: float = 1.0  # duration of each time step (hours)
     # Per-bus load profiles: bus -> kW per phase array (T,)
@@ -95,9 +125,9 @@ def _solar_profile(hour: float, peak_hour: float = 12.0, daylight: float = 14.0)
 def _tou_price(hour: float) -> float:
     """Time-of-use electricity price ($/kWh).
 
-    Off-peak  (0:00–8:00, 21:00–24:00):  $0.05/kWh
-    Mid-peak  (8:00–12:00, 18:00–21:00): $0.10/kWh
-    On-peak   (12:00–18:00):             $0.20/kWh
+    Off-peak  (0:00-8:00, 21:00-24:00):  $0.05/kWh
+    Mid-peak  (8:00-12:00, 18:00-21:00): $0.10/kWh
+    On-peak   (12:00-18:00):             $0.20/kWh
     """
     if hour < 8 or hour >= 21:
         return 0.05
@@ -164,7 +194,7 @@ _LOAD_ARCHETYPES = [
 def _dc_demand_upstream(hour: float) -> float:
     """Normalised demand for the upstream DC site [0,1].
 
-    Pattern: LLM serving traffic — clear diurnal pattern with pronounced
+    Pattern: LLM serving traffic -- clear diurnal pattern with pronounced
     peak/off-peak.  Off-peak still has ~40% load from international users
     and automated agents.  Peak midday from user-facing chat traffic.
     """
@@ -183,7 +213,7 @@ def _dc_demand_upstream(hour: float) -> float:
 def _dc_demand_downstream(hour: float) -> float:
     """Normalised demand for the downstream DC site [0,1].
 
-    Pattern: reasoning-heavy workloads (Qwen thinking models) — high and
+    Pattern: reasoning-heavy workloads (Qwen thinking models) -- high and
     relatively flat since long-running reasoning jobs run continuously.
     Irregular fluctuations from heterogeneous batch job arrivals (not periodic).
     """
@@ -223,7 +253,7 @@ def _dc_demand_batch_heavy(hour: float) -> float:
 def _dc_demand_mixed(hour: float) -> float:
     """Normalised demand for a mixed-workload DC site [0,1].
 
-    Pattern: combination of user-facing and batch — moderate diurnal
+    Pattern: combination of user-facing and batch -- moderate diurnal
     variation with a broad plateau and gentle transitions.
     """
     base = 0.50
@@ -291,7 +321,7 @@ def generate_scenarios(
     price = np.array([_tou_price(h) for h in hours])
     lc = load_configs or []
 
-    # Per-site DC demand profiles (normalised 0–1)
+    # Per-site DC demand profiles (normalised 0-1)
     # Cycle through archetypes for arbitrary number of DC sites
     dc_profiles: dict[str, np.ndarray] = {}
     if dc_sites_info:
@@ -312,19 +342,19 @@ def generate_scenarios(
     scenarios = []
 
     # Weights sum to 1.0: fraction of year each scenario represents
-    # summer       29% (~106 days) — merged clear + heat, weighted avg load
-    # summer_cloudy 8% (~29 days) — extreme cloud event with sharp PV drops
-    # spring       21% (~77 days) — moderate PV, moderate load
-    # autumn_cloudy 12% (~44 days) — variable clouds with oscillating PV
-    # winter       30% (~110 days) — merged winter + winter peak, high load
+    # summer       29% (~106 days) -- merged clear + heat, weighted avg load
+    # summer_cloudy 8% (~29 days) -- extreme cloud event with sharp PV drops
+    # spring       21% (~77 days) -- moderate PV, moderate load
+    # autumn_cloudy 12% (~44 days) -- variable clouds with oscillating PV
+    # winter       30% (~110 days) -- merged winter + winter peak, high load
 
-    # 1. Summer (merged clear + heat) — high PV, slightly elevated load
+    # 1. Summer (merged clear + heat) -- high PV, slightly elevated load
     #    Original: clear w=0.25 load=1.0, heat w=0.04 load=1.3
     #    Weighted avg load mult: (0.25*1.0 + 0.04*1.3) / 0.29 ≈ 1.04
     pv_summer = np.array([_solar_profile(h, peak_hour=13.0, daylight=14.0) for h in hours])
     scenarios.append(_sc("summer", pv_summer, weight=0.29, load_mult=1.20))
 
-    # 2. Summer cloudy — heavy overcast with intermittent breaks
+    # 2. Summer cloudy -- heavy overcast with intermittent breaks
     #    Base output ~30% of clear sky, with two brief sunny breaks at ~10h
     #    and ~14h where output spikes to ~70%.  Very different shape from
     #    clear summer: low sustained output with sharp transients.
@@ -342,16 +372,16 @@ def generate_scenarios(
     pv_summer_cloudy = np.minimum(pv_summer_cloudy, pv_summer)  # cap at clear sky
     scenarios.append(_sc("summer_cloudy", pv_summer_cloudy, weight=0.08, load_mult=1.05))
 
-    # 3. Spring shoulder — moderate PV, moderate load
+    # 3. Spring shoulder -- moderate PV, moderate load
     pv_spring = np.array([_solar_profile(h, peak_hour=12.5, daylight=12.0) * 0.85 for h in hours])
     scenarios.append(_sc("spring", pv_spring, weight=0.21))
 
-    # 4. Autumn variable clouds — PV with periodic cloud modulation
+    # 4. Autumn variable clouds -- PV with periodic cloud modulation
     cloud_mod = 0.5 + 0.4 * np.array([math.sin(math.pi * h / 3) ** 2 for h in hours])
     pv_autumn = pv_spring * cloud_mod
     scenarios.append(_sc("autumn_cloudy", pv_autumn, weight=0.12, load_mult=0.90))
 
-    # 5. Winter (merged winter + winter peak) — short day, high load
+    # 5. Winter (merged winter + winter peak) -- short day, high load
     #    Original: winter w=0.22 load=1.1 pv=1.0×, peak w=0.08 load=1.2 pv=0.7×
     #    Weighted avg load mult: (0.22*1.1 + 0.08*1.2) / 0.30 ≈ 1.13
     #    Weighted avg PV scale: (0.22*1.0 + 0.08*0.7) / 0.30 ≈ 0.92
@@ -375,7 +405,6 @@ def _add_dc_loads(
     """
     if not dc_sites:
         return
-    from opendssdirect import dss
 
     ln_kv = bus_kv / math.sqrt(3.0)
     for site_id, site_cfg in dc_sites.items():
@@ -420,12 +449,10 @@ def compute_pv_sensitivities(
             so sensitivities are computed around the actual operating point.
 
     Returns:
-        H_pv: shape (n_monitored, n_candidates) — dv/dp_pv per phase (pu/kW)
-        v0:   shape (n_monitored,) — base voltage (no PV)
+        H_pv: shape (n_monitored, n_candidates) -- dv/dp_pv per phase (pu/kW)
+        v0:   shape (n_monitored,) -- base voltage (no PV)
         v_index: list of (bus, phase) pairs corresponding to rows
     """
-    from opendssdirect import dss
-
     # Compile circuit
     dss.Basic.ClearAll()
     dss.Text.Command(f"Redirect [{case_dir / master_file}]")
@@ -561,14 +588,12 @@ def compute_tap_sensitivities(
 
     For each regulator, perturbs the tap by +1 integer step and measures
     the voltage change at all monitored bus-phase pairs in *v_index*
-    (which must match the ordering from ``compute_pv_sensitivities``).
+    (which must match the ordering from `compute_pv_sensitivities`).
 
     Returns:
-        H_tap: shape (n_monitored, n_regulators) — dv per +1 tap step (pu)
+        H_tap: shape (n_monitored, n_regulators) -- dv per +1 tap step (pu)
     """
-    from opendssdirect import dss
-
-    # Compile circuit (fresh instance — PV loads from previous call are gone)
+    # Compile circuit (fresh instance -- PV loads from previous call are gone)
     dss.Basic.ClearAll()
     dss.Text.Command(f"Redirect [{case_dir / master_file}]")
 
@@ -666,10 +691,8 @@ def compute_load_sensitivities(
     """Compute voltage sensitivity to load injection at specified buses.
 
     Returns:
-        H_load: shape (n_monitored, n_load_buses) — dv per kW per phase (pu/kW)
+        H_load: shape (n_monitored, n_load_buses) -- dv per kW per phase (pu/kW)
     """
-    from opendssdirect import dss
-
     dss.Basic.ClearAll()
     dss.Text.Command(f"Redirect [{case_dir / master_file}]")
 
@@ -770,7 +793,7 @@ def precompute_load_v_shift(
         shift = np.zeros((T, n_mon))
         for j, bus in enumerate(load_buses):
             if bus in sc.load_kw_per_bus:
-                load_kw = sc.load_kw_per_bus[bus]  # shape (T,) — kW per phase
+                load_kw = sc.load_kw_per_bus[bus]  # shape (T,) -- kW per phase
                 # H_load is per-phase sensitivity (pu/kW), load_kw is per-phase
                 shift += np.outer(load_kw, H_load[:, j])
         shifts.append(shift)
@@ -845,7 +868,7 @@ def compute_dc_demand_profiles(
 ) -> tuple[np.ndarray, list[str]]:
     """Compute time-varying DC demand for each site.
 
-    Cycles through ``_DC_DEMAND_ARCHETYPES`` for each site.  For each site,
+    Cycles through `_DC_DEMAND_ARCHETYPES` for each site.  For each site,
     computes the peak demand (base infrastructure + GPU inference) and scales
     the archetype profile accordingly.
 
@@ -881,7 +904,7 @@ def compute_dc_demand_profiles(
         archetype = _DC_DEMAND_ARCHETYPES[k % len(_DC_DEMAND_ARCHETYPES)]
 
         # Compute normalised profile (same across scenarios, but demand
-        # level can vary by scenario via load multiplier — we keep it
+        # level can vary by scenario via load multiplier -- we keep it
         # simple and use the same profile for all scenarios)
         profile = np.array([archetype(h) for h in hours])
 
@@ -918,11 +941,11 @@ def compute_dc_sensitivities(
 ) -> np.ndarray:
     """Compute voltage sensitivity to DC load at each candidate bus.
 
-    This is a wrapper around ``compute_load_sensitivities`` — DC loads
+    This is a wrapper around `compute_load_sensitivities` -- DC loads
     are positive loads (consuming power), so the sensitivity is dv/dP_load.
 
     Returns:
-        H_dc: shape (n_monitored, n_dc_candidates) — dv per kW per phase (pu/kW)
+        H_dc: shape (n_monitored, n_dc_candidates) -- dv per kW per phase (pu/kW)
     """
     return compute_load_sensitivities(
         case_dir=case_dir,
@@ -1532,7 +1555,7 @@ def solve_pv_dc_milp(
 
     # Objective
 
-    # 1. Annualised investment cost ($/year) — PV only, no DC cost
+    # 1. Annualised investment cost ($/year) -- PV only, no DC cost
     investment = c_inv * gp.quicksum(s[j] for j in range(n_pv_cand))
 
     # 2. Annual operational savings from PV generation ($/year)
@@ -1736,10 +1759,8 @@ def validate_with_opendss(
     time-varying taps.
 
     Args:
-        tap_schedule: {hour: {reg_name: absolute_tap_int}} — per-hour tap positions.
+        tap_schedule: {hour: {reg_name: absolute_tap_int}} -- per-hour tap positions.
     """
-    from opendssdirect import dss
-
     # Compile circuit (same setup as sensitivity computation)
     dss.Basic.ClearAll()
     dss.Text.Command(f"Redirect [{case_dir / master_file}]")
@@ -1880,11 +1901,9 @@ def validate_coopt(
 ) -> dict:
     """Validate co-optimisation result using OpenDSS power flow.
 
-    Embeds DC demand into the scenario's ``load_kw_per_bus`` and calls
-    ``validate_with_opendss`` with ``dc_sites=None`` (no fixed DC loads).
+    Embeds DC demand into the scenario's `load_kw_per_bus` and calls
+    `validate_with_opendss` with `dc_sites=None` (no fixed DC loads).
     """
-    import copy
-
     # Create a modified scenario with DC demands embedded as time-varying loads
     mod_sc = copy.deepcopy(scenario)
 
@@ -1926,8 +1945,6 @@ def plot_results(
     system: str,
 ) -> None:
     """Bar chart of PV capacity by bus + highlight selected sites."""
-    import matplotlib.pyplot as plt
-
     fig, ax = plt.subplots(figsize=(max(10, len(candidate_buses) * 0.8), 6))
 
     caps = [result.all_s.get(b, 0.0) for b in candidate_buses]
@@ -1937,13 +1954,11 @@ def plot_results(
     ax.bar(x, caps, color=colors)
     ax.set_xlabel("Bus")
     ax.set_ylabel("Installed PV Capacity (kW)")
-    ax.set_title(f"PV Expansion Planning — {system}")
+    ax.set_title(f"PV Expansion Planning -- {system}")
     ax.set_xticks(x)
     ax.set_xticklabels(candidate_buses, rotation=45, ha="right")
 
     # Legend
-    from matplotlib.patches import Patch
-
     ax.legend(
         handles=[
             Patch(color="#DD8452", label="Selected"),
@@ -1973,9 +1988,6 @@ def plot_coopt_results(
             If provided, shows peak DC load at each assigned bus.
         dc_site_ids: ordered site IDs matching dc_demand_kw axis 0.
     """
-    import matplotlib.pyplot as plt
-    from matplotlib.patches import Patch
-
     fig, axes = plt.subplots(1, 2, figsize=(16, 6))
 
     # PV placements
@@ -1986,7 +1998,7 @@ def plot_coopt_results(
     ax.bar(xp, caps, color=colors)
     ax.set_xlabel("Bus")
     ax.set_ylabel("Installed PV Capacity (kW)")
-    ax.set_title(f"PV Placements — {system}")
+    ax.set_title(f"PV Placements -- {system}")
     ax.set_xticks(xp)
     ax.set_xticklabels(pv_candidate_buses, rotation=45, ha="right", fontsize=8)
     ax.legend(
@@ -1996,7 +2008,7 @@ def plot_coopt_results(
         ]
     )
 
-    # DC assignments — show peak load (kW per phase) at each candidate bus
+    # DC assignments -- show peak load (kW per phase) at each candidate bus
     ax = axes[1]
     assigned_buses = set(result.dc_assignments.values())
 
@@ -2017,7 +2029,7 @@ def plot_coopt_results(
     ax.bar(xd, bar_vals, color=dc_colors)
     ax.set_xlabel("Bus")
     ax.set_ylabel("DC Peak Load (kW per phase)")
-    ax.set_title(f"DC Assignments — {system}")
+    ax.set_title(f"DC Assignments -- {system}")
     ax.set_xticks(xd)
     ax.set_xticklabels(dc_candidate_buses, rotation=45, ha="right", fontsize=8)
 
@@ -2042,7 +2054,7 @@ def plot_coopt_results(
         ]
     )
 
-    fig.suptitle(f"PV + DC Co-Optimisation — {system}", fontsize=14)
+    fig.suptitle(f"PV + DC Co-Optimisation -- {system}", fontsize=14)
     fig.tight_layout()
     fig.savefig(save_dir / f"pv_dc_placements_{system}.png", dpi=150, bbox_inches="tight")
     plt.close(fig)
@@ -2057,8 +2069,6 @@ def plot_sensitivity_heatmap(
     system: str,
 ) -> None:
     """Heatmap of voltage sensitivity to PV injection."""
-    import matplotlib.pyplot as plt
-
     # Aggregate: mean sensitivity per monitored bus (average over phases)
     bus_set = sorted(set(b for b, _ in v_index))
     H_agg = np.zeros((len(bus_set), len(candidate_buses)))
@@ -2074,7 +2084,7 @@ def plot_sensitivity_heatmap(
     ax.set_yticklabels(bus_set, fontsize=8)
     ax.set_xlabel("PV Injection Bus")
     ax.set_ylabel("Monitored Bus")
-    ax.set_title(f"Voltage Sensitivity to PV (mpu/kW per phase) — {system}")
+    ax.set_title(f"Voltage Sensitivity to PV (mpu/kW per phase) -- {system}")
     fig.colorbar(im, ax=ax, label="mpu/kW")
     fig.tight_layout()
     fig.savefig(save_dir / f"pv_sensitivity_{system}.png", dpi=150, bbox_inches="tight")
@@ -2096,13 +2106,11 @@ def plot_scenario_profiles(
     curves, so the user can visually inspect the inputs to the optimisation.
 
     DC demand can be supplied in two ways (checked in order):
-      1. ``dc_demand_kw`` + ``dc_site_ids`` — precomputed array of shape
+      1. `dc_demand_kw` + `dc_site_ids` -- precomputed array of shape
          (n_sites, T, n_scenarios) in kW per phase.
-      2. ``dc_sites_info`` — list of (bus, peak_kw, base_kw, site_id) tuples;
+      2. `dc_sites_info` -- list of (bus, peak_kw, base_kw, site_id) tuples;
          demand is reconstructed from the scenario load profiles.
     """
-    import matplotlib.pyplot as plt
-
     fig, axes = plt.subplots(2, 2, figsize=(16, 10), sharex=True)
 
     cmap = plt.colormaps.get_cmap("tab10").resampled(max(len(scenarios), 1))
@@ -2171,7 +2179,7 @@ def plot_scenario_profiles(
     ax.set_title(f"DC Demand Profiles ({sc0.name})")
     ax.grid(True, alpha=0.3)
 
-    fig.suptitle(f"Scenario Profiles — {system}", fontsize=14)
+    fig.suptitle(f"Scenario Profiles -- {system}", fontsize=14)
     fig.tight_layout()
     save_path = save_dir / f"scenario_profiles_{system}.png"
     fig.savefig(save_path, dpi=150, bbox_inches="tight")
@@ -2195,40 +2203,16 @@ def compare_with_ofo(
     """Run coordinator simulations with and without OFO using MILP-optimized PV.
 
     Compares three modes:
-      1. tap_only   — MILP tap schedule, no OFO (batch sizes stay fixed)
-      2. ofo_only   — OFO batch-size control, fixed initial taps (no MILP schedule)
-      3. tap_plus_ofo — MILP tap schedule + OFO batch-size control
+      1. tap_only   -- MILP tap schedule, no OFO (batch sizes stay fixed)
+      2. ofo_only   -- OFO batch-size control, fixed initial taps (no MILP schedule)
+      3. tap_plus_ofo -- MILP tap schedule + OFO batch-size control
 
     Uses the first scenario's tap schedule (summer_clear) for the 1-hour simulation.
 
     Args:
-        sys: System constants dict from ``systems.py``.
-        dc_sites: ``{site_id: DCSite}`` dict describing the datacenter sites.
+        sys: System constants dict from `systems.py`.
+        dc_sites: `{site_id: DCSite}` dict describing the datacenter sites.
     """
-    import hashlib
-    from fractions import Fraction
-
-    from openg2g.controller.ofo import (
-        LogisticModelStore,
-        OFOBatchSizeController,
-        OFOConfig,
-    )
-    from openg2g.controller.tap_schedule import TapScheduleController
-    from openg2g.coordinator import Coordinator
-    from openg2g.datacenter.config import (
-        DatacenterConfig,
-        InferenceModelSpec,
-        ModelDeployment,
-        PowerAugmentationConfig,
-    )
-    from openg2g.datacenter.offline import OfflineDatacenter, OfflineWorkload
-    from openg2g.datacenter.workloads.inference import InferenceData, MLEnergySource
-    from openg2g.datacenter.workloads.training import TrainingTrace, TrainingTraceParams
-    from openg2g.grid.config import TapPosition, TapSchedule
-    from openg2g.grid.generator import SyntheticPV
-    from openg2g.grid.opendss import OpenDSSGrid
-    from openg2g.metrics.voltage import VoltageStats, compute_allbus_voltage_stats
-
     _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
     DT_DC = Fraction(1, 10)
     DT_GRID = Fraction(1, 10)
@@ -2282,18 +2266,17 @@ def compare_with_ofo(
 
     def _load_data_sources(config_path=None):
         if config_path is None:
-            config_path = Path(__file__).resolve().parent / "config.json"
+            config_path = Path(__file__).resolve().parent / "data_sources.json"
         with open(config_path) as f:
             cfg = json.load(f)
         sources_raw = cfg["data_sources"]
         data_sources = {s["model_label"]: MLEnergySource(**s) for s in sources_raw}
-        ttp = TrainingTraceParams(**(cfg.get("training_trace_params") or {}))
         blob = json.dumps(
-            (sorted(sources_raw, key=lambda s: s["model_label"]), cfg.get("training_trace_params") or {}),
+            sorted(sources_raw, key=lambda s: s["model_label"]),
             sort_keys=True,
         ).encode()
         data_dir = _REPO_ROOT / "data" / "offline" / hashlib.sha256(blob).hexdigest()[:16]
-        return data_sources, ttp, data_dir
+        return data_sources, data_dir
 
     logger.info("")
     logger.info("=" * 70)
@@ -2301,7 +2284,7 @@ def compare_with_ofo(
     logger.info("=" * 70)
 
     # Load data pipeline
-    data_sources, training_trace_params, data_dir = _load_data_sources()
+    data_sources, data_dir = _load_data_sources()
     all_models = ALL_MODEL_SPECS
 
     logger.info("  Loading inference data...")
@@ -2312,7 +2295,7 @@ def compare_with_ofo(
         plot=False,
         dt_s=float(DT_DC),
     )
-    _ = TrainingTrace.ensure(data_dir / "training_trace.csv", training_trace_params)
+    _ = TrainingTrace.ensure(data_dir / "training_trace.csv")
     logistic_models = LogisticModelStore.ensure(
         data_dir / "logistic_fits.csv",
         all_models,
@@ -2440,19 +2423,15 @@ def compare_with_ofo(
         )
 
     # Comparison CSV
-    import csv as csv_mod
-
     csv_path = ofo_save_dir / f"ofo_comparison_{system}.csv"
     with open(csv_path, "w", newline="") as f:
-        writer = csv_mod.writer(f)
+        writer = csv.writer(f)
         writer.writerow(["mode", "violation_time_s", "worst_vmin", "worst_vmax", "integral_violation_pu_s"])
         for mode_name, s in results.items():
             writer.writerow([mode_name, s.violation_time_s, s.worst_vmin, s.worst_vmax, s.integral_violation_pu_s])
     logger.info("OFO comparison CSV: %s", csv_path)
 
     # Comparison bar chart
-    import matplotlib.pyplot as plt
-
     modes = list(results.keys())
     fig, axes = plt.subplots(1, 3, figsize=(15, 5))
     colors = ["#4C72B0", "#DD8452", "#55A868"]
@@ -2477,7 +2456,7 @@ def compare_with_ofo(
     axes[2].set_title("Integral Violation")
     axes[2].tick_params(axis="x", rotation=15)
 
-    fig.suptitle(f"PV Expansion + OFO Comparison — {system}", fontsize=14)
+    fig.suptitle(f"PV Expansion + OFO Comparison -- {system}", fontsize=14)
     fig.tight_layout()
     fig.savefig(ofo_save_dir / f"ofo_comparison_{system}.png", dpi=150, bbox_inches="tight")
     plt.close(fig)
@@ -2487,7 +2466,7 @@ def compare_with_ofo(
     summary_lines = [
         "",
         "=" * 90,
-        f"PV Expansion + OFO Comparison — {system}",
+        f"PV Expansion + OFO Comparison -- {system}",
         "=" * 90,
         f"  PV: {', '.join(f'{b}={c:.0f}kW' for b, c in zip(pv_locations, pv_capacities_kw, strict=False))}",
         f"{'Mode':<16s} {'Viol(s)':>10s} {'Vmin':>10s} {'Vmax':>10s} {'Integral':>14s}",
@@ -2541,13 +2520,6 @@ def main_pv_and_dc(
     9. Validate
     10. Save results
     """
-    from openg2g.datacenter.config import InferenceModelSpec, ModelDeployment
-    from openg2g.grid.config import TapPosition
-    from openg2g.grid.load import SyntheticLoad
-    from openg2g.metrics.voltage import discover_candidate_buses
-
-    from systems import SYSTEMS, tap
-
     LLAMA_8B = InferenceModelSpec(
         model_label="Llama-3.1-8B",
         model_id="meta-llama/Llama-3.1-8B-Instruct",
@@ -2801,7 +2773,7 @@ def main_pv_and_dc(
 
     scenarios = generate_scenarios(
         load_configs=load_configs if load_configs else None,
-        dc_sites_info=None,  # DC locations are variable — no fixed DC in scenarios
+        dc_sites_info=None,  # DC locations are variable -- no fixed DC in scenarios
     )
     total_weight = sum(sc.weight for sc in scenarios)
     logger.info("Total scenario weight: %.4f (should be 1.0)", total_weight)
@@ -3206,8 +3178,6 @@ def _representative_taps(result: MILPResult, regulator_names: list[str]) -> dict
 
     Used as the new linearization center for iterative re-linearization.
     """
-    from collections import Counter
-
     counters: dict[str, Counter] = {r: Counter() for r in regulator_names}
     if result.tap_schedules:
         for schedule in result.tap_schedules.values():
@@ -3243,7 +3213,7 @@ def main(
     are defined inline per system.  No external JSON config required.
 
     Args:
-        system: IEEE test feeder name (``ieee34`` or ``ieee123``).
+        system: IEEE test feeder name (`ieee34` or `ieee123`).
         c_inv: Annualised investment cost ($/kW/year).  Typical utility-scale
             PV is ~$800-1200/kW installed; at 20-year lifetime this is
             ~$40-60/kW/year.  Use higher values to account for O&M, land,
@@ -3258,13 +3228,6 @@ def main(
         compare_ofo: If True, run coordinator simulations comparing tap-only,
             OFO-only, and tap+OFO modes after MILP solve.
     """
-    from openg2g.datacenter.config import InferenceModelSpec, ModelDeployment
-    from openg2g.grid.config import TapPosition
-    from openg2g.grid.load import SyntheticLoad
-    from openg2g.metrics.voltage import discover_candidate_buses
-
-    from systems import SYSTEMS, tap
-
     LLAMA_8B = InferenceModelSpec(
         model_label="Llama-3.1-8B",
         model_id="meta-llama/Llama-3.1-8B-Instruct",
@@ -3489,7 +3452,7 @@ def main(
             ", ".join(f"{b}: peak={pk:.0f}, base={bs:.0f} kW/ph ({sid})" for b, pk, bs, sid in dc_sites_info),
         )
 
-    # Step 2: Generate scenarios (before loop — invariant)
+    # Step 2: Generate scenarios (before loop -- invariant)
     logger.info("")
     logger.info("=" * 70)
     logger.info("STEP 2: Generating operating scenarios")
@@ -3564,7 +3527,7 @@ def main(
         )
         logger.info("Tap sensitivity computation: %.1f s", time.time() - t0)
     elif co_optimise_taps:
-        logger.info("No initial_taps — skipping tap co-optimisation")
+        logger.info("No initial_taps -- skipping tap co-optimisation")
 
     # Step 1c: Compute load sensitivities
     load_v_shift = None
@@ -3813,44 +3776,53 @@ if __name__ == "__main__":
 
     @dataclass
     class Args:
+        """Command-line arguments.
+
+        Attributes:
+            mode: Optimisation mode: pv-only (default) or pv-and-dc
+                (joint PV + DC siting).
+            system: System name (ieee34 or ieee123).
+            n_pv: Max number of PV sites to place.
+            s_max_kw: Maximum PV capacity per site (kW, 3-phase total).
+            s_total_max_kw: Total PV capacity budget across all sites (kW).
+                None = no limit.
+            c_inv: Annualised investment cost ($/kW/year).
+            c_viol: Voltage violation penalty per pu slack per bus-phase per hour.
+            c_switch: Tap switching cost per switch per regulator per hour ($/switch).
+            v_min: Minimum voltage limit (pu).
+            v_max: Maximum voltage limit (pu).
+            buses: Comma-separated candidate buses (overrides auto-discovery).
+                pv-only mode only.
+            no_validate: Skip full OpenDSS validation.
+            no_taps: Skip tap co-optimisation. pv-only mode only.
+            max_tap_delta: Max tap change from initial (+-steps).
+            time_limit: Solver time limit (seconds).
+            days_per_year: Days per year for annualising savings.
+            compare_ofo: Run OFO comparison after MILP solve. pv-only mode only.
+            no_dc_zones: Allow DC sites at any bus (ignore zone constraints).
+                pv-and-dc mode only.
+            log_level: Logging verbosity.
+        """
+
         mode: Literal["pv-only", "pv-and-dc"] = "pv-only"
-        """Optimisation mode: pv-only (default) or pv-and-dc (joint PV + DC siting)."""
         system: str = "ieee34"
-        """System name (ieee34 or ieee123)."""
         n_pv: int = 5
-        """Max number of PV sites to place."""
         s_max_kw: float = 2000.0
-        """Maximum PV capacity per site (kW, 3-phase total)."""
         s_total_max_kw: float | None = 2500.0
-        """Total PV capacity budget across all sites (kW). None = no limit."""
         c_inv: float = 200.0
-        """Annualised investment cost ($/kW/year)."""
         c_viol: float = 5_000.0
-        """Voltage violation penalty per pu slack per bus-phase per hour."""
         c_switch: float = 10.0
-        """Tap switching cost per switch per regulator per hour ($/switch)."""
         v_min: float = 0.95
-        """Minimum voltage limit (pu)."""
         v_max: float = 1.05
-        """Maximum voltage limit (pu)."""
         buses: str | None = None
-        """Comma-separated candidate buses (overrides auto-discovery). pv-only mode only."""
         no_validate: bool = False
-        """Skip full OpenDSS validation."""
         no_taps: bool = False
-        """Skip tap co-optimisation. pv-only mode only."""
         max_tap_delta: int = 8
-        """Max tap change from initial (+-steps)."""
         time_limit: float = 300.0
-        """Solver time limit (seconds)."""
         days_per_year: float = 365.0
-        """Days per year for annualising savings."""
         compare_ofo: bool = False
-        """Run OFO comparison after MILP solve. pv-only mode only."""
         no_dc_zones: bool = False
-        """Allow DC sites at any bus (ignore zone constraints). pv-and-dc mode only."""
         log_level: str = "INFO"
-        """Logging verbosity."""
 
     args = tyro.cli(Args)
 

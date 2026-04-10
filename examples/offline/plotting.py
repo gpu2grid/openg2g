@@ -1,9 +1,9 @@
 """Plotting functions and data-loading helpers for openg2g simulation results.
 
 Reproduces the figures from the G2G paper, reading data from the library's
-``SimulationLog`` and ``LLMDatacenterState`` objects.
+`SimulationLog` and `LLMDatacenterState` objects.
 
-This module lives outside the ``openg2g`` library on purpose: the library
+This module lives outside the `openg2g` library on purpose: the library
 exports simulation state and metrics, while all matplotlib-dependent
 visualization code stays here.
 """
@@ -58,7 +58,7 @@ BUS_COLOR_MAP: dict[str, Any] = {
 
 @dataclass
 class PerModelTimeSeries:
-    """Per-model time series extracted from ``SimulationLog.dc_states``."""
+    """Per-model time series extracted from `SimulationLog.dc_states`."""
 
     time_s: np.ndarray
     power_w: dict[str, np.ndarray] = field(default_factory=dict)
@@ -70,10 +70,10 @@ class PerModelTimeSeries:
 def _extract_per_model_timeseries(
     dc_states: Sequence[LLMDatacenterState],
 ) -> PerModelTimeSeries:
-    """Build per-model arrays from a list of ``LLMDatacenterState`` objects.
+    """Build per-model arrays from a list of `LLMDatacenterState` objects.
 
-    ``power_w`` is populated only when states are ``OfflineDatacenterState``
-    (which carries ``power_by_model_w``).
+    `power_w` is populated only when states are `OfflineDatacenterState`
+    (which carries `power_by_model_w`).
     """
     if not dc_states:
         raise ValueError("dc_states is empty.")
@@ -261,13 +261,13 @@ def plot_allbus_voltages_per_phase(
     """Per-phase all-bus voltage plots with bus-specific colors and shared legend.
 
     Produces one PNG per phase (A, B, C).  Legend is placed on the
-    ``shared_legend_phase`` (default B).
+    `shared_legend_phase` (default B).
 
     Args:
-        grid_states: List of ``GridState`` from ``SimulationLog``.
+        grid_states: List of `GridState` from `SimulationLog`.
         time_s: Time array (seconds) aligned with *grid_states*.
         save_dir: Directory to write PNG files into.
-        bus_color_map: {bus_name: color}. Defaults to ``BUS_COLOR_MAP``.
+        bus_color_map: {bus_name: color}. Defaults to `BUS_COLOR_MAP`.
     """
     if bus_color_map is None:
         bus_color_map = dict(BUS_COLOR_MAP)
@@ -502,7 +502,7 @@ def plot_zone_voltage_envelope(
     voltage across all buses in the zone, with a shaded fill between them.
 
     Args:
-        grid_states: List of ``GridState`` from ``SimulationLog``.
+        grid_states: List of `GridState` from `SimulationLog`.
         time_s: Time array (seconds) aligned with *grid_states*.
         zones: Mapping of zone_id -> list of bus names.
         save_dir: Directory to write PNG files into.

@@ -37,8 +37,13 @@ from dataclasses import dataclass
 from fractions import Fraction
 from pathlib import Path
 
+import matplotlib
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from matplotlib.lines import Line2D
+
+matplotlib.use("Agg")
 
 from openg2g.controller.ofo import (
     LogisticModelStore,
@@ -58,7 +63,7 @@ from openg2g.datacenter.config import (
 )
 from openg2g.datacenter.offline import OfflineDatacenter, OfflineWorkload
 from openg2g.datacenter.workloads.inference import InferenceData, MLEnergySource
-from openg2g.datacenter.workloads.training import TrainingTrace, TrainingTraceParams
+from openg2g.datacenter.workloads.training import TrainingTrace
 from openg2g.grid.config import TapPosition, TapSchedule
 from openg2g.grid.generator import ConstantGenerator, SyntheticPV
 from openg2g.grid.load import SyntheticLoad
@@ -70,6 +75,7 @@ from openg2g.metrics.voltage import (
     find_violations,
 )
 
+from plotting import plot_allbus_voltages_per_phase, plot_model_timeseries_4panel
 from systems import SYSTEMS, TAP_STEP, tap
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -126,17 +132,17 @@ def deploy(label, num_replicas, initial_batch_size=128):
 
 def load_data_sources(config_path=None):
     if config_path is None:
-        config_path = Path(__file__).resolve().parent / "config.json"
+        config_path = Path(__file__).resolve().parent / "data_sources.json"
     with open(config_path) as f:
         cfg = json.load(f)
     sources_raw = cfg["data_sources"]
     data_sources = {s["model_label"]: MLEnergySource(**s) for s in sources_raw}
-    ttp = TrainingTraceParams(**(cfg.get("training_trace_params") or {}))
     blob = json.dumps(
-        (sorted(sources_raw, key=lambda s: s["model_label"]), cfg.get("training_trace_params") or {}), sort_keys=True
+        sorted(sources_raw, key=lambda s: s["model_label"]),
+        sort_keys=True,
     ).encode()
     data_dir = _REPO_ROOT / "data" / "offline" / hashlib.sha256(blob).hexdigest()[:16]
-    return data_sources, ttp, data_dir
+    return data_sources, data_dir
 
 
 @dataclass
@@ -489,11 +495,6 @@ def run_case_1d(
     }
 
     if save_dir is not None:
-        from plotting import (
-            plot_allbus_voltages_per_phase,
-            plot_model_timeseries_4panel,
-        )
-
         save_dir.mkdir(parents=True, exist_ok=True)
         time_s = np.array(log.time_s)
         plot_allbus_voltages_per_phase(
@@ -502,7 +503,7 @@ def run_case_1d(
             save_dir=save_dir,
             v_min=v_min,
             v_max=v_max,
-            title_template=f"DC@{dc_bus} {case_name} — Voltage (Phase {{label}})",
+            title_template=f"DC@{dc_bus} {case_name} -- Voltage (Phase {{label}})",
         )
         if use_ofo:
             plot_model_timeseries_4panel(
@@ -516,8 +517,6 @@ def run_case_1d(
 
 
 def _plot_bus_comparison(all_rows: list[dict], save_path: Path) -> None:
-    import matplotlib.pyplot as plt
-
     buses = [r["dc_bus"] for r in all_rows]
     cases = [
         ("baseline_no_tap", "Baseline (no tap)"),
@@ -722,7 +721,7 @@ def main_1d(
         for case_name, use_ofo, use_tap_change in cases:
             case_idx += 1
             logger.info("")
-            logger.info("[%d/%d] Bus %s — %s", case_idx, total_cases, dc_bus, case_name)
+            logger.info("[%d/%d] Bus %s -- %s", case_idx, total_cases, dc_bus, case_name)
 
             case_save_dir = save_dir / f"bus_{dc_bus}" / case_name
 
@@ -766,7 +765,7 @@ def main_1d(
                 for k, v in result.items():
                     bus_results[f"{case_name}_{k}"] = v
             except Exception as e:
-                logger.error("  Bus %s — %s FAILED: %s", dc_bus, case_name, e)
+                logger.error("  Bus %s -- %s FAILED: %s", dc_bus, case_name, e)
                 for k in [
                     "violation_time_s",
                     "worst_vmin",
@@ -831,8 +830,6 @@ def main_1d(
 
 
 def _plot_heatmaps(df: pd.DataFrame, buses: list[str], save_dir: Path) -> None:
-    import matplotlib.pyplot as plt
-
     n = len(buses)
     bus_idx = {b: i for i, b in enumerate(buses)}
 
@@ -1267,8 +1264,6 @@ def _plot_zoned_summary(
     suffix: str = "",
 ) -> None:
     """Plot bar chart of zone-constrained sweep results."""
-    import matplotlib.pyplot as plt
-
     n_show = min(20, len(df))
     df_top = df.head(n_show)
 
@@ -1281,13 +1276,13 @@ def _plot_zoned_summary(
     ax1.bar(x, df_top["violation_time_s"].values, color="steelblue")
     ax1.set_ylabel("Violation Time (s)")
     title_tag = f" ({suffix})" if suffix else ""
-    ax1.set_title(f"{system.upper()} DC Location Sweep{title_tag} — Violation Time (top {n_show})")
+    ax1.set_title(f"{system.upper()} DC Location Sweep{title_tag} -- Violation Time (top {n_show})")
     ax1.set_xticks(x)
     ax1.set_xticklabels(labels, rotation=45, ha="right", fontsize=8)
 
     ax2.bar(x, df_top["integral_violation_pu_s"].values, color="coral")
     ax2.set_ylabel("Integral Violation (pu·s)")
-    ax2.set_title(f"{system.upper()} DC Location Sweep{title_tag} — Integral Violation (top {n_show})")
+    ax2.set_title(f"{system.upper()} DC Location Sweep{title_tag} -- Integral Violation (top {n_show})")
     ax2.set_xticks(x)
     ax2.set_xticklabels(labels, rotation=45, ha="right", fontsize=8)
 
@@ -1308,8 +1303,6 @@ def _plot_screening_bars(
     system: str,
 ) -> None:
     """Plot per-zone screening results as grouped bar charts."""
-    import matplotlib.pyplot as plt
-
     n_zones = len(screening_results)
     fig, axes = plt.subplots(1, n_zones, figsize=(5 * n_zones, 5), squeeze=False)
 
@@ -1346,8 +1339,6 @@ def _plot_refinement_iteration(
     Marks the previous best bus (from the prior iteration or Phase 2) with a
     diamond marker and the new best bus (from this iteration) with a star.
     """
-    import matplotlib.pyplot as plt
-
     n_zones = len(site_ids)
     fig, axes = plt.subplots(2, n_zones, figsize=(5 * n_zones, 8), squeeze=False)
 
@@ -1393,13 +1384,11 @@ def _plot_refinement_iteration(
                     )
 
             ax.set_ylabel(ylabel)
-            ax.set_title(f"Zone '{sid}' — {title_suffix}")
+            ax.set_title(f"Zone '{sid}' -- {title_suffix}")
             ax.set_xticks(x)
             ax.set_xticklabels(buses, rotation=45, ha="right", fontsize=9)
 
     # Add legend for markers
-    from matplotlib.lines import Line2D
-
     legend_handles = [
         Line2D([0], [0], marker="D", color="w", markerfacecolor="black", markersize=8, label="Previous best"),
         Line2D(
@@ -1416,7 +1405,7 @@ def _plot_refinement_iteration(
     fig.legend(handles=legend_handles, loc="upper right", fontsize=10, framealpha=0.9)
 
     fig.suptitle(
-        f"{system.upper()} Phase 3 Refinement — Iteration {iteration}",
+        f"{system.upper()} Phase 3 Refinement -- Iteration {iteration}",
         fontsize=14,
         y=1.01,
     )
@@ -1456,7 +1445,7 @@ def main_zoned(
     Three-phase design with different resolution/duration per phase:
 
     Phase 1 (Screening): Sweep each zone independently while holding other zones
-        at their default config buses.  Uses coarse resolution (``dt_screening``,
+        at their default config buses.  Uses coarse resolution (`dt_screening`,
         default 60 s) over the full simulation duration (typically 3600 s) for
         fast ranking.  Keep top-K per zone.
     Phase 2 (Combination): Cartesian product of top-K per zone.  Uses native
@@ -1578,7 +1567,7 @@ def main_zoned(
     # Phase 1: Screening
     logger.info("")
     logger.info("=" * 80)
-    logger.info("PHASE 1: SCREENING — sweep each zone independently")
+    logger.info("PHASE 1: SCREENING -- sweep each zone independently")
     logger.info("=" * 80)
     logger.info("Default bus map: %s", default_bus_map)
 
@@ -1661,7 +1650,7 @@ def main_zoned(
     logger.info("")
     logger.info("=" * 80)
     logger.info(
-        "PHASE 2: COMBINATION — Cartesian product of top-%d per zone "
+        "PHASE 2: COMBINATION -- Cartesian product of top-%d per zone "
         "(%ds stress test: constant PV + full DC capacity, no time-varying loads)",
         top_k,
         phase2_duration_s,
@@ -1757,7 +1746,7 @@ def main_zoned(
 
     logger.info("")
     logger.info("=" * 80)
-    logger.info("PHASE 3: REFINEMENT — re-sweep each zone from Phase 2 best")
+    logger.info("PHASE 3: REFINEMENT -- re-sweep each zone from Phase 2 best")
     logger.info("=" * 80)
 
     current_best = dict(best_bus_map)
@@ -1897,7 +1886,7 @@ def main_zoned(
 # Per-system experiment definitions
 
 
-def _experiment_ieee13(sys_const, training_trace):
+def setup_ieee13(sys_const, training_trace):
     """IEEE 13-bus: single DC at bus 671 with training overlay."""
     models = (
         deploy("Llama-3.1-8B", 720),
@@ -1973,7 +1962,7 @@ def _experiment_ieee13(sys_const, training_trace):
     )
 
 
-def _experiment_ieee34(sys_const, training_trace):
+def setup_ieee34(sys_const, training_trace):
     """IEEE 34-bus: two DC sites (upstream + downstream)."""
     upstream_models = (
         deploy("Llama-3.1-8B", 720),
@@ -2036,7 +2025,7 @@ def _experiment_ieee34(sys_const, training_trace):
     )
 
 
-def _experiment_ieee123(sys_const, training_trace):
+def setup_ieee123(sys_const, training_trace):
     """IEEE 123-bus: four DC zones with per-site ramps."""
     dc_sites = {
         "z1_sw": _DCSiteConfig(
@@ -2109,10 +2098,10 @@ def _experiment_ieee123(sys_const, training_trace):
     )
 
 
-_EXPERIMENTS = {
-    "ieee13": _experiment_ieee13,
-    "ieee34": _experiment_ieee34,
-    "ieee123": _experiment_ieee123,
+SETUPS = {
+    "ieee13": setup_ieee13,
+    "ieee34": setup_ieee34,
+    "ieee123": setup_ieee123,
 }
 
 
@@ -2132,7 +2121,7 @@ def main(
     sys_const = SYSTEMS[system]()
 
     # Load data pipeline
-    data_sources, training_trace_params, data_dir = load_data_sources()
+    data_sources, data_dir = load_data_sources()
 
     # Pre-load data using all model specs (data pipeline generates for all data_sources)
     all_models = ALL_MODEL_SPECS
@@ -2145,7 +2134,7 @@ def main(
         plot=False,
         dt_s=float(DT_DC),
     )
-    training_trace = TrainingTrace.ensure(data_dir / "training_trace.csv", training_trace_params)
+    training_trace = TrainingTrace.ensure(data_dir / "training_trace.csv")
     logistic_models = LogisticModelStore.ensure(
         data_dir / "logistic_fits.csv",
         all_models,
@@ -2154,12 +2143,12 @@ def main(
     )
 
     # Build experiment config
-    experiment_fn = _EXPERIMENTS[system]
-    experiment = experiment_fn(sys_const, training_trace)
+    setup_fn = SETUPS[system]
+    config = setup_fn(sys_const, training_trace)
 
-    dc_sites = experiment["dc_sites"]
+    dc_sites = config["dc_sites"]
     n_sites = len(dc_sites)
-    has_zones = experiment.get("zones") is not None and len(experiment.get("zones", {})) > 0
+    has_zones = config.get("zones") is not None and len(config.get("zones", {})) > 0
 
     # Collect all model specs from DC sites for the experiment
     exp_all_models: list[InferenceModelSpec] = []
@@ -2175,7 +2164,7 @@ def main(
         logger.info(
             "Config has %d DC site(s) with %d zone(s) -> zone-constrained sweep",
             n_sites,
-            len(experiment["zones"]),
+            len(config["zones"]),
         )
         main_zoned(
             sys=sys_const,
@@ -2184,12 +2173,12 @@ def main(
             all_models=exp_all_models_tuple,
             inference_data=inference_data,
             training_trace=training_trace,
-            training=experiment.get("training"),
+            training=config.get("training"),
             logistic_models=logistic_models,
-            ofo_config=experiment["ofo_config"],
-            zones=experiment["zones"],
-            pv_systems=experiment.get("pv_systems"),
-            time_varying_loads=experiment.get("time_varying_loads"),
+            ofo_config=config["ofo_config"],
+            zones=config["zones"],
+            pv_systems=config.get("pv_systems"),
+            time_varying_loads=config.get("time_varying_loads"),
             dt_override=dt_override,
             dt_screening=dt_screening,
             output_dir=output_dir,
@@ -2207,15 +2196,15 @@ def main(
             inference_data=inference_data,
             training_trace=training_trace,
             logistic_models=logistic_models,
-            ofo_config=experiment["ofo_config"],
-            training=experiment.get("training"),
+            ofo_config=config["ofo_config"],
+            training=config.get("training"),
             inference_ramps=dc_site.inference_ramps,
-            tap_schedule_entries=experiment.get("tap_schedule_entries"),
-            training_t_start=experiment.get("training_t_start", 0),
-            training_t_end=experiment.get("training_t_end", 0),
-            ramp_t_end=experiment.get("ramp_t_end", 0),
-            pv_systems=experiment.get("pv_systems"),
-            time_varying_loads=experiment.get("time_varying_loads"),
+            tap_schedule_entries=config.get("tap_schedule_entries"),
+            training_t_start=config.get("training_t_start", 0),
+            training_t_end=config.get("training_t_end", 0),
+            ramp_t_end=config.get("ramp_t_end", 0),
+            pv_systems=config.get("pv_systems"),
+            time_varying_loads=config.get("time_varying_loads"),
             buses=buses,
             dt_override=dt_override,
             output_dir=output_dir,
@@ -2230,10 +2219,10 @@ def main(
             inference_data=inference_data,
             training_trace=training_trace,
             logistic_models=logistic_models,
-            ofo_config=experiment["ofo_config"],
-            training=experiment.get("training"),
-            pv_systems=experiment.get("pv_systems"),
-            time_varying_loads=experiment.get("time_varying_loads"),
+            ofo_config=config["ofo_config"],
+            training=config.get("training"),
+            pv_systems=config.get("pv_systems"),
+            time_varying_loads=config.get("time_varying_loads"),
             dt_override=dt_override,
             output_dir=output_dir,
         )
@@ -2246,22 +2235,29 @@ if __name__ == "__main__":
 
     @dataclass
     class Args:
+        """Command-line arguments.
+
+        Attributes:
+            system: System name (ieee13, ieee34, ieee123).
+            buses: Comma-separated list of buses to test (overrides auto-discovery, 1-D only).
+            dt: Override time step for all components (e.g. '60' for 60s resolution).
+            dt_screening: Coarser time step for Phase 1 screening only (e.g. '60').
+                Phases 2/3 use --dt or config.
+            top_k: Number of top candidates per zone to keep after screening
+                (zone-constrained mode).
+            refine: Enable Phase 3 iterative refinement (zone-constrained mode).
+            output_dir: Override output directory path.
+            log_level: Logging verbosity (DEBUG, INFO, WARNING).
+        """
+
         system: str = "ieee13"
-        """System name (ieee13, ieee34, ieee123)."""
         buses: str | None = None
-        """Comma-separated list of buses to test (overrides auto-discovery, 1-D only)."""
         dt: str | None = None
-        """Override time step for all components (e.g. '60' for 60s resolution)."""
         dt_screening: str | None = None
-        """Coarser time step for Phase 1 screening only (e.g. '60'). Phases 2/3 use --dt or config."""
         top_k: int = 4
-        """Number of top candidates per zone to keep after screening (zone-constrained mode)."""
         refine: bool = False
-        """Enable Phase 3 iterative refinement (zone-constrained mode)."""
         output_dir: str | None = None
-        """Override output directory path."""
         log_level: str = "INFO"
-        """Logging verbosity (DEBUG, INFO, WARNING)."""
 
     args = tyro.cli(Args)
 

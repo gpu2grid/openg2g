@@ -831,7 +831,7 @@ class OnlineDatacenter(LLMBatchSizeControlledDatacenter[OnlineDatacenterState]):
                 phase_list = np.asarray(([0] * sA) + ([1] * sB) + ([2] * sC), dtype=int)
                 rng.shuffle(phase_list)
 
-                # Priority shuffle (consumes RNG) — must happen here
+                # Priority shuffle (consumes RNG) -- must happen here
                 self._policies[d.model_label] = RampActivationPolicy(
                     model_schedule,
                     num_servers,
@@ -840,7 +840,7 @@ class OnlineDatacenter(LLMBatchSizeControlledDatacenter[OnlineDatacenterState]):
                     gpus_per_server=gpus_per_server,
                 )
 
-                # Stagger offsets (consumes RNG) — float for online
+                # Stagger offsets (consumes RNG) -- float for online
                 stagger_offsets = rng.uniform(0.0, max(stagger_s, 1e-9), size=num_servers)
 
                 # Amplitude scales (consumes RNG)

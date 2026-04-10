@@ -27,6 +27,7 @@ import numpy as np
 
 from openg2g.controller.ofo import (
     LogisticModelStore,
+    OFOBatchSizeController,
     OFOConfig,
 )
 from openg2g.controller.rule_based import RuleBasedBatchSizeController, RuleBasedConfig
@@ -41,7 +42,7 @@ from openg2g.datacenter.config import (
 )
 from openg2g.datacenter.offline import OfflineDatacenter, OfflineWorkload
 from openg2g.datacenter.workloads.inference import InferenceData, MLEnergySource
-from openg2g.datacenter.workloads.training import TrainingTrace, TrainingTraceParams
+from openg2g.datacenter.workloads.training import TrainingTrace
 from openg2g.grid.config import TapPosition, TapSchedule
 from openg2g.grid.generator import SyntheticPV
 from openg2g.grid.load import SyntheticLoad
@@ -50,7 +51,7 @@ from openg2g.metrics.voltage import VoltageStats, compute_allbus_voltage_stats
 
 from systems import SYSTEMS, tap
 
-logger = logging.getLogger("controller_comparison")
+logger = logging.getLogger("analyze_different_controllers")
 
 # Simulation defaults
 
@@ -110,17 +111,17 @@ def deploy(label, num_replicas, initial_batch_size=128):
 
 def load_data_sources(config_path=None):
     if config_path is None:
-        config_path = Path(__file__).resolve().parent / "config.json"
+        config_path = Path(__file__).resolve().parent / "data_sources.json"
     with open(config_path) as f:
         cfg = json.load(f)
     sources_raw = cfg["data_sources"]
     data_sources = {s["model_label"]: MLEnergySource(**s) for s in sources_raw}
-    ttp = TrainingTraceParams(**(cfg.get("training_trace_params") or {}))
     blob = json.dumps(
-        (sorted(sources_raw, key=lambda s: s["model_label"]), cfg.get("training_trace_params") or {}), sort_keys=True
+        sorted(sources_raw, key=lambda s: s["model_label"]),
+        sort_keys=True,
     ).encode()
     data_dir = _REPO_ROOT / "data" / "offline" / hashlib.sha256(blob).hexdigest()[:16]
-    return data_sources, ttp, data_dir
+    return data_sources, data_dir
 
 
 # Per-system setup functions
@@ -575,11 +576,7 @@ def main(
     system: str,
     rule_step_size: float = 0.3,
     rule_deadband: float = 0.005,
-    ppo_model: str = "",
 ) -> None:
-    # Resolve ppo_model path early (before OpenDSS changes CWD)
-    if ppo_model:
-        ppo_model = str(Path(ppo_model).resolve())
     if system not in SETUPS:
         raise ValueError(f"Unknown system {system!r}; choose from {list(SETUPS)}")
 
@@ -588,7 +585,7 @@ def main(
 
     # Load data
     logger.info("Loading data...")
-    data_sources, training_trace_params, data_dir = load_data_sources()
+    data_sources, data_dir = load_data_sources()
 
     # Collect all specs across all sites for data loading (need full set for InferenceData)
     setup_fn = SETUPS[system]
@@ -608,10 +605,7 @@ def main(
         plot=False,
         dt_s=float(DT_DC),
     )
-    training_trace = TrainingTrace.ensure(
-        data_dir / "training_trace.csv",
-        training_trace_params,
-    )
+    training_trace = TrainingTrace.ensure(data_dir / "training_trace.csv")
     logistic_models = LogisticModelStore.ensure(
         data_dir / "logistic_fits.csv",
         all_specs_tuple,
@@ -629,15 +623,12 @@ def main(
 
     # Run all modes
     modes = ["baseline", "rule_based", "ofo"]
-    if ppo_model:
-        modes.append("ppo")
     all_stats: dict[str, VoltageStats] = {}
     all_logs: dict[str, object] = {}
 
     for mode in modes:
         # Fresh DCs and grid per mode (no state leakage between runs)
         setup = setup_fn(inference_data, training_trace, logistic_models)
-        sys = setup["sys"]
         datacenters: list[OfflineDatacenter] = setup["datacenters"]
         dc_specs: dict[OfflineDatacenter, tuple[InferenceModelSpec, ...]] = setup["dc_specs"]
         grid: OpenDSSGrid = setup["grid"]
@@ -661,8 +652,6 @@ def main(
 
         # Batch-size controller
         if mode == "ofo":
-            from openg2g.controller.ofo import OFOBatchSizeController
-
             for dc, specs in dc_specs.items():
                 ofo_ctrl = OFOBatchSizeController(
                     specs,
@@ -683,89 +672,6 @@ def main(
                     exclude_buses=exclude_buses,
                 )
                 controllers.append(rb_ctrl)
-
-        elif mode == "ppo":
-            from openg2g.controller.ppo import PPOBatchSizeController, SharedPPOBatchSizeController
-            from openg2g.rl.env import ObservationConfig
-
-            ppo_path = Path(ppo_model).resolve()
-            site_ids = [dc.name for dc in datacenters]
-
-            # Check if a shared model exists
-            shared_model = ppo_path / "ppo_model_shared.zip" if ppo_path.is_dir() else None
-            if shared_model is not None and shared_model.exists():
-                # Shared multi-site PPO
-                from stable_baselines3 import PPO as SB3PPO
-
-                sb3 = SB3PPO.load(str(shared_model.with_suffix("")))
-                saved_obs_dim = sb3.observation_space.shape[0]
-                n_models_all = sum(len(specs) for specs in dc_specs.values())
-                n_bus_phases = saved_obs_dim - 3 - 5 * n_models_all
-
-                # Build replica counts and model mapping per site
-                site_model_mapping = {}
-                site_replica_counts = {}
-                for dc, specs in dc_specs.items():
-                    site_model_mapping[dc.name] = [s.model_label for s in specs]
-                    site_replica_counts[dc.name] = {
-                        s.model_label: dc._workload.replica_counts.get(s.model_label, 0) for s in specs
-                    }
-
-                obs_config = ObservationConfig.from_multi_site(
-                    {dc.name: specs for dc, specs in dc_specs.items()},
-                    site_replica_counts,
-                    n_bus_phases=n_bus_phases,
-                    v_min=V_MIN,
-                    v_max=V_MAX,
-                )
-                ppo_ctrl = SharedPPOBatchSizeController(
-                    model_path=str(shared_model),
-                    obs_config=obs_config,
-                    site_model_mapping=site_model_mapping,
-                    dt_s=DT_CTRL,
-                )
-                controllers.append(ppo_ctrl)
-            else:
-                # Per-site PPO
-                zones = sys.get("zones")
-
-                for dc, specs in dc_specs.items():
-                    site_id = dc.name
-                    if ppo_path.is_dir():
-                        site_model_path = str(ppo_path / f"ppo_model_{site_id}.zip")
-                    elif ppo_path.suffix == ".zip" and len(site_ids) == 1:
-                        site_model_path = str(ppo_path)
-                    else:
-                        site_model_path = str(ppo_path.parent / f"ppo_model_{site_id}.zip")
-
-                    from stable_baselines3 import PPO as SB3PPO
-
-                    sb3 = SB3PPO.load(str(Path(site_model_path).with_suffix("")))
-                    saved_obs_dim = sb3.observation_space.shape[0]
-                    n_models_site = len(specs)
-                    n_bus_phases = saved_obs_dim - 3 - 5 * n_models_site
-
-                    zone_buses = None
-                    if zones is not None and site_id in zones:
-                        zone_buses = tuple(zones[site_id])
-
-                    replica_counts = {s.model_label: dc._workload.replica_counts.get(s.model_label, 0) for s in specs}
-                    obs_config = ObservationConfig.from_model_specs(
-                        specs,
-                        replica_counts,
-                        n_bus_phases=n_bus_phases,
-                        zone_buses=zone_buses,
-                        v_min=V_MIN,
-                        v_max=V_MAX,
-                    )
-                    ppo_ctrl = PPOBatchSizeController(
-                        specs,
-                        model_path=site_model_path,
-                        obs_config=obs_config,
-                        dt_s=DT_CTRL,
-                        datacenter=dc,
-                    )
-                    controllers.append(ppo_ctrl)
 
         # baseline: no batch controller added
 
@@ -848,16 +754,20 @@ if __name__ == "__main__":
 
     @dataclass
     class Args:
+        """Command-line arguments.
+
+        Attributes:
+            system: System name: ieee13, ieee34, or ieee123.
+            rule_step_size: Proportional gain for the rule-based controller
+                (log2 units per pu violation).
+            rule_deadband: Deadband for the rule-based controller (pu).
+            log_level: Logging verbosity.
+        """
+
         system: str = "ieee123"
-        """System name: ieee13, ieee34, or ieee123."""
         rule_step_size: float = 0.3
-        """Proportional gain for the rule-based controller (log2 units per pu violation)."""
         rule_deadband: float = 0.005
-        """Deadband for the rule-based controller (pu)."""
-        ppo_model: str = ""
-        """Path to trained PPO model (.zip). If set, adds PPO to comparison."""
         log_level: str = "INFO"
-        """Logging verbosity."""
 
     args = tyro.cli(Args)
 
@@ -876,5 +786,4 @@ if __name__ == "__main__":
         system=args.system,
         rule_step_size=args.rule_step_size,
         rule_deadband=args.rule_deadband,
-        ppo_model=args.ppo_model,
     )

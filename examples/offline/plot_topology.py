@@ -73,7 +73,7 @@ _SETBUSXY_RE = re.compile(r"setbusxy\s+bus\s*=\s*([^,\s!]+)[,\s]+x\s*=\s*([^,\s!
 
 
 def parse_dss_bus_coords(dss_dir: Path, master_file: str) -> dict[str, tuple[float, float]]:
-    """Parse inline ``SetBusXY`` commands from DSS files (following redirects).
+    """Parse inline `SetBusXY` commands from DSS files (following redirects).
 
     Used when bus coordinates are embedded in the master DSS file instead of a
     separate CSV/DAT file.
@@ -388,8 +388,8 @@ class SwitchInfo:
 def parse_dss_switches(dss_dir: Path, master_file: str) -> list[SwitchInfo]:
     """Parse switch definitions from DSS files.
 
-    Detects lines with ``Switch=y`` or ``Switch=yes`` property, and also lines
-    whose name starts with ``sw`` with near-zero impedance (common IEEE 123
+    Detects lines with `Switch=y` or `Switch=yes` property, and also lines
+    whose name starts with `sw` with near-zero impedance (common IEEE 123
     convention).
     """
     switches: list[SwitchInfo] = []
@@ -443,7 +443,7 @@ def parse_dss_switches(dss_dir: Path, master_file: str) -> list[SwitchInfo]:
 
 
 def parse_dss_source_bus(dss_dir: Path, master_file: str) -> str | None:
-    """Return the source bus name from the ``New Circuit`` definition."""
+    """Return the source bus name from the `New Circuit` definition."""
     visited: set[str] = set()
 
     def _parse_file(fpath: Path) -> str | None:
@@ -657,7 +657,7 @@ def plot_topology(
             handles.append(
                 mpatches.Patch(
                     color=zone_colors[zid],
-                    label=f"Zone {zid} — DC@{dc_bus}",
+                    label=f"Zone {zid} -- DC@{dc_bus}",
                 )
             )
     elif dc_sites:
@@ -765,18 +765,23 @@ def plot_topology(
 
 
 if __name__ == "__main__":
-    from dataclasses import dataclass as dc_cls
+    from dataclasses import dataclass
 
     import tyro
 
-    @dc_cls
+    @dataclass
     class Args:
+        """Command-line arguments.
+
+        Attributes:
+            system: System name (e.g., ieee13, ieee34, ieee123).
+            output_dir: Override output directory.
+            large_font: Use very large fonts for all text on the plot.
+        """
+
         system: str = "ieee13"
-        """System name (e.g., ieee13, ieee34, ieee123)."""
         output_dir: str | None = None
-        """Override output directory."""
         large_font: bool = False
-        """Use very large fonts for all text on the plot."""
 
     args = tyro.cli(Args)
     out_dir = Path(args.output_dir) if args.output_dir else None

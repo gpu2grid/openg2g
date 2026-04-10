@@ -2,14 +2,14 @@
 
 Feasibility is defined by the *integral* of voltage violation (pu * s)
 across all bus-phase pairs: a replica count is feasible when
-``integral_violation_pu_s <= max_integral``.  This captures both the
+`integral_violation_pu_s <= max_integral`.  This captures both the
 duration and severity of out-of-bounds voltage, giving OFO credit for
 reducing deviation magnitude (not just duration).
 
 For each candidate bus and each LLM model, binary-searches on num_replicas
 using load steps at 20%, 40%, 60%, 80%, 100% activation.  Each step is
 tested independently with its own optimised tap position (per-phase,
-range -16 to +16, ``dss_controls=False``).  If *any* step exceeds the
+range -16 to +16, `dss_controls=False`).  If *any* step exceeds the
 integral threshold after tap optimisation, that replica count is infeasible.
 
 A second pass (OFO + tap change) runs the full staircase with OFO
@@ -18,7 +18,7 @@ when OFO can compensate for voltage stress.
 
 Modes:
   - **1-D** (default): sweeps individual buses independently.
-  - **2-D** (``--mode 2d``): sweeps all unordered bus pairs, placing
+  - **2-D** (`--mode 2d`): sweeps all unordered bus pairs, placing
     identical DCs at both locations simultaneously. The hosting capacity of
     a pair is the min across models. Outputs heatmaps showing which bus
     pairs can support the most GPU capacity.
@@ -44,7 +44,11 @@ from fractions import Fraction
 from pathlib import Path
 from typing import Literal
 
+import matplotlib
 import numpy as np
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 
 from openg2g.controller.ofo import (
     LogisticModelStore,
@@ -62,7 +66,6 @@ from openg2g.datacenter.config import (
 )
 from openg2g.datacenter.offline import OfflineDatacenter, OfflineWorkload
 from openg2g.datacenter.workloads.inference import InferenceData, MLEnergySource
-from openg2g.datacenter.workloads.training import TrainingTraceParams
 from openg2g.grid.config import TapPosition, TapSchedule
 from openg2g.grid.generator import SyntheticPV
 from openg2g.grid.load import SyntheticLoad
@@ -131,20 +134,20 @@ def deploy(label, num_replicas, initial_batch_size=128):
 
 def load_data_sources(config_path=None):
     if config_path is None:
-        config_path = Path(__file__).resolve().parent / "config.json"
+        config_path = Path(__file__).resolve().parent / "data_sources.json"
     with open(config_path) as f:
         cfg = json.load(f)
     sources_raw = cfg["data_sources"]
     data_sources = {s["model_label"]: MLEnergySource(**s) for s in sources_raw}
-    ttp = TrainingTraceParams(**(cfg.get("training_trace_params") or {}))
     blob = json.dumps(
-        (sorted(sources_raw, key=lambda s: s["model_label"]), cfg.get("training_trace_params") or {}), sort_keys=True
+        sorted(sources_raw, key=lambda s: s["model_label"]),
+        sort_keys=True,
     ).encode()
     data_dir = _REPO_ROOT / "data" / "offline" / hashlib.sha256(blob).hexdigest()[:16]
-    return data_sources, ttp, data_dir
+    return data_sources, data_dir
 
 
-logger = logging.getLogger("hosting_capacity")
+logger = logging.getLogger("sweep_hosting_capacities")
 
 # Load-step fractions to test (each gets its own optimal tap position)
 LOAD_FRACTIONS = [0.2, 0.4, 0.6, 0.8, 1.0]
@@ -379,7 +382,7 @@ def optimize_taps_for_step(
 ) -> tuple[VoltageStats, TapPosition]:
     """Find optimal tap position for a single load-fraction step.
 
-    When ``config.regulator_zones`` is set, each regulator bank is adjusted
+    When `config.regulator_zones` is set, each regulator bank is adjusted
     independently based only on violations within its downstream zone.
     Otherwise all regulators are adjusted together by phase.
 
@@ -486,7 +489,7 @@ def check_all_steps(
     """Optimise taps independently for each load step and check feasibility.
 
     A step is feasible when its integral voltage violation (pu * s) is at
-    or below ``integral_threshold``.
+    or below `integral_threshold`.
 
     Returns a PerStepResult: feasible=True only if every step passes.
     """
@@ -533,9 +536,9 @@ def _build_staircase_ramps(model_label: str, num_replicas: int):
     """Build InferenceRampSchedule for the staircase activation pattern.
 
     Args:
-        model_label: Model label string (e.g. ``"Llama-3.1-8B"``).
+        model_label: Model label string (e.g. `"Llama-3.1-8B"`).
         num_replicas: Total number of replicas; fractions are converted to
-            absolute counts via ``round(fraction * num_replicas)``.
+            absolute counts via `round(fraction * num_replicas)`.
     """
     ramps = InferenceRamp(target=round(0.0 * num_replicas), model=model_label).at(t_start=0, t_end=0)
     ramps = ramps | InferenceRamp(target=round(0.2 * num_replicas), model=model_label).at(t_start=0, t_end=60)
@@ -885,8 +888,6 @@ def _plot_hosting_capacity_combined(
     title: str = "Datacenter Hosting Capacity by Bus",
 ) -> None:
     """Grouped bar chart comparing hosting capacity w/ and w/o OFO."""
-    import matplotlib.pyplot as plt
-
     buses = [r["dc_bus"] for r in wo_ofo_summary]
     wo_mw = [r["hosting_capacity_MW"] for r in wo_ofo_summary]
     w_mw = [r["hosting_capacity_MW"] for r in w_ofo_summary]
@@ -920,8 +921,6 @@ def _plot_integral_threshold_comparison(
     Args:
         all_results: {threshold_pu_s: (wo_ofo_summary_rows, w_ofo_summary_rows)}
     """
-    import matplotlib.pyplot as plt
-
     thresholds = sorted(all_results.keys())
     buses = [r["dc_bus"] for r in next(iter(all_results.values()))[0]]
 
@@ -948,7 +947,7 @@ def _plot_integral_threshold_comparison(
     ax2.legend(title="Bus", fontsize=8)
     ax2.grid(True, alpha=0.3)
 
-    fig.suptitle(f"Hosting Capacity vs. Integral Threshold — {system}", fontsize=14)
+    fig.suptitle(f"Hosting Capacity vs. Integral Threshold -- {system}", fontsize=14)
     fig.tight_layout()
     fig.savefig(save_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
@@ -970,7 +969,7 @@ def _save_csv(rows: list[dict], path: Path) -> None:
 def _log_summary(summary_rows: list[dict], label: str) -> None:
     logger.info("")
     logger.info("=" * 80)
-    logger.info("HOSTING CAPACITY SUMMARY — %s", label)
+    logger.info("HOSTING CAPACITY SUMMARY -- %s", label)
     logger.info("=" * 80)
     logger.info("%-10s %15s %15s %20s %12s", "Bus", "Capacity (kW)", "Capacity (MW)", "Limiting Model", "Max GPUs")
     logger.info("-" * 80)
@@ -1298,7 +1297,7 @@ def main(
     all_specs = tuple(d.spec for d in all_deployments)
 
     # Load shared data
-    data_sources, _training_trace_params, data_dir = load_data_sources()
+    data_sources, data_dir = load_data_sources()
 
     save_dir = Path(__file__).resolve().parent / "outputs" / system / "hosting_capacity_1d"
     save_dir.mkdir(parents=True, exist_ok=True)
@@ -1364,7 +1363,7 @@ def main(
 
         # Pass 1: tap-only
         logger.info("")
-        logger.info("=== PASS 1: Tap-only (no OFO) — %s ===", tag)
+        logger.info("=== PASS 1: Tap-only (no OFO) -- %s ===", tag)
         t0 = time.time()
 
         base_rows, base_summary, base_results = _run_pass1(
@@ -1385,7 +1384,7 @@ def main(
 
         # Pass 2: OFO + tap change
         logger.info("")
-        logger.info("=== PASS 2: OFO + Tap Change — %s ===", tag)
+        logger.info("=== PASS 2: OFO + Tap Change -- %s ===", tag)
         t0 = time.time()
 
         ofo_rows, ofo_summary = _run_pass2(
@@ -1411,7 +1410,7 @@ def main(
             base_summary,
             ofo_summary,
             save_dir / f"hosting_capacity_{system}_{tag}.png",
-            title=f"Hosting Capacity — max integral {mi:.2f} pu*s",
+            title=f"Hosting Capacity -- max integral {mi:.2f} pu*s",
         )
 
         all_threshold_results[mi] = (base_summary, ofo_summary)
@@ -1601,8 +1600,6 @@ def _plot_hosting_heatmap(
     title: str = "Pairwise Hosting Capacity (MW)",
 ) -> None:
     """Plot a symmetric heatmap of hosting capacity for all bus pairs."""
-    import matplotlib.pyplot as plt
-
     n = len(candidate_buses)
     grid = np.full((n, n), np.nan)
     bus_idx = {b: i for i, b in enumerate(candidate_buses)}
@@ -1657,7 +1654,7 @@ def main_2d(
     all_specs = tuple(d.spec for d in all_deployments)
 
     # Load shared data
-    data_sources, _training_trace_params, data_dir = load_data_sources()
+    data_sources, data_dir = load_data_sources()
 
     save_dir = Path(__file__).resolve().parent / "outputs" / system / "hosting_capacity_2d"
     save_dir.mkdir(parents=True, exist_ok=True)
@@ -1766,21 +1763,27 @@ if __name__ == "__main__":
 
     @dataclass
     class Args:
+        """Command-line arguments.
+
+        Attributes:
+            system: System name (ieee13, ieee34, ieee123).
+            mode: Analysis mode: '1d' sweeps individual buses, '2d' sweeps all bus
+                pairs with identical DCs at both locations.
+            buses: Comma-separated list of buses to test (overrides auto-discovery).
+            max_power_mw: Power ceiling (MW) for binary-search upper bound.
+            search_tol: Binary search tolerance in replicas.
+            max_integrals: Comma-separated max integral violation thresholds in pu*s
+                (e.g. '0.5,1.0,2.0').
+            log_level: Logging verbosity (DEBUG, INFO, WARNING).
+        """
+
         system: str = "ieee13"
-        """System name (ieee13, ieee34, ieee123)."""
         mode: Literal["1d", "2d"] = "1d"
-        """Analysis mode: '1d' sweeps individual buses, '2d' sweeps all bus pairs
-        with identical DCs at both locations."""
         buses: str | None = None
-        """Comma-separated list of buses to test (overrides auto-discovery)."""
         max_power_mw: float = DEFAULT_MAX_POWER_MW
-        """Power ceiling (MW) for binary-search upper bound."""
         search_tol: int = 5
-        """Binary search tolerance in replicas."""
         max_integrals: str = "1.0"
-        """Comma-separated max integral violation thresholds in pu*s (e.g. '0.5,1.0,2.0')."""
         log_level: str = "INFO"
-        """Logging verbosity (DEBUG, INFO, WARNING)."""
 
     args = tyro.cli(Args)
 

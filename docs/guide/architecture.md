@@ -211,5 +211,5 @@ class OFOBatchSizeController(Controller[LLMBatchSizeControlledDatacenter, OpenDS
 
 [`Coordinator.run()`][openg2g.coordinator.Coordinator.run] returns a [`SimulationLog`][openg2g.coordinator.SimulationLog] that collects all state history.
 Essentially, this object is a bill of materials for everything that happened during the simulation, and is the basis for all post-run analysis and plotting.
-You can use `log.dc_states`, `log.grid_states`, and time-series arrays like `log.time_s`, `log.voltage_a_pu` for analysis. Per-phase power is available from `dc_states[i].power_w`.
-See [Building Simulators: Analyzing Results](building-simulators.md#analyzing-results) for usage examples.
+It records a list of datacenter and grid state snapshots, one per step (`log.dc_states`, `log.grid_states`), plus convenience time-series arrays for plotting.
+See [`SimulationLog`][openg2g.coordinator.SimulationLog] for available fields and [Building Simulators: Analyzing Results](building-simulators.md#analyzing-results) for usage examples.

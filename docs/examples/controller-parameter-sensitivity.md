@@ -6,12 +6,12 @@ How do OFO tuning parameters (step sizes, dual weights, throughput/switching cos
 
 ## Overview
 
-The OFO controller has several tuning parameters that trade off between voltage regulation aggressiveness, throughput preservation, and batch-size stability. This analysis sweeps each parameter one-at-a-time (1-D) or across sites independently (2-D) to characterize the sensitivity landscape.
+The OFO controller has several tuning parameters that trade off between voltage regulation aggressiveness, throughput preservation, and batch-size stability. This analysis sweeps each parameter one-at-a-time (shared) or across sites independently (per-site) to characterize the sensitivity landscape.
 
 The sweep mode auto-selects based on the number of DC sites:
 
-- **1 DC site** (e.g., IEEE 13): 1-D sweep — varies each parameter while keeping others at baseline.
-- **2+ DC sites** (e.g., IEEE 34): 2-D sweep — sweeps all per-site parameter combinations independently, producing heatmap visualizations.
+- **1 DC site** (e.g., IEEE 13): shared sweep — varies each parameter while keeping others at baseline.
+- **2+ DC sites** (e.g., IEEE 34): per-site sweep — sweeps all per-site parameter combinations independently, producing heatmap visualizations.
 
 ## Scripts
 
@@ -21,23 +21,23 @@ The sweep mode auto-selects based on the number of DC sites:
 
 ## Usage
 
-### IEEE 13-Bus: 1-D Sweep
+### IEEE 13-Bus: Shared Sweep
 
 ```bash
 python examples/offline/sweep_ofo_parameters.py \
     --system ieee13
 ```
 
-### IEEE 34-Bus: 2-D Per-Site Sweep
+### IEEE 34-Bus: Per-Site Sweep
 
 ```bash
-# 2-D sweep (independent parameters per site, auto-selected)
+# per-site sweep (independent parameters per site, auto-selected)
 python examples/offline/sweep_ofo_parameters.py \
     --system ieee34
 
-# Force 1-D sweep (shared parameters across sites)
+# Force shared sweep (shared parameters across sites)
 python examples/offline/sweep_ofo_parameters.py \
-    --system ieee34 --sweep-mode 1d
+    --system ieee34 --sweep-mode shared
 ```
 
 ### Overriding Time Resolution
@@ -65,7 +65,7 @@ Outputs are saved to `outputs/<system>/sweep_ofo_parameters/`:
 
 - `results_<system>_sweep_ofo_parameters.csv` — One row per run with all metrics
 - Per-parameter subdirectories with voltage and batch-size plots
-- Heatmaps (2-D mode) showing cross-site parameter interactions
+- Heatmaps (per-site mode) showing cross-site parameter interactions
 
 ## Configuration
 
