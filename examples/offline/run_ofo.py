@@ -30,7 +30,6 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-from systems import SYSTEMS, TAP_STEP, tap
 
 from openg2g.controller.ofo import (
     LogisticModelStore,
@@ -62,6 +61,7 @@ from plotting import (
     plot_power_and_itl_2panel,
     plot_zone_voltage_envelope,
 )
+from systems import SYSTEMS, TAP_STEP, tap
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 

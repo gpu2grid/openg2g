@@ -22,6 +22,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
+
 from systems import SYSTEMS
 
 # Topology data: DC buses and PV buses per system

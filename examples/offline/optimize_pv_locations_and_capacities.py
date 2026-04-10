@@ -2541,12 +2541,12 @@ def main_pv_and_dc(
     9. Validate
     10. Save results
     """
-    from systems import SYSTEMS, tap
-
     from openg2g.datacenter.config import InferenceModelSpec, ModelDeployment
     from openg2g.grid.config import TapPosition
     from openg2g.grid.load import SyntheticLoad
     from openg2g.metrics.voltage import discover_candidate_buses
+
+    from systems import SYSTEMS, tap
 
     LLAMA_8B = InferenceModelSpec(
         model_label="Llama-3.1-8B",
@@ -3258,12 +3258,12 @@ def main(
         compare_ofo: If True, run coordinator simulations comparing tap-only,
             OFO-only, and tap+OFO modes after MILP solve.
     """
-    from systems import SYSTEMS, tap
-
     from openg2g.datacenter.config import InferenceModelSpec, ModelDeployment
     from openg2g.grid.config import TapPosition
     from openg2g.grid.load import SyntheticLoad
     from openg2g.metrics.voltage import discover_candidate_buses
+
+    from systems import SYSTEMS, tap
 
     LLAMA_8B = InferenceModelSpec(
         model_label="Llama-3.1-8B",

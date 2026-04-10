@@ -25,7 +25,6 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
-from systems import ieee123, tap
 
 from openg2g.controller.load_shift import LoadShiftConfig, LoadShiftController
 from openg2g.controller.ofo import (
@@ -48,6 +47,8 @@ from openg2g.datacenter.workloads.training import TrainingTrace, TrainingTracePa
 from openg2g.grid.config import TapPosition, TapSchedule
 from openg2g.grid.opendss import OpenDSSGrid
 from openg2g.metrics.voltage import VoltageStats, compute_allbus_voltage_stats
+
+from systems import ieee123, tap
 
 logger = logging.getLogger("load_shift_comparison")
 

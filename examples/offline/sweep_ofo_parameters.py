@@ -46,7 +46,6 @@ from typing import Any, Literal
 
 import numpy as np
 import pandas as pd
-from systems import SYSTEMS
 
 from openg2g.controller.ofo import (
     LogisticModelStore,
@@ -75,6 +74,7 @@ from plotting import (
     plot_allbus_voltages_per_phase,
     plot_model_timeseries_4panel,
 )
+from systems import SYSTEMS
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 

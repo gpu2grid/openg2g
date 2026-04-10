@@ -39,7 +39,6 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from systems import SYSTEMS, TAP_STEP, tap
 
 from openg2g.controller.ofo import (
     LogisticModelStore,
@@ -70,6 +69,8 @@ from openg2g.metrics.voltage import (
     extract_all_voltages,
     find_violations,
 )
+
+from systems import SYSTEMS, TAP_STEP, tap
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 

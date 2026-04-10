@@ -24,7 +24,6 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
-from systems import SYSTEMS, tap
 
 from openg2g.controller.ofo import (
     LogisticModelStore,
@@ -48,6 +47,8 @@ from openg2g.grid.generator import SyntheticPV
 from openg2g.grid.load import SyntheticLoad
 from openg2g.grid.opendss import OpenDSSGrid
 from openg2g.metrics.voltage import VoltageStats, compute_allbus_voltage_stats
+
+from systems import SYSTEMS, tap
 
 logger = logging.getLogger("controller_comparison")
 
