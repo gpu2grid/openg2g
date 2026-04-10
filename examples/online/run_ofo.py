@@ -1,13 +1,19 @@
-"""Online OFO closed-loop simulation using real GPUs.
+"""Online hardware-in-the-loop simulation using real GPUs.
 
-Connects to live vLLM servers and zeusd instances for hardware-in-the-loop
-OFO control.  Power readings from a small number of real GPUs are augmented
+Connects to live vLLM servers and zeusd instances for real-time
+simulation. Power readings from a small number of real GPUs are augmented
 to datacenter scale using the shared InferencePowerAugmenter pipeline.
+
+Modes:
+    baseline-no-tap       No batch control, fixed taps.
+    baseline-tap-change   No batch control, scheduled tap changes.
+    ofo                   OFO closed-loop batch-size optimization.
 
 Edit the deployment definitions in config.json to match your cluster.
 
 Usage:
-    python examples/online/run_ofo.py --config examples/online/config.json
+    python examples/online/run_ofo.py --config examples/online/config.json --mode baseline-no-tap
+    python examples/online/run_ofo.py --config examples/online/config.json --mode ofo
 """
 
 from __future__ import annotations
@@ -26,6 +32,7 @@ from openg2g.controller.ofo import (
     OFOBatchSizeController,
     OFOConfig,
 )
+from openg2g.controller.tap_schedule import TapScheduleController
 from openg2g.coordinator import Coordinator
 from openg2g.datacenter.config import DatacenterConfig, PowerAugmentationConfig
 from openg2g.datacenter.online import (
@@ -34,7 +41,7 @@ from openg2g.datacenter.online import (
     VLLMDeployment,
 )
 from openg2g.datacenter.workloads.inference import MLEnergySource, RequestsConfig, RequestStore
-from openg2g.grid.config import TapPosition
+from openg2g.grid.config import TapPosition, TapSchedule
 from openg2g.grid.opendss import OpenDSSGrid
 from openg2g.metrics.voltage import compute_allbus_voltage_stats
 
@@ -42,8 +49,14 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
 logger = logging.getLogger("run_ofo")
 
+# fmt: off
 TAP_STEP = 0.00625
 INITIAL_TAPS = TapPosition(a=1.0 + 14 * TAP_STEP, b=1.0 + 6 * TAP_STEP, c=1.0 + 15 * TAP_STEP)
+TAP_CHANGE_SCHEDULE = (
+    TapPosition(a=1.0 + 16 * TAP_STEP, b=1.0 + 6 * TAP_STEP, c=1.0 + 17 * TAP_STEP).at(t=25 * 60)
+    | TapPosition(a=1.0 + 10 * TAP_STEP, b=1.0 + 6 * TAP_STEP, c=1.0 + 10 * TAP_STEP).at(t=55 * 60)
+)
+# fmt: on
 
 V_MIN = 0.95
 V_MAX = 1.05
@@ -80,13 +93,13 @@ class OnlineConfig(BaseModel):
         return hashlib.sha256(blob).hexdigest()[:16]
 
 
-def main(*, config_path: Path) -> None:
+def main(*, config_path: Path, mode: str = "ofo") -> None:
     config = OnlineConfig.model_validate_json(config_path.read_bytes())
 
     models = tuple(d.spec for d in config.deployments)
     requests_dir = config.requests_dir or Path("data/online") / config.requests_hash
 
-    save_dir = (Path("outputs") / "online_ofo").resolve()
+    save_dir = (Path("outputs") / f"online_{mode}").resolve()
     save_dir.mkdir(parents=True, exist_ok=True)
 
     file_handler = logging.FileHandler(save_dir / "console_output.txt", mode="w")
@@ -95,17 +108,7 @@ def main(*, config_path: Path) -> None:
 
     RequestStore.ensure(requests_dir, [d.spec for d in config.deployments], config.requests)
 
-    data_sources = {s.model_label: s for s in config.data_sources} if config.data_sources else None
-    data_dir = config.data_dir or _PROJECT_ROOT / "data" / "offline" / config.data_hash
-    logistic_models = LogisticModelStore.ensure(
-        data_dir / "logistic_fits.csv",
-        models,
-        data_sources,
-        mlenergy_data_dir=config.mlenergy_data_dir,
-        plot=False,
-    )
-
-    logger.info("Initializing OnlineDatacenter...")
+    # Datacenter
     dc_config = DatacenterConfig(gpus_per_server=GPUS_PER_SERVER, base_kw_per_phase=500.0)
     dc = OnlineDatacenter(
         dc_config,
@@ -124,58 +127,77 @@ def main(*, config_path: Path) -> None:
         ),
     )
 
-    logger.info("Initializing OpenDSSGrid...")
+    # Grid
     grid = OpenDSSGrid(
         dss_case_dir=config.ieee_case_dir,
         dss_master_file="IEEE13Bus.dss",
         dt_s=Fraction(1, 10),
         initial_tap_position=INITIAL_TAPS,
     )
-    grid.attach_dc(
-        dc,
-        bus=DC_BUS,
-        connection_type="wye",
-        power_factor=dc_config.power_factor,
-    )
+    grid.attach_dc(dc, bus=DC_BUS, connection_type="wye", power_factor=dc_config.power_factor)
 
-    ofo_ctrl = OFOBatchSizeController(
-        models,
-        datacenter=dc,
-        models=logistic_models,
-        config=OFOConfig(
-            primal_step_size=0.1,
-            w_throughput=1e-3,
-            w_switch=1.0,
-            voltage_gradient_scale=1e6,
-            v_min=V_MIN,
-            v_max=V_MAX,
-            voltage_dual_step_size=1.0,
-            latency_dual_step_size=1.0,
-            sensitivity_update_interval=3600,
-            sensitivity_perturbation_kw=100.0,
-        ),
-        dt_s=DT_CTRL,
-    )
+    # Controllers
+    controllers: list = []
+    if mode == "baseline-tap-change":
+        controllers.append(TapScheduleController(schedule=TAP_CHANGE_SCHEDULE, dt_s=DT_CTRL))
+    elif mode == "baseline-no-tap":
+        controllers.append(TapScheduleController(schedule=TapSchedule(()), dt_s=DT_CTRL))
+    elif mode == "ofo":
+        controllers.append(TapScheduleController(schedule=TapSchedule(()), dt_s=DT_CTRL))
 
-    logger.info("Running online simulation for %d seconds...", T_TOTAL_S)
+        data_sources = {s.model_label: s for s in config.data_sources} if config.data_sources else None
+        data_dir = config.data_dir or _PROJECT_ROOT / "data" / "offline" / config.data_hash
+        logistic_models = LogisticModelStore.ensure(
+            data_dir / "logistic_fits.csv",
+            models,
+            data_sources,
+            mlenergy_data_dir=config.mlenergy_data_dir,
+            plot=False,
+        )
+        controllers.append(
+            OFOBatchSizeController(
+                models,
+                datacenter=dc,
+                models=logistic_models,
+                config=OFOConfig(
+                    primal_step_size=0.1,
+                    w_throughput=1e-3,
+                    w_switch=1.0,
+                    voltage_gradient_scale=1e6,
+                    v_min=V_MIN,
+                    v_max=V_MAX,
+                    voltage_dual_step_size=1.0,
+                    latency_dual_step_size=1.0,
+                    sensitivity_update_interval=3600,
+                    sensitivity_perturbation_kw=100.0,
+                ),
+                dt_s=DT_CTRL,
+            )
+        )
+    else:
+        raise ValueError(f"Unknown mode {mode!r}. Choose: baseline-no-tap, baseline-tap-change, ofo.")
+
+    # Run
+    logger.info("Running online simulation (mode=%s) for %d seconds...", mode, T_TOTAL_S)
     coord = Coordinator(
         datacenters=[dc],
         grid=grid,
-        controllers=[ofo_ctrl],
+        controllers=controllers,
         total_duration_s=T_TOTAL_S,
         live=True,
     )
     log = coord.run()
 
+    # Results
     stats = compute_allbus_voltage_stats(log.grid_states, v_min=V_MIN, v_max=V_MAX)
     logger.info("=== Voltage Statistics (all-bus) ===")
     logger.info("  voltage_violation_time = %.1f s", stats.violation_time_s)
     logger.info("  worst_vmin             = %.6f", stats.worst_vmin)
     logger.info("  worst_vmax             = %.6f", stats.worst_vmax)
-    logger.info("  integral_violation     = %.5f pu·s", stats.integral_violation_pu_s)
+    logger.info("  integral_violation     = %.5f pu-s", stats.integral_violation_pu_s)
 
-    logger.info("=== Batch Schedule Summary ===")
-    if log.dc_states:
+    if mode == "ofo" and log.dc_states:
+        logger.info("=== Batch Schedule Summary ===")
         model_labels = sorted(log.dc_states[0].batch_size_by_model.keys())
         for label in model_labels:
             batches = np.array([s.batch_size_by_model.get(label, 0) for s in log.dc_states])
@@ -196,6 +218,8 @@ if __name__ == "__main__":
     class Args:
         config: str
         """Path to the online config JSON file."""
+        mode: str = "ofo"
+        """Mode: baseline-no-tap, baseline-tap-change, or ofo."""
         log_level: str = "INFO"
         """Logging verbosity (DEBUG, INFO, WARNING)."""
 
@@ -208,4 +232,4 @@ if __name__ == "__main__":
     )
     logging.getLogger("httpx").setLevel(logging.WARNING)
 
-    main(config_path=Path(args.config))
+    main(config_path=Path(args.config), mode=args.mode)

@@ -18,40 +18,20 @@ OpenG2G provides three IEEE test systems that represent different disturbance so
 
 | Script | Purpose |
 |--------|---------|
-| `run_ofo.py --mode both` | Run without batch-size control (fixed batch sizes) |
-| `run_ofo.py` | Run with OFO batch-size control |
+| `run_ofo.py` | Baseline and OFO simulations (see [Voltage Regulation Strategies](voltage-regulation-strategies.md) for `--mode` options) |
 
 ## Usage
 
-### IEEE 13-Bus: Internal Load Changes
-
-The IEEE 13 config includes a training overlay (2400 GPUs, t=1000–2000s) and an inference ramp-down to 20% (t=2500–3000s), creating two distinct voltage stress periods within the datacenter.
-
 ```bash
-# Baseline (no batch control, no tap changes)
-python examples/offline/run_ofo.py --mode both --system ieee13
-
-# OFO batch-size control
-python examples/offline/run_ofo.py --system ieee13
+# All cases (baseline + OFO x no-tap + tap-change) for each system
+python examples/offline/run_ofo.py --system ieee13 --mode all
+python examples/offline/run_ofo.py --system ieee34 --mode all
+python examples/offline/run_ofo.py --system ieee123 --mode all
 ```
 
-### IEEE 34-Bus: External Load Changes
-
-The IEEE 34 config has PV systems at buses 830 and 848 and time-varying loads at five buses. The datacenter load is steady (no ramps), so all voltage disturbances come from external sources.
-
-```bash
-python examples/offline/run_ofo.py --mode both --system ieee34
-python examples/offline/run_ofo.py --system ieee34
-```
-
-### IEEE 123-Bus: Internal + External
-
-The IEEE 123 config combines per-site inference ramps (four datacenters with different ramp schedules), three PV systems, and time-varying loads — representing the most realistic scenario.
-
-```bash
-python examples/offline/run_ofo.py --mode both --system ieee123
-python examples/offline/run_ofo.py --system ieee123
-```
+- **IEEE 13-Bus**: DC-internal disturbances — training overlay (2400 GPUs, t=1000-2000s) and inference ramp-down to 20% (t=2500-3000s).
+- **IEEE 34-Bus**: External disturbances — PV systems at buses 830/848 and time-varying loads at five buses. DC load is steady.
+- **IEEE 123-Bus**: Both — per-site inference ramps across four DC zones, three PV systems, and time-varying loads.
 
 ## Key Results
 

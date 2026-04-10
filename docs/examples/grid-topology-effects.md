@@ -20,8 +20,7 @@ OpenG2G includes three standard IEEE test feeders with pre-configured datacenter
 
 | Script | Purpose |
 |--------|---------|
-| `run_ofo.py --mode both` | Run baseline simulation for a specific system |
-| `run_ofo.py` | Run OFO simulation for a specific system |
+| `run_ofo.py` | Baseline and OFO simulations (see [Voltage Regulation Strategies](voltage-regulation-strategies.md) for `--mode` options) |
 | `plot_topology.py` | Visualize system topology with DC, PV, and regulator locations |
 
 ## Usage
@@ -29,13 +28,8 @@ OpenG2G includes three standard IEEE test feeders with pre-configured datacenter
 ### Visualize System Topology
 
 ```bash
-# IEEE 13-bus
 python examples/offline/plot_topology.py --system ieee13
-
-# IEEE 34-bus
 python examples/offline/plot_topology.py --system ieee34
-
-# IEEE 123-bus
 python examples/offline/plot_topology.py --system ieee123
 ```
 
@@ -43,17 +37,12 @@ The topology plot shows buses (colored by zone), DC locations (stars), PV system
 
 ### Compare Systems
 
-Run baseline and OFO on each system and compare voltage statistics:
+Run all cases on each system and compare voltage statistics:
 
 ```bash
-# IEEE 13
-python examples/offline/run_ofo.py --system ieee13
-
-# IEEE 34
-python examples/offline/run_ofo.py --system ieee34
-
-# IEEE 123
-python examples/offline/run_ofo.py --system ieee123
+python examples/offline/run_ofo.py --system ieee13 --mode all
+python examples/offline/run_ofo.py --system ieee34 --mode all
+python examples/offline/run_ofo.py --system ieee123 --mode all
 ```
 
 ## Key Observations

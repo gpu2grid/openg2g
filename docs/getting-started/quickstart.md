@@ -26,27 +26,19 @@ uv sync && source .venv/bin/activate  # or: pip install -e . --group dev
 
 A single command builds all data (power traces, latency fits, training trace) and runs the simulation. Data is cached on disk so subsequent runs skip generation.
 
-These three runs correspond to the evaluation cases in the [GPU-to-Grid paper](https://arxiv.org/abs/2602.05116):
-
-- **`run_ofo.py --mode no-tap`**: Baseline (no tap changes) + OFO comparison
-- **`run_ofo.py --mode tap-change`**: Baseline (with tap changes at 1500s and 3300s) + OFO comparison
-- **`run_ofo.py --mode both`**: Baselines only (no-tap + tap-change, no OFO)
+Run all evaluation cases from the [GPU-to-Grid paper](https://arxiv.org/abs/2602.05116) (baseline and OFO, with and without tap changes):
 
 ```bash
-python examples/offline/run_ofo.py --system ieee13 --mode no-tap
-
-python examples/offline/run_ofo.py --system ieee13 --mode tap-change
-
-python examples/offline/run_ofo.py --system ieee13 --mode both
+python examples/offline/run_ofo.py --system ieee13 --mode all
 ```
 
 The first run will download benchmark data and generate simulation artifacts (this takes a few minutes). Subsequent runs load from the cache directory (`data/offline/{hash}/`).
 
-Outputs (plots and logs) are saved to `outputs/baseline_no-tap/`, `outputs/baseline_tap-change/`, and `outputs/ofo/`.
+Outputs (plots and CSVs) are saved to `outputs/ieee13/` with one subdirectory per case. See [Voltage Regulation Strategies](../examples/voltage-regulation-strategies.md) for individual `--mode` options.
 
 ## Understanding the Output
 
-Both simulations log voltage violation statistics at the end of the run. Baseline (tap-change) example:
+Each case logs voltage violation statistics at the end. Baseline (tap-change) example:
 
 ```
 21:00:09 run_ofo INFO === Voltage Statistics (all-bus) ===

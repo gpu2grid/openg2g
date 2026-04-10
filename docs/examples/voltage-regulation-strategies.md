@@ -18,8 +18,10 @@ This analysis compares three control strategies:
 
 | Script | Purpose |
 |--------|---------|
-| `run_ofo.py --mode both` | Baseline with optional tap schedule (`--mode no-tap` or `--mode tap-change`) |
-| `run_ofo.py` | OFO with optional tap schedule (`--mode no-tap` or `--mode tap-change`) |
+| `run_ofo.py --mode baseline-no-tap` | Baseline without tap schedule |
+| `run_ofo.py --mode baseline-tap-change` | Baseline with tap schedule |
+| `run_ofo.py --mode ofo-no-tap` | OFO without tap schedule |
+| `run_ofo.py --mode ofo-tap-change` | OFO with tap schedule |
 | `analyze_different_controllers.py` | Side-by-side comparison of baseline, rule-based, and OFO |
 
 ## Usage

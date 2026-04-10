@@ -17,8 +17,7 @@ In live mode, the `Coordinator` synchronizes with wall-clock time: each tick sle
 
 | Script | Purpose |
 |--------|---------|
-| `examples/online/run_baseline.py` | Live baseline (no batch control) |
-| `examples/online/run_ofo.py` | Live OFO batch-size control |
+| `examples/online/run_ofo.py` | Live simulation (`--mode baseline-no-tap`, `baseline-tap-change`, or `ofo`) |
 
 ## Usage
 
@@ -32,10 +31,10 @@ In live mode, the `Coordinator` synchronizes with wall-clock time: each tick sle
 
 ```bash
 # Baseline (live GPU power, simulated grid, no batch control)
-python examples/online/run_baseline.py --config examples/online/config.json
+python examples/online/run_ofo.py --config examples/online/config.json --mode baseline-no-tap
 
 # OFO (live GPU power, simulated grid, real-time batch control)
-python examples/online/run_ofo.py --config examples/online/config.json
+python examples/online/run_ofo.py --config examples/online/config.json --mode ofo
 ```
 
 The online config specifies vLLM server endpoints, GPU-to-bus mapping, and the same OFO parameters as offline mode. The `OnlineDatacenter` reads power measurements at each tick and the controller adjusts batch sizes in real time.

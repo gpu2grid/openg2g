@@ -1,21 +1,20 @@
-"""Baseline + OFO comparison for any IEEE test system.
+"""Baseline + OFO simulation for any IEEE test system.
 
 Constructs datacenters, grid, and controllers programmatically for each
-system, then runs baseline and/or OFO simulations and produces comparison
-plots.  All experiment parameters (models, DC sites, controller tuning,
-workload scenarios) are defined inline — no external JSON config required.
+system, then runs the specified simulation case. All experiment parameters
+(models, DC sites, controller tuning, workload scenarios) are defined
+inline.
 
 Modes:
-    no-tap       Baseline + OFO without tap schedule (2 cases, default).
-    tap-change   Baseline + OFO with tap schedule (2 cases).
-    both         Baseline only, with and without tap schedule (2 cases).
-    all          All 4 cases: baseline + OFO x with/without tap schedule.
+    baseline-no-tap       Baseline (no OFO) without tap schedule.
+    baseline-tap-change   Baseline (no OFO) with tap schedule.
+    ofo-no-tap            OFO batch-size control without tap schedule.
+    ofo-tap-change        OFO batch-size control with tap schedule.
+    all                   All four cases above.
 
 Usage:
-    python run_ofo.py --system ieee13
-    python run_ofo.py --system ieee34
-    python run_ofo.py --system ieee123
-    python run_ofo.py --system ieee34 --mode tap-change
+    python run_ofo.py --system ieee13 --mode baseline-no-tap
+    python run_ofo.py --system ieee13 --mode ofo-no-tap
     python run_ofo.py --system ieee34 --mode all
 """
 
@@ -689,16 +688,21 @@ def main(*, system: str, mode: str = "no-tap") -> None:
     has_tap_schedule = bool(exp_tap_schedule)
     exclude_buses: tuple[str, ...] = experiment["exclude_buses"]
 
-    # Build cases
-    cases: list[tuple[str, str, TapSchedule | None]] = []
-    if mode in ("no-tap", "both", "all"):
-        cases.append(("baseline", "baseline_no-tap", None))
-    if mode in ("no-tap", "all"):
-        cases.append(("ofo", "ofo_no-tap", None))
-    if mode in ("tap-change", "both", "all") and has_tap_schedule:
-        cases.append(("baseline", "baseline_tap-change", exp_tap_schedule))
-    if mode in ("tap-change", "all") and has_tap_schedule:
-        cases.append(("ofo", "ofo_tap-change", exp_tap_schedule))
+    # Build cases: each mode runs exactly one case, "all" runs all four
+    _ALL_CASES: list[tuple[str, str, TapSchedule | None]] = [
+        ("baseline", "baseline-no-tap", None),
+        ("ofo", "ofo-no-tap", None),
+    ]
+    if has_tap_schedule:
+        _ALL_CASES += [
+            ("baseline", "baseline-tap-change", exp_tap_schedule),
+            ("ofo", "ofo-tap-change", exp_tap_schedule),
+        ]
+
+    if mode == "all":
+        cases = list(_ALL_CASES)
+    else:
+        cases = [c for c in _ALL_CASES if c[1] == mode]
     if not cases:
         logger.warning("No cases to run (mode=%s, has_tap_schedule=%s).", mode, has_tap_schedule)
         return
@@ -890,8 +894,8 @@ if __name__ == "__main__":
     class Args:
         system: str = "ieee13"
         """System name (ieee13, ieee34, ieee123)."""
-        mode: str = "no-tap"
-        """Run mode: 'no-tap', 'tap-change', 'both', or 'all'."""
+        mode: str = "baseline-no-tap"
+        """Case to run: baseline-no-tap, baseline-tap-change, ofo-no-tap, ofo-tap-change, or all."""
         log_level: str = "INFO"
         """Logging verbosity (DEBUG, INFO, WARNING)."""
 
