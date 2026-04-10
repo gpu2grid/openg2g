@@ -869,10 +869,16 @@ def _setup(
         site_specs = tuple(md.spec for md in site.models)
         site_models_map[site_id] = site_specs
         site_inference = inference_data.filter_models(site_specs)
+        replica_counts = {md.spec.model_label: md.num_replicas for md in site.models}
+        batch_sizes = {md.spec.model_label: md.initial_batch_size for md in site.models}
 
         dc_config = DatacenterConfig(gpus_per_server=8, base_kw_per_phase=site.base_kw_per_phase)
 
-        workload_kwargs: dict = {"inference_data": site_inference}
+        workload_kwargs: dict = {
+            "inference_data": site_inference,
+            "replica_counts": replica_counts,
+            "initial_batch_sizes": batch_sizes,
+        }
         if training is not None:
             workload_kwargs["training"] = training
         if site.inference_ramps is not None:
