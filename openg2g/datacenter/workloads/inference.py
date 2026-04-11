@@ -19,7 +19,7 @@ from pydantic import BaseModel, ConfigDict
 import openg2g
 from openg2g.common import ThreePhase
 from openg2g.datacenter.config import InferenceModelSpec
-from openg2g.datacenter.layout import ServerLayout
+from openg2g.datacenter.layout import ServerPool
 
 logger = logging.getLogger(__name__)
 
@@ -866,11 +866,11 @@ class InferenceAugmentedPower:
 
 
 class InferencePowerAugmenter:
-    """Scales per-GPU inference power through server layouts to three-phase power.
+    """Scales per-GPU inference power through a shared server pool to three-phase power.
 
-    Given per-GPU power values for each server (one value per server per
-    model), applies per-server scaling, noise, activation masking, and
-    phase summation to produce inference-level three-phase power.
+    Given per-GPU power values for each model's allocated servers,
+    applies per-server scaling, noise, and phase summation to produce
+    inference-level three-phase power.
 
     This class is backend-agnostic. The offline datacenter feeds it
     template-indexed values; the online datacenter can feed it
@@ -878,16 +878,19 @@ class InferencePowerAugmenter:
     adding facility base load on top of the returned inference power.
 
     Args:
-        layouts: Per-model server layouts (physical topology + activation priority).
+        pool: Shared server pool for the datacenter.
+        gpus_per_replica_by_model: Mapping of model label to GPUs per replica.
         seed: Random seed for noise RNG.
     """
 
     def __init__(
         self,
-        layouts: dict[str, ServerLayout],
+        pool: ServerPool,
+        gpus_per_replica_by_model: dict[str, int],
         seed: int = 0,
     ) -> None:
-        self._layouts = layouts
+        self._pool = pool
+        self._gpus_per_replica = gpus_per_replica_by_model
         self._seed = int(seed)
         self._rng = np.random.default_rng(self._seed)
 
@@ -896,12 +899,11 @@ class InferencePowerAugmenter:
         per_gpu_by_model: dict[str, np.ndarray],
         replica_counts: dict[str, int],
     ) -> InferenceAugmentedPower:
-        """Augment per-server per-GPU power to three-phase power.
+        """Augment per-GPU power to three-phase power using shared pool allocation.
 
         Args:
             per_gpu_by_model: Mapping of model label to per-GPU power
-                array of shape `(num_servers,)`. Only models with active
-                replicas should be included.
+                value (scalar, broadcast to all allocated servers).
             replica_counts: Mapping of model label to effective replica
                 count (schedule + runtime adjustments).
 
@@ -909,30 +911,47 @@ class InferencePowerAugmenter:
             Augmented inference power with three-phase totals, per-model
                 power, and per-model active replica counts.
         """
+        pool = self._pool
+
+        # Allocate servers from shared pool
+        gpu_demands = {
+            label: max(0, count) * self._gpus_per_replica.get(label, 1) for label, count in replica_counts.items()
+        }
+        allocation = pool.allocate(gpu_demands)
+
+        # Generate noise for all servers once (deterministic RNG consumption)
+        if pool.noise_fraction > 0:
+            noise_raw = self._rng.normal(0.0, 1.0, size=pool.num_servers)
+        else:
+            noise_raw = None
+
         phase_power = np.zeros(3, dtype=float)
         power_by_model: dict[str, float] = {}
         active_replicas_by_model: dict[str, int] = {}
 
         for label, per_gpu in per_gpu_by_model.items():
-            layout = self._layouts[label]
+            server_indices = allocation.get(label, np.array([], dtype=int))
+            if len(server_indices) == 0:
+                power_by_model[label] = 0.0
+                active_replicas_by_model[label] = 0
+                continue
 
-            server_powers = per_gpu * layout.gpus_per_server_list * layout.amplitude_scales
-            if layout.noise_fraction > 0:
+            server_powers = per_gpu[server_indices] * pool.gpus_per_server * pool.amplitude_scales[server_indices]
+            if noise_raw is not None and pool.noise_fraction > 0:
                 levels = np.maximum(server_powers, 1.0)
-                server_powers += self._rng.normal(0.0, 1.0, size=layout.num_servers) * layout.noise_fraction * levels
+                server_powers += noise_raw[server_indices] * pool.noise_fraction * levels
             server_powers = np.maximum(server_powers, 0.0)
 
-            active_indices = layout.active_indices(replica_counts.get(label, 0))
-            active_powers = server_powers[active_indices]
-            active_phases = layout.phase_list[active_indices]
+            active_phases = pool.phase_list[server_indices]
 
             model_phase_power = np.zeros(3, dtype=float)
-            np.add.at(model_phase_power, active_phases, active_powers)
+            np.add.at(model_phase_power, active_phases, server_powers)
             phase_power += model_phase_power
 
-            power_by_model[label] = float(np.sum(active_powers))
-            active_gpus = int(np.sum(layout.gpus_per_server_list[active_indices]))
-            active_replicas_by_model[label] = active_gpus // layout.gpus_per_replica
+            power_by_model[label] = float(np.sum(server_powers))
+            active_gpus = len(server_indices) * pool.gpus_per_server
+            gpus_per_replica = self._gpus_per_replica.get(label, 1)
+            active_replicas_by_model[label] = active_gpus // gpus_per_replica
 
         return InferenceAugmentedPower(
             power_w=ThreePhase(

@@ -20,7 +20,7 @@ from openg2g.datacenter.config import (
     ReplicaSchedule,
     TrainingSchedule,
 )
-from openg2g.datacenter.layout import ServerLayout
+from openg2g.datacenter.layout import ServerPool
 from openg2g.datacenter.workloads.inference import InferenceData, InferencePowerAugmenter
 from openg2g.events import EventEmitter
 from openg2g.utils import split_integer_evenly
@@ -74,7 +74,7 @@ class OfflineDatacenter(LLMBatchSizeControlledDatacenter[OfflineDatacenterState]
     `step` call.
 
     Each model with active replicas gets a
-    [`ServerLayout`][openg2g.datacenter.layout.ServerLayout] with a random
+    [`ServerPool`][openg2g.datacenter.layout.ServerPool] with a random
     priority ordering that determines server activation.
 
     Args:
@@ -129,11 +129,15 @@ class OfflineDatacenter(LLMBatchSizeControlledDatacenter[OfflineDatacenterState]
             for ms in self._models
         }
 
-        self._layouts: dict[str, ServerLayout] = {}
-        self._model_schedules: dict[str, ReplicaSchedule] = {}
-        self._build_all_layouts()
+        self._model_schedules: dict[str, ReplicaSchedule] = {
+            ms.model_label: self._workload.replica_schedules[ms.model_label]
+            for ms in self._models
+            if ms.model_label in self._workload.replica_schedules
+        }
+        self._pool: ServerPool = self._build_server_pool()
         self._inference_augmenter = InferencePowerAugmenter(
-            layouts=self._layouts,
+            pool=self._pool,
+            gpus_per_replica_by_model={ms.model_label: ms.gpus_per_replica for ms in self._models},
             seed=self._seed + 12345,
         )
 
@@ -211,7 +215,8 @@ class OfflineDatacenter(LLMBatchSizeControlledDatacenter[OfflineDatacenterState]
         t_now = clock.time_s
         template_store = self._workload.inference_data.power_templates
 
-        # Build per-GPU power and effective replica counts.
+        # Build per-GPU power (indexed into shared pool) and effective replica counts.
+        pool = self._pool
         per_gpu_by_model: dict[str, np.ndarray] = {}
         replica_counts: dict[str, int] = {}
         for ms in self._models:
@@ -220,9 +225,8 @@ class OfflineDatacenter(LLMBatchSizeControlledDatacenter[OfflineDatacenterState]
                 continue
             batch = int(self._batch_by_model[label])
 
-            layout = self._layouts[label]
             template = template_store.template(label, batch)
-            indices = (self._global_step + layout.stagger_offsets) % len(template)
+            indices = (self._global_step + pool.stagger_offsets) % len(template)
             per_gpu_by_model[label] = template[indices]
 
             schedule = self._model_schedules[label]
@@ -334,86 +338,86 @@ class OfflineDatacenter(LLMBatchSizeControlledDatacenter[OfflineDatacenterState]
         }
         self._replica_offset_by_model = {ms.model_label: 0 for ms in self._models}
         self._layout_rng = np.random.default_rng(self._seed)
-        self._layouts = {}
-        self._model_schedules = {}
-        self._build_all_layouts()
+        self._model_schedules = {
+            ms.model_label: self._workload.replica_schedules[ms.model_label]
+            for ms in self._models
+            if ms.model_label in self._workload.replica_schedules
+        }
+        self._pool = self._build_server_pool()
         self._inference_augmenter = InferencePowerAugmenter(
-            layouts=self._layouts,
+            pool=self._pool,
+            gpus_per_replica_by_model={ms.model_label: ms.gpus_per_replica for ms in self._models},
             seed=self._seed + 12345,
         )
         self._latency_rng = np.random.default_rng(self._seed + 54321)
 
-    def _build_all_layouts(self) -> None:
-        """Build server layouts for all models."""
-        schedules = self._workload.replica_schedules
+    def _build_server_pool(self) -> ServerPool:
+        """Build shared server pool for the datacenter."""
         rng = self._layout_rng
         gpus_per_server = self._datacenter.gpus_per_server
         amp_lo, amp_hi = self._power_augmentation.amplitude_scale_range
         noise_fraction = self._power_augmentation.noise_fraction
         template_store = self._workload.inference_data.power_templates
 
+        num_servers = math.ceil(self._total_gpu_capacity / gpus_per_server)
+
+        # Server properties (model-independent)
+        sA, sB, sC = split_integer_evenly(num_servers, 3)
+        phase_list = np.asarray(([0] * sA) + ([1] * sB) + ([2] * sC), dtype=int)
+        rng.shuffle(phase_list)
+
+        # Stagger offsets: use max template length across all models
+        max_tpl_len = 1
         for ms in self._models:
-            initial_replicas = self._replica_counts.get(ms.model_label, 0)
-            if initial_replicas > 0:
+            if ms.model_label in self._replica_counts and self._replica_counts[ms.model_label] > 0:
                 any_batch = template_store.batch_sizes(ms.model_label)[0]
                 tpl_len = len(template_store.template(ms.model_label, any_batch))
+                max_tpl_len = max(max_tpl_len, tpl_len)
+        stagger_offsets = rng.integers(low=0, high=max_tpl_len, size=num_servers)
 
-                model_schedule = schedules[ms.model_label]
-                self._model_schedules[ms.model_label] = model_schedule
-                max_replicas = model_schedule.max_count()
+        amplitude_scales = rng.uniform(amp_lo, amp_hi, size=num_servers)
 
-                headroom_replicas = int(math.ceil(initial_replicas * self._load_shift_headroom))
-                peak_replicas = max(max_replicas, initial_replicas + headroom_replicas)
-                peak_gpus = peak_replicas * ms.gpus_per_replica
-                num_servers = math.ceil(peak_gpus / gpus_per_server)
+        # Per-model priority orderings
+        model_priorities: dict[str, np.ndarray] = {}
+        for ms in self._models:
+            priority = np.arange(num_servers, dtype=int)
+            rng.shuffle(priority)
+            model_priorities[ms.model_label] = priority
 
-                # Phase shuffle (RNG consumption #1)
-                sA, sB, sC = split_integer_evenly(num_servers, 3)
-                phase_list = np.asarray(([0] * sA) + ([1] * sB) + ([2] * sC), dtype=int)
-                rng.shuffle(phase_list)
-
-                # Priority shuffle (RNG consumption #2)
-                priority = np.arange(num_servers, dtype=int)
-                rng.shuffle(priority)
-
-                # Stagger offsets (RNG consumption #3)
-                stagger_offsets = rng.integers(low=0, high=max(tpl_len, 1), size=num_servers)
-
-                # Amplitude scales (RNG consumption #4)
-                amplitude_scales = rng.uniform(amp_lo, amp_hi, size=num_servers)
-
-                gpus_per_server_list = np.full(num_servers, gpus_per_server, dtype=int)
-                tail = peak_gpus - (num_servers - 1) * gpus_per_server
-                gpus_per_server_list[-1] = max(1, int(tail)) if tail > 0 else gpus_per_server
-                total_gpus = int(gpus_per_server_list.sum())
-
-                self._layouts[ms.model_label] = ServerLayout(
-                    num_servers=num_servers,
-                    total_gpus=total_gpus,
-                    gpus_per_replica=ms.gpus_per_replica,
-                    gpus_per_server=gpus_per_server,
-                    gpus_per_server_list=gpus_per_server_list,
-                    phase_list=phase_list,
-                    priority=priority,
-                    stagger_offsets=stagger_offsets,
-                    amplitude_scales=amplitude_scales,
-                    noise_fraction=noise_fraction,
-                )
+        return ServerPool(
+            num_servers=num_servers,
+            gpus_per_server=gpus_per_server,
+            phase_list=phase_list,
+            stagger_offsets=stagger_offsets,
+            amplitude_scales=amplitude_scales,
+            noise_fraction=noise_fraction,
+            model_priorities=model_priorities,
+        )
 
     @property
     def phase_share_by_model(self) -> dict[str, np.ndarray]:
-        """Per-model phase share vectors derived from server placement.
+        """Per-model phase share vectors based on current pool allocation.
 
         Returns:
             Mapping of model label to a 3-element array `[frac_A, frac_B, frac_C]`
-                representing the fraction of servers on each phase.
+                representing the fraction of allocated servers on each phase.
         """
+        # Compute current allocation
+        gpu_demands = {}
+        for ms in self._models:
+            label = ms.model_label
+            initial = self._replica_counts.get(label, 0)
+            offset = self._replica_offset_by_model.get(label, 0)
+            effective = max(0, initial + offset)
+            gpu_demands[label] = effective * ms.gpus_per_replica
+
+        allocation = self._pool.allocate(gpu_demands)
+
         shares: dict[str, np.ndarray] = {}
-        for label, layout in self._layouts.items():
-            counts = np.bincount(layout.phase_list, minlength=3).astype(float)
+        for label, server_indices in allocation.items():
+            if len(server_indices) == 0:
+                continue
+            counts = np.bincount(self._pool.phase_list[server_indices], minlength=3).astype(float)
             total = counts.sum()
-            if total > 0:
-                shares[label] = counts / total
-            else:
-                shares[label] = np.array([1 / 3, 1 / 3, 1 / 3], dtype=float)
+            shares[label] = counts / total if total > 0 else np.array([1 / 3, 1 / 3, 1 / 3], dtype=float)
         return shares

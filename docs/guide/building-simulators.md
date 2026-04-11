@@ -453,7 +453,7 @@ How it implements the interface:
 - **`total_gpu_capacity`**: Maximum number of GPUs this datacenter can physically host. Exposed via `current_gpu_usage()` and `available_gpu_capacity()` for controllers to check before shifting replicas.
 - **`load_shift_headroom`**: Fraction of extra server capacity to pre-allocate (e.g., 0.3 = 30%) so incoming replicas have server slots available.
 - **`reset()`** clears step counter, replica offsets, and RNG state. Rebuilds server layouts from the stored config so the next run starts fresh. History is cleared automatically by `do_reset()`.
-- Each model's [`ServerLayout`][openg2g.datacenter.layout.ServerLayout] holds a random priority ordering that determines which servers are active for a given replica count. At each step, the datacenter evaluates the [`ReplicaSchedule`][openg2g.datacenter.config.ReplicaSchedule] plus any runtime offsets from load shifting, then activates the top-k servers by priority.
+- Each model's [`ServerPool`][openg2g.datacenter.layout.ServerPool] holds a random priority ordering that determines which servers are active for a given replica count. At each step, the datacenter evaluates the [`ReplicaSchedule`][openg2g.datacenter.config.ReplicaSchedule] plus any runtime offsets from load shifting, then activates the top-k servers by priority.
 - Training workload overlays add transient high-power phases.
 
 ### `OpenDSSGrid`

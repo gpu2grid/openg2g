@@ -1,5 +1,5 @@
 """Tests for config/schedule types: TapPosition, TapSchedule, ReplicaSchedule,
-ServerLayout, TrainingRun, TrainingSchedule."""
+ServerPool, TrainingRun, TrainingSchedule."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from openg2g.datacenter.config import (
     TrainingRun,
     TrainingSchedule,
 )
-from openg2g.datacenter.layout import ServerLayout
+from openg2g.datacenter.layout import ServerPool
 from openg2g.datacenter.online import OnlineDatacenterState
 from openg2g.datacenter.workloads.training import TrainingTrace
 from openg2g.grid.base import BusVoltages, GridState, PhaseVoltages
@@ -340,59 +340,65 @@ class TestOnlineDatacenterState:
         assert state.augmentation_factor_by_model == {}
 
 
-class TestServerLayoutActivation:
-    """Tests for ServerLayout.active_mask/active_indices (top-k by priority)."""
+class TestServerPoolAllocate:
+    """Tests for ServerPool.allocate (shared pool allocation)."""
 
-    def _make_layout(
-        self, num_servers: int = 2, gpus_per_replica: int = 1, gpus_per_server: int = 8, seed: int = 42
-    ) -> ServerLayout:
+    def _make_pool(self, num_servers: int = 10, gpus_per_server: int = 8, seed: int = 42) -> ServerPool:
         rng = np.random.default_rng(seed)
         phase_list = np.zeros(num_servers, dtype=int)
-        priority = np.arange(num_servers, dtype=int)
-        rng.shuffle(priority)
-        return ServerLayout(
+        rng.shuffle(phase_list)
+        stagger_offsets = np.zeros(num_servers)
+        amplitude_scales = np.ones(num_servers)
+        model_priorities = {
+            "A": rng.permutation(num_servers).astype(int),
+            "B": rng.permutation(num_servers).astype(int),
+        }
+        return ServerPool(
             num_servers=num_servers,
-            total_gpus=num_servers * gpus_per_server,
-            gpus_per_replica=gpus_per_replica,
             gpus_per_server=gpus_per_server,
-            gpus_per_server_list=np.full(num_servers, gpus_per_server, dtype=int),
             phase_list=phase_list,
-            priority=priority,
-            stagger_offsets=np.zeros(num_servers),
-            amplitude_scales=np.ones(num_servers),
+            stagger_offsets=stagger_offsets,
+            amplitude_scales=amplitude_scales,
             noise_fraction=0.0,
+            model_priorities=model_priorities,
         )
 
-    def test_all_active(self) -> None:
-        """Full replica count activates all servers."""
-        layout = self._make_layout()
-        # 10 replicas, 1 GPU/replica, 8 GPUs/server -> ceil(10/8) = 2 servers
-        mask = layout.active_mask(10)
-        assert mask.sum() == 2
+    def test_single_model(self) -> None:
+        """Single model gets the right number of servers."""
+        pool = self._make_pool()
+        # 16 GPUs needed, 8 per server -> 2 servers
+        alloc = pool.allocate({"A": 16})
+        assert len(alloc["A"]) == 2
 
-    def test_partial_active(self) -> None:
-        """Reduced replica count activates fewer servers."""
-        layout = self._make_layout()
-        # 5 replicas -> ceil(5/8) = 1 server
-        mask = layout.active_mask(5)
-        assert mask.sum() == 1
+    def test_two_models_no_overlap(self) -> None:
+        """Two models get disjoint server sets."""
+        pool = self._make_pool()
+        alloc = pool.allocate({"A": 16, "B": 24})
+        assert len(alloc["A"]) == 2
+        assert len(alloc["B"]) == 3
+        assert len(set(alloc["A"]) & set(alloc["B"])) == 0
 
-    def test_scale_up_superset(self) -> None:
-        """Servers active at low count are a subset of those at high count."""
-        layout = self._make_layout()
-        mask_low = layout.active_mask(3)
-        mask_high = layout.active_mask(10)
-        assert np.all(mask_high[mask_low])
+    def test_zero_demand(self) -> None:
+        """Zero GPU demand gets no servers."""
+        pool = self._make_pool()
+        alloc = pool.allocate({"A": 0, "B": 16})
+        assert len(alloc["A"]) == 0
+        assert len(alloc["B"]) == 2
 
     def test_deterministic(self) -> None:
-        """Same priority produces same result."""
-        l1 = self._make_layout(seed=0)
-        l2 = self._make_layout(seed=0)
-        np.testing.assert_array_equal(l1.active_mask(5), l2.active_mask(5))
+        """Same seed produces same allocation."""
+        p1 = self._make_pool(seed=0)
+        p2 = self._make_pool(seed=0)
+        a1 = p1.allocate({"A": 16, "B": 24})
+        a2 = p2.allocate({"A": 16, "B": 24})
+        np.testing.assert_array_equal(a1["A"], a2["A"])
+        np.testing.assert_array_equal(a1["B"], a2["B"])
 
-    def test_zero_replicas(self) -> None:
-        """Zero replicas produces empty mask."""
-        layout = self._make_layout()
-        mask = layout.active_mask(0)
-        assert mask.sum() == 0
-        assert len(layout.active_indices(0)) == 0
+    def test_stable_on_demand_increase(self) -> None:
+        """Increasing demand for one model doesn't change the other's allocation."""
+        pool = self._make_pool()
+        a1 = pool.allocate({"A": 8, "B": 16})
+        a2 = pool.allocate({"A": 16, "B": 16})
+        # B's allocation should be identical (A is processed first alphabetically)
+        # A's old servers should be a subset of its new servers
+        assert set(a1["A"]).issubset(set(a2["A"]))
