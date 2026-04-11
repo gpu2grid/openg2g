@@ -32,7 +32,7 @@ from fractions import Fraction
 from pathlib import Path
 
 from openg2g.datacenter.config import (
-    DatacenterConfig, InferenceModelSpec, InferenceRamp,
+    DatacenterConfig, InferenceModelSpec, ReplicaSchedule,
     ModelDeployment, PowerAugmentationConfig, TrainingRun,
 )
 from openg2g.datacenter.offline import OfflineDatacenter, OfflineWorkload
@@ -40,12 +40,14 @@ from openg2g.datacenter.workloads.inference import InferenceData, MLEnergySource
 from openg2g.datacenter.workloads.training import TrainingTrace
 
 spec_8b = InferenceModelSpec(
-    model_label="Llama-3.1-8B", gpus_per_replica=1,
-    itl_deadline_s=0.08, feasible_batch_sizes=(8, 16, 32, 64, 128, 256, 512),
+    model_label="Llama-3.1-8B", model_id="meta-llama/Llama-3.1-8B-Instruct",
+    gpus_per_replica=1, itl_deadline_s=0.08,
+    feasible_batch_sizes=(8, 16, 32, 64, 128, 256, 512),
 )
 spec_70b = InferenceModelSpec(
-    model_label="Llama-3.1-70B", gpus_per_replica=4,
-    itl_deadline_s=0.10, feasible_batch_sizes=(8, 16, 32, 64, 128, 256, 512),
+    model_label="Llama-3.1-70B", model_id="meta-llama/Llama-3.1-70B-Instruct",
+    gpus_per_replica=4, itl_deadline_s=0.10,
+    feasible_batch_sizes=(8, 16, 32, 64, 128, 256, 512),
 )
 models = (spec_8b, spec_70b)
 
@@ -63,16 +65,14 @@ data_sources = {
 inference_data = InferenceData.ensure(data_dir, models, data_sources, dt_s=0.1)
 training_trace = TrainingTrace.ensure(data_dir / "training_trace.csv")
 
-# Replica counts are separate from model specs
-replica_counts = {"Llama-3.1-8B": 720, "Llama-3.1-70B": 180}
-
 workload = OfflineWorkload(
     inference_data=inference_data,
-    replica_counts=replica_counts,
-    inference_ramps=(
-        InferenceRamp(target=360, model="Llama-3.1-8B").at(t_start=1500.0, t_end=2000.0)
-        | InferenceRamp(target=864, model="Llama-3.1-8B").at(t_start=2500.0, t_end=3000.0)
-    ),
+    replica_schedules={
+        "Llama-3.1-8B": ReplicaSchedule(initial=720)
+            .ramp_to(360, t_start=1500.0, t_end=2000.0)
+            .ramp_to(864, t_start=2500.0, t_end=3000.0),
+        "Llama-3.1-70B": ReplicaSchedule(initial=180),
+    },
     training=TrainingRun(n_gpus=2400, trace=training_trace).at(t_start=1000.0, t_end=2000.0),
 )
 
@@ -91,10 +91,10 @@ dc = OfflineDatacenter(
 )
 ```
 
-[`InferenceRamp`][openg2g.datacenter.config.InferenceRamp] controls the number of active replicas over time using absolute counts. Each ramp specifies its `target` replica count and the `model` it applies to. Ramps are scheduled with `at(t_start, t_end)` and chained with `|`. The datacenter validates that ramp targets do not exceed `total_gpu_capacity` before running.
+[`ReplicaSchedule`][openg2g.datacenter.config.ReplicaSchedule] specifies each model's replica count over time. The initial count and optional ramps are defined in one object using method chaining: `ReplicaSchedule(initial=720).ramp_to(360, t_start=1500, t_end=2000)`. The datacenter validates that ramp targets do not exceed `total_gpu_capacity` before running.
 
 !!! Warning "GPU capacity validation"
-    The `total_gpu_capacity` parameter is the physical GPU count at the site and must be specified explicitly. At initialization, the datacenter checks that ramp schedules never exceed this capacity at any point in time.
+    The `total_gpu_capacity` parameter is the physical GPU count at the site and must be specified explicitly. At initialization, the datacenter checks that replica schedules never exceed this capacity at any ramp boundary.
 
 ### Grid
 

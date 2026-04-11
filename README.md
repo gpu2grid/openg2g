@@ -54,7 +54,7 @@ from fractions import Fraction
 from pathlib import Path
 
 from openg2g.coordinator import Coordinator
-from openg2g.datacenter.config import DatacenterConfig, InferenceModelSpec
+from openg2g.datacenter.config import DatacenterConfig, InferenceModelSpec, ReplicaSchedule
 from openg2g.datacenter.offline import OfflineDatacenter, OfflineWorkload
 from openg2g.datacenter.workloads.inference import InferenceData
 from openg2g.grid.opendss import OpenDSSGrid
@@ -64,21 +64,28 @@ from openg2g.grid.config import TapPosition
 # 1. Set up a trace-based datacenter
 models = (
     InferenceModelSpec(
-        model_label="Llama-3.1-8B", gpus_per_replica=1,
-        itl_deadline_s=0.08, feasible_batch_sizes=(8, 16, 32, 64, 128, 256, 512),
+        model_label="Llama-3.1-8B", model_id="meta-llama/Llama-3.1-8B-Instruct",
+        gpus_per_replica=1, itl_deadline_s=0.08,
+        feasible_batch_sizes=(8, 16, 32, 64, 128, 256, 512),
     ),
     InferenceModelSpec(
-        model_label="Llama-3.1-70B", gpus_per_replica=4,
-        itl_deadline_s=0.10, feasible_batch_sizes=(8, 16, 32, 64, 128, 256, 512),
+        model_label="Llama-3.1-70B", model_id="meta-llama/Llama-3.1-70B-Instruct",
+        gpus_per_replica=4, itl_deadline_s=0.10,
+        feasible_batch_sizes=(8, 16, 32, 64, 128, 256, 512),
     ),
 )
-replica_counts = {"Llama-3.1-8B": 720, "Llama-3.1-70B": 180}
 data_dir = Path("data/offline")
 inference_data = InferenceData.load(data_dir, models, duration_s=3600, dt_s=0.1)
 dc_config = DatacenterConfig()
 dc = OfflineDatacenter(
     dc_config,
-    OfflineWorkload(inference_data=inference_data, replica_counts=replica_counts),
+    OfflineWorkload(
+        inference_data=inference_data,
+        replica_schedules={
+            "Llama-3.1-8B": ReplicaSchedule(initial=720),
+            "Llama-3.1-70B": ReplicaSchedule(initial=180),
+        },
+    ),
     name="dc",
     dt_s=Fraction(1, 10),
     total_gpu_capacity=1440,

@@ -206,7 +206,7 @@ class TestOnlineAugmentationPipeline:
         phase_list = np.asarray(([0] * sA) + ([1] * sB) + ([2] * sC), dtype=int)
         rng.shuffle(phase_list)
 
-        # Priority shuffle (same RNG position as old RampActivationPolicy constructor)
+        # Priority shuffle (RNG consumption #2)
         priority = np.arange(num_servers, dtype=int)
         rng.shuffle(priority)
 

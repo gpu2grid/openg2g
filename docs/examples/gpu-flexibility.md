@@ -47,7 +47,7 @@ OFO is most effective against slow, predictable disturbances (training ramps, in
 
 Experiment parameters are defined inline in each script's experiment functions. Key parameters:
 
-- **Inference ramps**: `InferenceRamp(target=..., model=...).at(t_start, t_end)` — per-site server activation schedules (internal disturbance)
+- **Replica schedules**: `ReplicaSchedule(initial=...).ramp_to(target, t_start=, t_end=)` -- per-model server activation schedules (internal disturbance)
 - **Training overlay**: `TrainingRun(n_gpus=..., trace=...).at(t_start, t_end)` — training workload (internal disturbance)
 - **Generators**: `SyntheticPV(peak_kw=...)` attached to grid buses — solar PV injection (external disturbance)
 - **External loads**: `SyntheticLoad(peak_kw=...)` attached to grid buses (external disturbance)

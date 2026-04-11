@@ -1,5 +1,5 @@
 """Tests for config/schedule types: TapPosition, TapSchedule, ReplicaSchedule,
-ActivationPolicy, TrainingRun, TrainingSchedule."""
+ServerLayout, TrainingRun, TrainingSchedule."""
 
 from __future__ import annotations
 

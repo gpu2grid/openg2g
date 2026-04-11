@@ -73,9 +73,9 @@ class OfflineDatacenter(LLMBatchSizeControlledDatacenter[OfflineDatacenterState]
     Batch size changes via `apply_control` take effect on the next
     `step` call.
 
-    If any `ReplicaSchedule` in `workload.replica_schedules` has ramps, a
-    [`RampActivationPolicy`][openg2g.datacenter.layout.RampActivationPolicy]
-    is created for that model.
+    Each model with active replicas gets a
+    [`ServerLayout`][openg2g.datacenter.layout.ServerLayout] with a random
+    priority ordering that determines server activation.
 
     Args:
         datacenter: Facility configuration (GPUs per server, base load).
@@ -372,7 +372,7 @@ class OfflineDatacenter(LLMBatchSizeControlledDatacenter[OfflineDatacenterState]
                 phase_list = np.asarray(([0] * sA) + ([1] * sB) + ([2] * sC), dtype=int)
                 rng.shuffle(phase_list)
 
-                # Priority shuffle (RNG consumption #2 -- same position as old RampActivationPolicy constructor)
+                # Priority shuffle (RNG consumption #2)
                 priority = np.arange(num_servers, dtype=int)
                 rng.shuffle(priority)
 
