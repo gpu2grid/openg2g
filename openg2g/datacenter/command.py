@@ -16,12 +16,10 @@ class DatacenterCommand:
     The coordinator applies commands via `command.target.apply_control()`.
 
     Attributes:
-        target: Datacenter backend this command targets. When None, the
-            coordinator infers the target from the controller's
-            `datacenters` property (must be exactly one DC).
+        target: Datacenter backend this command targets.
     """
 
-    target: DatacenterBackend | None
+    target: DatacenterBackend
 
     def __init__(self) -> None:
         if type(self) is DatacenterCommand:
@@ -41,7 +39,7 @@ class SetBatchSize(DatacenterCommand):
 
     batch_size_by_model: dict[str, int]
     ramp_up_rate_by_model: dict[str, float] = field(default_factory=dict)
-    target: DatacenterBackend | None = None
+    target: DatacenterBackend = field(kw_only=True)
 
 
 @dataclass(frozen=True)
@@ -59,4 +57,4 @@ class ShiftReplicas(DatacenterCommand):
 
     model_label: str
     replica_delta: int
-    target: DatacenterBackend | None = None
+    target: DatacenterBackend = field(kw_only=True)

@@ -42,14 +42,10 @@ from openg2g.datacenter.command import DatacenterCommand, SetBatchSize
 from openg2g.datacenter.config import (
     DatacenterConfig,
     InferenceModelSpec,
-    InferenceRampSchedule,
     PowerAugmentationConfig,
+    ReplicaSchedule,
 )
-from openg2g.datacenter.layout import (
-    ActivationPolicy,
-    RampActivationPolicy,
-    ServerLayout,
-)
+from openg2g.datacenter.layout import ServerLayout
 from openg2g.datacenter.workloads.inference import (
     InferencePowerAugmenter,
     RequestStore,
@@ -696,8 +692,8 @@ class OnlineDatacenter(LLMBatchSizeControlledDatacenter[OnlineDatacenterState]):
         seed: Random seed for layout generation and noise.
         power_augmentation: Per-server amplitude scaling and noise
             settings.
-        inference_ramps: Inference server ramp event(s). `None` keeps
-            all servers active.
+        replica_schedules: Per-model replica schedules. If `None`,
+            all servers are active at their initial replica counts.
         live_server: Configuration for interacting with live vLLM
             servers. Request data is loaded from
             `LiveServerConfig.requests_dir`.
@@ -712,7 +708,7 @@ class OnlineDatacenter(LLMBatchSizeControlledDatacenter[OnlineDatacenterState]):
         dt_s: Fraction = Fraction(1, 10),
         seed: int = 0,
         power_augmentation: PowerAugmentationConfig | None = None,
-        inference_ramps: InferenceRampSchedule | None = None,
+        replica_schedules: dict[str, ReplicaSchedule] | None = None,
         live_server: LiveServerConfig | None = None,
     ) -> None:
         super().__init__(name=name)
@@ -729,7 +725,7 @@ class OnlineDatacenter(LLMBatchSizeControlledDatacenter[OnlineDatacenterState]):
         self._live_server_config = live_server
 
         self._base_W_per_phase = float(datacenter.base_kw_per_phase) * 1e3
-        self._inference_ramp_schedule = inference_ramps if inference_ramps is not None else InferenceRampSchedule()
+        self._replica_schedules = replica_schedules or {}
 
         servers_by_key: dict[str, ZeusdConfig] = {}
         gpu_indices_by_key: dict[str, list[int]] = {}
@@ -769,11 +765,10 @@ class OnlineDatacenter(LLMBatchSizeControlledDatacenter[OnlineDatacenterState]):
 
         self._layout_rng = np.random.default_rng(self._seed)
         self._layouts: dict[str, ServerLayout] = {}
-        self._policies: dict[str, ActivationPolicy] = {}
+        self._model_schedules: dict[str, ReplicaSchedule] = {}
         self._build_all_layouts()
         self._inference_augmenter = InferencePowerAugmenter(
             layouts=self._layouts,
-            policies=self._policies,
             seed=self._seed + 12345,
         )
         self._rolling_buffer = _RollingPowerBuffer(
@@ -809,7 +804,7 @@ class OnlineDatacenter(LLMBatchSizeControlledDatacenter[OnlineDatacenterState]):
         interleave policy construction between the phase shuffle
         and stagger/amplitude draws to preserve this ordering.
         """
-        schedule = self._inference_ramp_schedule
+        schedules = self._replica_schedules
         gpus_per_server = self._datacenter_config.gpus_per_server
         rng = self._layout_rng
         amp_lo, amp_hi = self._power_augmentation.amplitude_scale_range
@@ -823,27 +818,22 @@ class OnlineDatacenter(LLMBatchSizeControlledDatacenter[OnlineDatacenterState]):
                 total_gpus = n_replicas * spec.gpus_per_replica
                 num_servers = math.ceil(total_gpus / gpus_per_server)
 
-                # Per-model schedule with absolute counts
-                model_schedule = schedule.for_model(spec.model_label, initial_count=n_replicas)
+                model_schedule = schedules.get(spec.model_label, ReplicaSchedule(initial=n_replicas))
+                self._model_schedules[d.model_label] = model_schedule
 
-                # Phase shuffle (consumes RNG)
+                # Phase shuffle (RNG consumption #1)
                 sA, sB, sC = split_integer_evenly(num_servers, 3)
                 phase_list = np.asarray(([0] * sA) + ([1] * sB) + ([2] * sC), dtype=int)
                 rng.shuffle(phase_list)
 
-                # Priority shuffle (consumes RNG) -- must happen here
-                self._policies[d.model_label] = RampActivationPolicy(
-                    model_schedule,
-                    num_servers,
-                    rng,
-                    gpus_per_replica=spec.gpus_per_replica,
-                    gpus_per_server=gpus_per_server,
-                )
+                # Priority shuffle (RNG consumption #2)
+                priority = np.arange(num_servers, dtype=int)
+                rng.shuffle(priority)
 
-                # Stagger offsets (consumes RNG) -- float for online
+                # Stagger offsets (RNG consumption #3) -- float for online
                 stagger_offsets = rng.uniform(0.0, max(stagger_s, 1e-9), size=num_servers)
 
-                # Amplitude scales (consumes RNG)
+                # Amplitude scales (RNG consumption #4)
                 amplitude_scales = rng.uniform(amp_lo, amp_hi, size=num_servers)
 
                 gpus_per_server_list = np.full(num_servers, gpus_per_server, dtype=int)
@@ -854,8 +844,10 @@ class OnlineDatacenter(LLMBatchSizeControlledDatacenter[OnlineDatacenterState]):
                     num_servers=num_servers,
                     total_gpus=total_gpus,
                     gpus_per_replica=spec.gpus_per_replica,
+                    gpus_per_server=gpus_per_server,
                     gpus_per_server_list=gpus_per_server_list,
                     phase_list=phase_list,
+                    priority=priority,
                     stagger_offsets=stagger_offsets,
                     amplitude_scales=amplitude_scales,
                     noise_fraction=noise_fraction,
@@ -890,11 +882,10 @@ class OnlineDatacenter(LLMBatchSizeControlledDatacenter[OnlineDatacenterState]):
         )
         self._layout_rng = np.random.default_rng(self._seed)
         self._layouts = {}
-        self._policies = {}
+        self._model_schedules = {}
         self._build_all_layouts()
         self._inference_augmenter = InferencePowerAugmenter(
             layouts=self._layouts,
-            policies=self._policies,
             seed=self._seed + 12345,
         )
         self._rolling_buffer.clear()
@@ -1144,14 +1135,17 @@ class OnlineDatacenter(LLMBatchSizeControlledDatacenter[OnlineDatacenterState]):
             augmentation_factor_by_model[label] = d.augmentation_factor
 
         per_gpu_by_model: dict[str, np.ndarray] = {}
+        replica_counts: dict[str, int] = {}
         for d in self._deployments:
             label = d.model_label
             if label not in self._layouts:
                 continue
             layout = self._layouts[label]
             per_gpu_by_model[label] = self._rolling_buffer.sample_servers(label, now, layout.stagger_offsets)
+            schedule = self._model_schedules[label]
+            replica_counts[label] = int(round(schedule.count_at(clock.time_s)))
 
-        inference_aug = self._inference_augmenter.augment(per_gpu_by_model, clock.time_s)
+        inference_aug = self._inference_augmenter.augment(per_gpu_by_model, replica_counts)
 
         measured_total = sum(measured_power_by_model.values())
         measured_per_phase = measured_total / 3.0

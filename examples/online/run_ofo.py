@@ -133,6 +133,7 @@ def main(*, config_path: Path, mode: str = "ofo") -> None:
         dss_master_file="IEEE13Bus.dss",
         dt_s=Fraction(1, 10),
         initial_tap_position=INITIAL_TAPS,
+        exclude_buses=["sourcebus", "650", "rg60"],
     )
     grid.attach_dc(dc, bus=DC_BUS, connection_type="wye", power_factor=dc_config.power_factor)
 
@@ -172,6 +173,7 @@ def main(*, config_path: Path, mode: str = "ofo") -> None:
                     sensitivity_perturbation_kw=100.0,
                 ),
                 dt_s=DT_CTRL,
+                grid=grid,
             )
         )
     else:
@@ -189,7 +191,9 @@ def main(*, config_path: Path, mode: str = "ofo") -> None:
     log = coord.run()
 
     # Results
-    stats = compute_allbus_voltage_stats(log.grid_states, v_min=V_MIN, v_max=V_MAX)
+    stats = compute_allbus_voltage_stats(
+        log.grid_states, v_min=V_MIN, v_max=V_MAX, exclude_buses=("sourcebus", "650", "rg60")
+    )
     logger.info("=== Voltage Statistics (all-bus) ===")
     logger.info("  voltage_violation_time = %.1f s", stats.violation_time_s)
     logger.info("  worst_vmin             = %.6f", stats.worst_vmin)

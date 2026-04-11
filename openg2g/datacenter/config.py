@@ -35,7 +35,7 @@ class InferenceModelSpec(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     model_label: str
-    model_id: str = ""
+    model_id: str
     gpus_per_replica: int
     itl_deadline_s: float
     feasible_batch_sizes: tuple[int, ...]
@@ -200,137 +200,72 @@ class TrainingSchedule:
         return " | ".join(parts)
 
 
-@dataclass(frozen=True)
-class InferenceRamp:
-    """Inference server ramp parameters.
+class ReplicaSchedule:
+    """Per-model replica count over time.
 
-    Transitions the active replica count for a specific model to `target`.
-    Combine with [`at`][.at] and `|` to build an
-    [`InferenceRampSchedule`][..InferenceRampSchedule]:
+    Specifies the initial replica count and optional linear ramps to
+    new target counts over time windows. Method-chaining API:
 
     ```python
-    ramps = (
-        InferenceRamp(target=144, model="Llama-3.1-8B").at(t_start=2500, t_end=3000)
-        | InferenceRamp(target=864, model="Llama-3.1-8B").at(t_start=3200, t_end=3400)
-    )
+    ReplicaSchedule(initial=720).ramp_to(144, t_start=2500, t_end=3000)
+
+    ReplicaSchedule(initial=720)
+        .ramp_to(144, t_start=2500, t_end=3000)
+        .ramp_to(200, t_start=3200, t_end=3400)
     ```
 
+    Semantics: before the first ramp, the active count equals `initial`.
+    During each `[t_start, t_end]` window the count linearly interpolates
+    from the previous level to `target`. Between ramps, the count holds
+    at the last target.
+
     Attributes:
-        target: Target number of active replicas after the ramp completes.
-        model: Model label this ramp applies to.
+        initial: Replica count before any ramp.
     """
 
-    target: int
-    model: str
+    __slots__ = ("_initial", "_ramps")
 
-    def __post_init__(self) -> None:
-        if self.target < 0:
-            raise ValueError(f"InferenceRamp target must be >= 0, got {self.target}.")
+    def __init__(self, *, initial: int) -> None:
+        if initial < 0:
+            raise ValueError(f"ReplicaSchedule initial must be >= 0, got {initial}.")
+        self._initial = initial
+        self._ramps: tuple[tuple[int, float, float], ...] = ()
 
-    def at(self, t_start: float, t_end: float) -> InferenceRampSchedule:
-        """Schedule this ramp over `[t_start, t_end]`.
+    @property
+    def initial(self) -> int:
+        """Replica count before any ramp."""
+        return self._initial
+
+    def ramp_to(self, target: int, *, t_start: float, t_end: float) -> ReplicaSchedule:
+        """Append a linear ramp to `target` over `[t_start, t_end]`.
 
         Args:
+            target: Target replica count after the ramp completes.
             t_start: Global simulation time when the ramp begins (seconds).
             t_end: Global simulation time when the ramp ends (seconds).
 
         Returns:
-            A single-entry [`InferenceRampSchedule`][...InferenceRampSchedule].
+            A new `ReplicaSchedule` with the ramp appended.
         """
+        if target < 0:
+            raise ValueError(f"ramp_to target must be >= 0, got {target}.")
         if t_end < t_start:
             raise ValueError(f"t_end ({t_end}) must be >= t_start ({t_start}).")
-        return InferenceRampSchedule(((self, float(t_start), float(t_end)),))
-
-
-class InferenceRampSchedule:
-    """Ordered collection of [`InferenceRamp`][..InferenceRamp] events for
-    a single model.
-
-    Each entry is an `(InferenceRamp, t_start, t_end)` tuple. Entries are
-    sorted by `t_start`.
-
-    Built with [`InferenceRamp.at`][..InferenceRamp.at] and `|`.
-
-    Semantics: before the first ramp, the active count equals
-    `initial_count`.  During each `[t_start, t_end]` window the count
-    linearly interpolates from the previous level to `target`.  Between
-    ramps, the count holds at the last target.
-
-    An empty schedule means `initial_count` replicas are active at all
-    times.
-
-    Example:
-
-    ```python
-    ramps = (
-        InferenceRamp(target=144, model="Llama-3.1-8B").at(t_start=2500, t_end=3000)
-        | InferenceRamp(target=720, model="Llama-3.1-8B").at(t_start=3200, t_end=3400)
-    )
-    ```
-    """
-
-    __slots__ = ("_entries", "_initial_count")
-
-    def __init__(
-        self,
-        entries: tuple[tuple[InferenceRamp, float, float], ...] = (),
-        *,
-        initial_count: int = 0,
-    ) -> None:
-        self._entries = tuple(sorted(entries, key=lambda e: e[1]))
-        self._initial_count = initial_count
-
-    @property
-    def initial_count(self) -> int:
-        """Replica count before any ramp event."""
-        return self._initial_count
-
-    def __or__(self, other: InferenceRampSchedule) -> InferenceRampSchedule:
-        # Preserve initial_count from left operand (the one built first).
-        return InferenceRampSchedule(
-            (*self._entries, *other._entries),
-            initial_count=self._initial_count,
-        )
-
-    def __iter__(self) -> Iterator[tuple[InferenceRamp, float, float]]:
-        return iter(self._entries)
-
-    def __len__(self) -> int:
-        return len(self._entries)
-
-    def __bool__(self) -> bool:
-        return bool(self._entries)
-
-    def for_model(self, model_label: str, *, initial_count: int | None = None) -> InferenceRampSchedule:
-        """Return a schedule containing only entries for *model_label*.
-
-        Args:
-            model_label: Model to filter for.
-            initial_count: Override the initial replica count for this
-                per-model schedule.  If `None`, inherits from `self`.
-        """
-        filtered = tuple(e for e in self._entries if e[0].model == model_label)
-        ic = initial_count if initial_count is not None else self._initial_count
-        return InferenceRampSchedule(filtered, initial_count=ic)
+        new = ReplicaSchedule(initial=self._initial)
+        new._ramps = (*self._ramps, (int(target), float(t_start), float(t_end)))
+        return new
 
     def max_count(self) -> int:
-        """Return the maximum target across all entries, or `initial_count` if empty."""
-        if not self._entries:
-            return self._initial_count
-        return max(self._initial_count, *(r.target for r, _, _ in self._entries))
-
-    def __repr__(self) -> str:
-        parts = []
-        for r, s, e in self._entries:
-            parts.append(f"InferenceRamp(target={r.target}, model={r.model!r}).at(t_start={s}, t_end={e})")
-        prefix = f"InferenceRampSchedule(initial_count={self._initial_count}): "
-        return prefix + (" | ".join(parts) if parts else "(empty)")
+        """Return the maximum replica count (initial or any ramp target)."""
+        if not self._ramps:
+            return self._initial
+        return max(self._initial, *(target for target, _, _ in self._ramps))
 
     def count_at(self, t: float | np.ndarray) -> float | np.ndarray:
         """Evaluate the active replica count at time(s) *t*.
 
         Piecewise-linear interpolation between ramp events.
-        Before the first ramp, returns `initial_count`.
+        Before the first ramp, returns `initial`.
 
         Args:
             t: Scalar or array of global simulation times (seconds).
@@ -339,25 +274,34 @@ class InferenceRampSchedule:
             Active replica count(s), same shape as *t*.
         """
         if isinstance(t, np.ndarray):
-            return self._count_array(t)
+            vfunc = np.vectorize(self._count_scalar, otypes=[float])
+            return vfunc(t)
         return float(self._count_scalar(float(t)))
 
     def _count_scalar(self, t: float) -> float:
-        level = float(self._initial_count)
-        for ramp, t_start, t_end in self._entries:
+        level = float(self._initial)
+        for target, t_start, t_end in self._ramps:
             if t < t_start:
                 return level
             if t <= t_end:
                 if t_end == t_start:
-                    return float(ramp.target)
+                    return float(target)
                 alpha = (t - t_start) / (t_end - t_start)
-                return level + (float(ramp.target) - level) * alpha
-            level = float(ramp.target)
+                return level + (float(target) - level) * alpha
+            level = float(target)
         return level
 
-    def _count_array(self, t: np.ndarray) -> np.ndarray:
-        vfunc = np.vectorize(self._count_scalar, otypes=[float])
-        return vfunc(t)
+    def __repr__(self) -> str:
+        parts = [f"ReplicaSchedule(initial={self._initial})"]
+        for target, t_start, t_end in self._ramps:
+            parts.append(f".ramp_to({target}, t_start={t_start}, t_end={t_end})")
+        return "".join(parts)
+
+    def __len__(self) -> int:
+        return len(self._ramps)
+
+    def __bool__(self) -> bool:
+        return True
 
 
 class DatacenterConfig(BaseModel):
@@ -401,3 +345,14 @@ class PowerAugmentationConfig(BaseModel):
 
     amplitude_scale_range: tuple[float, float] = (1.0, 1.0)
     noise_fraction: float = 0.0
+
+    @model_validator(mode="after")
+    def _validate(self) -> PowerAugmentationConfig:
+        lo, hi = self.amplitude_scale_range
+        if lo > hi:
+            raise ValueError(f"amplitude_scale_range low ({lo}) must be <= high ({hi}).")
+        if lo <= 0:
+            raise ValueError(f"amplitude_scale_range low ({lo}) must be > 0.")
+        if self.noise_fraction < 0:
+            raise ValueError(f"noise_fraction must be >= 0, got {self.noise_fraction}.")
+        return self

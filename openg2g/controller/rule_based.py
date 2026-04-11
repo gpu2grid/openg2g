@@ -73,6 +73,7 @@ class RuleBasedBatchSizeController(
         inference_models: tuple[InferenceModelSpec, ...] | list[InferenceModelSpec],
         *,
         datacenter: LLMBatchSizeControlledDatacenter[LLMDatacenterState],
+        grid: OpenDSSGrid,
         config: RuleBasedConfig,
         dt_s: Fraction = Fraction(1),
         exclude_buses: tuple[str, ...] = (),
@@ -81,6 +82,7 @@ class RuleBasedBatchSizeController(
         model_specs = list(inference_models)
         self._dt_s = dt_s
         self._datacenter = datacenter
+        self._grid = grid
         self._config = config
         self._models = model_specs
         self._exclude_lower = {b.lower() for b in exclude_buses}
@@ -113,10 +115,6 @@ class RuleBasedBatchSizeController(
     def dt_s(self) -> Fraction:
         return self._dt_s
 
-    @property
-    def datacenters(self) -> list:
-        return [self._datacenter]
-
     def reset(self) -> None:
         self._log2_batch = {
             ms.model_label: math.log2(self._initial_batch_sizes.get(ms.model_label, ms.feasible_batch_sizes[0]))
@@ -126,10 +124,10 @@ class RuleBasedBatchSizeController(
     def step(
         self,
         clock: SimulationClock,
-        grid: OpenDSSGrid,
         events: EventEmitter,
     ) -> list[DatacenterCommand | GridCommand]:
         datacenter = self._datacenter
+        grid = self._grid
         if grid.state is None:
             return []
 
@@ -213,4 +211,4 @@ class RuleBasedBatchSizeController(
             {"time_s": clock.time_s, "pressure": pressure, "batch": dict(new_batches)},
         )
 
-        return [SetBatchSize(batch_size_by_model=new_batches)]
+        return [SetBatchSize(batch_size_by_model=new_batches, target=self._datacenter)]

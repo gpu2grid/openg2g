@@ -87,7 +87,7 @@ def test_controller_requires_explicit_generic_parameters():
             (controller_any,),
             {
                 "dt_s": property(lambda self: Fraction(1)),
-                "step": lambda self, clock, grid, events: [],
+                "step": lambda self, clock, events: [],
             },
         )
 
@@ -101,7 +101,7 @@ def test_controller_rejects_reversed_generic_order():
             exec_body=lambda ns: ns.update(
                 {
                     "dt_s": property(lambda self: Fraction(1)),
-                    "step": lambda self, clock, grid, events: [],
+                    "step": lambda self, clock, events: [],
                 }
             ),
         )
@@ -119,7 +119,7 @@ def test_controller_rejects_random_classes_in_generics():
             exec_body=lambda ns: ns.update(
                 {
                     "dt_s": property(lambda self: Fraction(1)),
-                    "step": lambda self, clock, grid, events: [],
+                    "step": lambda self, clock, events: [],
                 }
             ),
         )
@@ -137,7 +137,7 @@ def test_controller_rejects_non_abc_subclass_for_grid_generic():
             exec_body=lambda ns: ns.update(
                 {
                     "dt_s": property(lambda self: Fraction(1)),
-                    "step": lambda self, clock, grid, events: [],
+                    "step": lambda self, clock, events: [],
                 }
             ),
         )
@@ -149,17 +149,12 @@ def test_controller_inherits_compatibility_from_typed_parent():
         def dt_s(self) -> Fraction:
             return Fraction(1)
 
-        @property
-        def datacenters(self) -> list:
-            return []
-
         def reset(self) -> None:
             pass
 
         def step(
             self,
             clock: SimulationClock,
-            grid: _Grid,
             events: EventEmitter,
         ) -> list[DatacenterCommand | GridCommand]:
             return []
@@ -179,17 +174,12 @@ def test_controller_accepts_parameterized_backend_generics():
         def dt_s(self) -> Fraction:
             return Fraction(1)
 
-        @property
-        def datacenters(self) -> list:
-            return []
-
         def reset(self) -> None:
             pass
 
         def step(
             self,
             clock: SimulationClock,
-            grid: GridBackend[GridState],
             events: EventEmitter,
         ) -> list[DatacenterCommand | GridCommand]:
             return []

@@ -19,7 +19,7 @@ from pydantic import BaseModel, ConfigDict
 import openg2g
 from openg2g.common import ThreePhase
 from openg2g.datacenter.config import InferenceModelSpec
-from openg2g.datacenter.layout import ActivationPolicy, ServerLayout
+from openg2g.datacenter.layout import ServerLayout
 
 logger = logging.getLogger(__name__)
 
@@ -878,27 +878,23 @@ class InferencePowerAugmenter:
     adding facility base load on top of the returned inference power.
 
     Args:
-        layouts: Per-model server layouts (physical topology).
-        policies: Per-model activation policies determining which servers
-            are active at each timestep.
+        layouts: Per-model server layouts (physical topology + activation priority).
         seed: Random seed for noise RNG.
     """
 
     def __init__(
         self,
         layouts: dict[str, ServerLayout],
-        policies: dict[str, ActivationPolicy],
         seed: int = 0,
     ) -> None:
         self._layouts = layouts
-        self._policies = policies
         self._seed = int(seed)
         self._rng = np.random.default_rng(self._seed)
 
     def augment(
         self,
         per_gpu_by_model: dict[str, np.ndarray],
-        t: float,
+        replica_counts: dict[str, int],
     ) -> InferenceAugmentedPower:
         """Augment per-server per-GPU power to three-phase power.
 
@@ -906,7 +902,8 @@ class InferencePowerAugmenter:
             per_gpu_by_model: Mapping of model label to per-GPU power
                 array of shape `(num_servers,)`. Only models with active
                 replicas should be included.
-            t: Current simulation time (seconds).
+            replica_counts: Mapping of model label to effective replica
+                count (schedule + runtime adjustments).
 
         Returns:
             Augmented inference power with three-phase totals, per-model
@@ -918,7 +915,6 @@ class InferencePowerAugmenter:
 
         for label, per_gpu in per_gpu_by_model.items():
             layout = self._layouts[label]
-            policy = self._policies[label]
 
             server_powers = per_gpu * layout.gpus_per_server_list * layout.amplitude_scales
             if layout.noise_fraction > 0:
@@ -926,7 +922,7 @@ class InferencePowerAugmenter:
                 server_powers += self._rng.normal(0.0, 1.0, size=layout.num_servers) * layout.noise_fraction * levels
             server_powers = np.maximum(server_powers, 0.0)
 
-            active_indices = policy.active_indices(t)
+            active_indices = layout.active_indices(replica_counts.get(label, 0))
             active_powers = server_powers[active_indices]
             active_phases = layout.phase_list[active_indices]
 

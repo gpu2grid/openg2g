@@ -8,12 +8,27 @@ The grid handles reactive power, bus voltage, and DSS element management.
 
 from __future__ import annotations
 
+import math
 from abc import ABC, abstractmethod
 from pathlib import Path
 
 import numpy as np
 
-from openg2g.utils import irregular_fluct, smooth_bump
+from openg2g.utils import smooth_bump
+
+
+def irregular_fluct(t: float, seed: float = 0.0) -> float:
+    """Irregular fluctuation via superposition of incommensurate frequencies.
+
+    Returns a value centred around 1.0 with ~+-15% variation.
+    """
+    s = seed
+    f1 = 0.06 * math.sin(2 * math.pi * t / 173.0 + s)
+    f2 = 0.05 * math.sin(2 * math.pi * t / 97.3 + s * 2.3)
+    f3 = 0.04 * math.sin(2 * math.pi * t / 251.7 + s * 0.7)
+    f4 = 0.03 * math.sin(2 * math.pi * t / 41.9 + s * 4.1)
+    f5 = 0.02 * math.sin(2 * math.pi * t / 317.3 + s * 1.9)
+    return 1.0 + f1 + f2 + f3 + f4 + f5
 
 
 class Generator(ABC):
@@ -62,7 +77,7 @@ class CSVProfileGenerator(Generator):
 
 
 class SyntheticPV(Generator):
-    """Demonstration PV profile with cloud dips, trends, and fluctuation.
+    """Synthetic PV profile with cloud dips, trends, and fluctuation.
 
     Each `site_idx` produces a visually distinct curve. These are
     synthetic "lorem ipsum" profiles for demonstration, not based on
@@ -70,7 +85,7 @@ class SyntheticPV(Generator):
 
     Args:
         peak_kw: Peak PV output in kW.
-        site_idx: Site index for distinct per-site profiles.
+        site_idx: Site index for distinct per-site profiles (0 to 2).
     """
 
     _T = 3600  # assumed total simulation duration for trend shaping
@@ -96,10 +111,11 @@ class SyntheticPV(Generator):
             cloud -= 0.25 * smooth_bump(t, 2400, 150)
             fluct = irregular_fluct(t, seed=2.1)
             return max(0.0, self._peak_kw * ramp * max(cloud, 0.05) * fluct)
-        else:
+        elif idx == 2:
             ramp = 0.30 + 0.65 * min(1.0, t / 900.0)
             cloud = 1.0
             cloud -= 0.70 * smooth_bump(t, 2700, 300)
             cloud -= 0.30 * smooth_bump(t, 1200, 100)
             fluct = irregular_fluct(t, seed=2.0 + idx * 3.7)
             return max(0.0, self._peak_kw * ramp * max(cloud, 0.05) * fluct)
+        raise ValueError(f"Unsupported site_idx {idx} for SyntheticPV; valid range is 0-2.")

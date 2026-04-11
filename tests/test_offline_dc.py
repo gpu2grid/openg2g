@@ -11,7 +11,7 @@ from mlenergy_data.modeling import ITLMixtureModel
 from openg2g.clock import SimulationClock
 from openg2g.coordinator import SimulationLog
 from openg2g.datacenter.command import DatacenterCommand, SetBatchSize
-from openg2g.datacenter.config import DatacenterConfig, InferenceModelSpec
+from openg2g.datacenter.config import DatacenterConfig, InferenceModelSpec, ReplicaSchedule
 from openg2g.datacenter.offline import OfflineDatacenter, OfflineDatacenterState, OfflineWorkload
 from openg2g.datacenter.workloads.inference import (
     InferenceData,
@@ -25,11 +25,12 @@ from openg2g.events import EventEmitter
 
 MODEL = InferenceModelSpec(
     model_label="TestModel",
+    model_id="test/TestModel",
     gpus_per_replica=1,
     itl_deadline_s=0.1,
     feasible_batch_sizes=(64, 128),
 )
-_REPLICA_COUNTS = {"TestModel": 10}
+_REPLICA_SCHEDULES = {"TestModel": ReplicaSchedule(initial=10)}
 _INITIAL_BATCH_SIZES = {"TestModel": 128}
 DC_CFG = DatacenterConfig(gpus_per_server=8)
 _EVENTS = EventEmitter(SimulationClock(Fraction(1, 10)), SimulationLog(), "custom")
@@ -59,7 +60,7 @@ def _make_workload(templates: InferenceTemplateStore, itl_fits: ITLFitStore | No
             power_templates=templates,
             itl_fits=itl_fits,
         ),
-        replica_counts=dict(_REPLICA_COUNTS),
+        replica_schedules=dict(_REPLICA_SCHEDULES),
         initial_batch_sizes=dict(_INITIAL_BATCH_SIZES),
     )
 
@@ -108,7 +109,7 @@ def test_batch_change_takes_effect_immediately():
         assert state.batch_size_by_model["TestModel"] == 128
         clock.advance()
 
-    dc.apply_control(SetBatchSize(batch_size_by_model={"TestModel": 64}), _EVENTS)
+    dc.apply_control(SetBatchSize(batch_size_by_model={"TestModel": 64}, target=dc), _EVENTS)
 
     state = dc.step(clock, _EVENTS)
     assert state.batch_size_by_model["TestModel"] == 64

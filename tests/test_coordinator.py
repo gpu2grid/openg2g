@@ -109,7 +109,7 @@ class _StubController(Controller[DatacenterBackend, GridBackend]):
         dt_s: Fraction = Fraction(1),
         commands: list[DatacenterCommand | GridCommand] | None = None,
         on_step: Callable[
-            [SimulationClock, GridBackend, EventEmitter],
+            [SimulationClock, EventEmitter],
             list[DatacenterCommand | GridCommand],
         ]
         | None = None,
@@ -126,19 +126,14 @@ class _StubController(Controller[DatacenterBackend, GridBackend]):
     def dt_s(self) -> Fraction:
         return self._dt_s
 
-    @property
-    def datacenters(self) -> list:
-        return []
-
     def step(
         self,
         clock: SimulationClock,
-        grid: GridBackend,
         events: EventEmitter,
     ) -> list[DatacenterCommand | GridCommand]:
         self.call_count += 1
         if self._on_step is not None:
-            return self._on_step(clock, grid, events)
+            return self._on_step(clock, events)
         return self._commands
 
 
@@ -198,7 +193,7 @@ def test_coordinator_controller_order():
 
     ctrl1 = _StubController(
         dt_s=Fraction(1),
-        on_step=lambda clock, g, ev: (
+        on_step=lambda clock, ev: (
             call_order.append("ctrl1"),
             [],
         )[-1],
@@ -206,7 +201,7 @@ def test_coordinator_controller_order():
 
     ctrl2 = _StubController(
         dt_s=Fraction(1),
-        on_step=lambda clock, g, ev: (
+        on_step=lambda clock, ev: (
             call_order.append("ctrl2"),
             [],
         )[-1],
@@ -242,10 +237,8 @@ def test_coordinator_exposes_clock_stamped_controller_events():
 
     def _on_step(
         clock: SimulationClock,
-        grid: GridBackend,
         events: EventEmitter,
     ) -> list[DatacenterCommand | GridCommand]:
-
         events.emit("controller.test", {"value": 1})
         return []
 
@@ -303,20 +296,14 @@ def test_controller_generic_types_auto_extracted():
         def dt_s(self) -> Fraction:
             return Fraction(1)
 
-        @property
-        def datacenters(self) -> list:
-            return []
-
         def reset(self) -> None:
             pass
 
         def step(
             self,
             clock: SimulationClock,
-            grid: OpenDSSGrid,
             events: EventEmitter,
         ) -> list[DatacenterCommand | GridCommand]:
-
             return []
 
     assert _TypedController.compatible_datacenter_types() == (DatacenterBackend,)
@@ -363,29 +350,22 @@ def test_controller_datacenter_mismatch_error_has_underlined_generic_snippet():
         def dt_s(self) -> Fraction:
             return Fraction(1)
 
-        @property
-        def datacenters(self) -> list:
-            return []
-
         def reset(self) -> None:
             pass
 
         def step(
             self,
             clock: SimulationClock,
-            grid: OpenDSSGrid,
             events: EventEmitter,
         ) -> list[DatacenterCommand | GridCommand]:
-
             return []
 
     dc = _OtherDC()
     grid = _StubGrid(dt_s=Fraction(1))
     ctrl = _NeedsExpectedDC()
-    coord = Coordinator(datacenters=[dc], grid=grid, controllers=[ctrl], total_duration_s=1)
 
     try:
-        coord.run()
+        Coordinator(datacenters=[dc], grid=grid, controllers=[ctrl], total_duration_s=1)
         raise AssertionError("Expected TypeError for controller/datacenter incompatibility.")
     except TypeError as exc:
         msg = str(exc)

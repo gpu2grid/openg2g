@@ -51,6 +51,7 @@ class LoadShiftController(Controller[LLMBatchSizeControlledDatacenter, OpenDSSGr
         config: LoadShiftConfig,
         dt_s: Fraction,
         datacenters: list[LLMBatchSizeControlledDatacenter],
+        grid: OpenDSSGrid,
         dc_bus_map: dict[LLMBatchSizeControlledDatacenter, str],
         models_by_dc: dict[LLMBatchSizeControlledDatacenter, list[str]],
         gpus_per_replica_by_model: dict[str, int],
@@ -61,6 +62,7 @@ class LoadShiftController(Controller[LLMBatchSizeControlledDatacenter, OpenDSSGr
         self._config = config
         self._dt_s = dt_s
         self._datacenters = list(datacenters)
+        self._grid = grid
         self._dc_bus_map = dict(dc_bus_map)
         self._models_by_dc = dict(models_by_dc)
         self._gpus_per_replica = gpus_per_replica_by_model
@@ -73,16 +75,12 @@ class LoadShiftController(Controller[LLMBatchSizeControlledDatacenter, OpenDSSGr
     def dt_s(self) -> Fraction:
         return self._dt_s
 
-    @property
-    def datacenters(self) -> list:
-        return list(self._datacenters)
-
     def step(
         self,
         clock: SimulationClock,
-        grid: OpenDSSGrid,
         events: EventEmitter,
     ) -> list[DatacenterCommand | GridCommand]:
+        grid = self._grid
         self._step_count += 1
         if not self._config.enabled:
             return []

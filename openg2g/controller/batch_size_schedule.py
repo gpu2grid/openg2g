@@ -120,14 +120,9 @@ class BatchSizeScheduleController(Controller[DatacenterBackend, GridBackend]):
     def dt_s(self) -> Fraction:
         return self._dt_s
 
-    @property
-    def datacenters(self) -> list:
-        return [self._datacenter]
-
     def step(
         self,
         clock: SimulationClock,
-        grid: GridBackend,
         events: EventEmitter,
     ) -> list[DatacenterCommand | GridCommand]:
         t_now = clock.time_s
@@ -159,6 +154,7 @@ class BatchSizeScheduleController(Controller[DatacenterBackend, GridBackend]):
                 SetBatchSize(
                     batch_size_by_model=batch_changes,
                     ramp_up_rate_by_model=ramp_rates,
+                    target=self._datacenter,
                 )
             ]
         return []

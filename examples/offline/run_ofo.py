@@ -45,9 +45,9 @@ from openg2g.coordinator import Coordinator
 from openg2g.datacenter.config import (
     DatacenterConfig,
     InferenceModelSpec,
-    InferenceRamp,
     ModelDeployment,
     PowerAugmentationConfig,
+    ReplicaSchedule,
     TrainingRun,
 )
 from openg2g.datacenter.offline import OfflineDatacenter, OfflineWorkload
@@ -341,22 +341,22 @@ def _build_dc(
     base_kw_per_phase: float,
     total_gpu_capacity: int,
     seed: int = 0,
-    inference_ramps=None,
+    replica_schedules: dict[str, ReplicaSchedule] | None = None,
     training: TrainingRun | None = None,
 ) -> OfflineDatacenter:
     """Create a single OfflineDatacenter from model deployments."""
     specs = tuple(m.spec for m in models)
     site_inference = inference_data.filter_models(specs)
-    replica_counts = {m.spec.model_label: m.num_replicas for m in models}
     batch_sizes = {m.spec.model_label: m.initial_batch_size for m in models}
+
+    if replica_schedules is None:
+        replica_schedules = {m.spec.model_label: ReplicaSchedule(initial=m.num_replicas) for m in models}
 
     workload_kwargs: dict[str, Any] = {
         "inference_data": site_inference,
-        "replica_counts": replica_counts,
+        "replica_schedules": replica_schedules,
         "initial_batch_sizes": batch_sizes,
     }
-    if inference_ramps is not None:
-        workload_kwargs["inference_ramps"] = inference_ramps
     if training is not None:
         workload_kwargs["training"] = training
 
@@ -383,13 +383,13 @@ def setup_ieee13(inference_data, training_trace, logistic_models):
         deploy("Qwen3-235B-A22B", 210),
     )
 
-    ramps = (
-        InferenceRamp(target=144, model="Llama-3.1-8B").at(t_start=2500, t_end=3000)
-        | InferenceRamp(target=36, model="Llama-3.1-70B").at(t_start=2500, t_end=3000)
-        | InferenceRamp(target=18, model="Llama-3.1-405B").at(t_start=2500, t_end=3000)
-        | InferenceRamp(target=96, model="Qwen3-30B-A3B").at(t_start=2500, t_end=3000)
-        | InferenceRamp(target=42, model="Qwen3-235B-A22B").at(t_start=2500, t_end=3000)
-    )
+    replica_schedules = {
+        "Llama-3.1-8B": ReplicaSchedule(initial=720).ramp_to(144, t_start=2500, t_end=3000),
+        "Llama-3.1-70B": ReplicaSchedule(initial=180).ramp_to(36, t_start=2500, t_end=3000),
+        "Llama-3.1-405B": ReplicaSchedule(initial=90).ramp_to(18, t_start=2500, t_end=3000),
+        "Qwen3-30B-A3B": ReplicaSchedule(initial=480).ramp_to(96, t_start=2500, t_end=3000),
+        "Qwen3-235B-A22B": ReplicaSchedule(initial=210).ramp_to(42, t_start=2500, t_end=3000),
+    }
 
     training = (
         TrainingRun(n_gpus=2400, trace=training_trace, target_peak_W_per_gpu=400.0).at(t_start=1000.0, t_end=2000.0)
@@ -404,7 +404,7 @@ def setup_ieee13(inference_data, training_trace, logistic_models):
         base_kw_per_phase=500.0,
         total_gpu_capacity=7200,
         seed=0,
-        inference_ramps=ramps,
+        replica_schedules=replica_schedules,
         training=training,
     )
 
@@ -557,7 +557,9 @@ def setup_ieee123(inference_data, training_trace, logistic_models):
         base_kw_per_phase=310.0,
         total_gpu_capacity=180,
         seed=0,
-        inference_ramps=InferenceRamp(target=180, model="Llama-3.1-8B").at(t_start=500, t_end=1000),
+        replica_schedules={
+            "Llama-3.1-8B": ReplicaSchedule(initial=120).ramp_to(180, t_start=500, t_end=1000),
+        },
     )
     dc_z2 = _build_dc(
         "z2_nw",
@@ -566,7 +568,9 @@ def setup_ieee123(inference_data, training_trace, logistic_models):
         base_kw_per_phase=265.0,
         total_gpu_capacity=208,
         seed=17,
-        inference_ramps=InferenceRamp(target=104, model="Qwen3-30B-A3B").at(t_start=1500, t_end=2500),
+        replica_schedules={
+            "Qwen3-30B-A3B": ReplicaSchedule(initial=80).ramp_to(104, t_start=1500, t_end=2500),
+        },
     )
     dc_z3 = _build_dc(
         "z3_se",
@@ -575,10 +579,10 @@ def setup_ieee123(inference_data, training_trace, logistic_models):
         base_kw_per_phase=295.0,
         total_gpu_capacity=600,
         seed=34,
-        inference_ramps=(
-            InferenceRamp(target=45, model="Llama-3.1-70B").at(t_start=700, t_end=1100)
-            | InferenceRamp(target=52, model="Llama-3.1-405B").at(t_start=700, t_end=1100)
-        ),
+        replica_schedules={
+            "Llama-3.1-70B": ReplicaSchedule(initial=30).ramp_to(45, t_start=700, t_end=1100),
+            "Llama-3.1-405B": ReplicaSchedule(initial=35).ramp_to(52, t_start=700, t_end=1100),
+        },
     )
     dc_z4 = _build_dc(
         "z4_ne",
@@ -587,7 +591,9 @@ def setup_ieee123(inference_data, training_trace, logistic_models):
         base_kw_per_phase=325.0,
         total_gpu_capacity=440,
         seed=51,
-        inference_ramps=InferenceRamp(target=27, model="Qwen3-235B-A22B").at(t_start=2000, t_end=2500),
+        replica_schedules={
+            "Qwen3-235B-A22B": ReplicaSchedule(initial=55).ramp_to(27, t_start=2000, t_end=2500),
+        },
     )
 
     generators = [
@@ -724,6 +730,7 @@ def main(*, system: str, mode: str = "no-tap") -> None:
                         config=ofo_config,
                         dt_s=DT_CTRL,
                         initial_batch_sizes=info.initial_batch_sizes,
+                        grid=grid,
                     )
                 )
 

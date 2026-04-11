@@ -70,6 +70,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.patches import Patch
 from opendssdirect import dss
+from utils import discover_candidate_buses
 
 from openg2g.controller.ofo import LogisticModelStore, OFOBatchSizeController, OFOConfig
 from openg2g.controller.tap_schedule import TapScheduleController
@@ -79,6 +80,7 @@ from openg2g.datacenter.config import (
     InferenceModelSpec,
     ModelDeployment,
     PowerAugmentationConfig,
+    ReplicaSchedule,
 )
 from openg2g.datacenter.offline import OfflineDatacenter, OfflineWorkload
 from openg2g.datacenter.workloads.inference import InferenceData, MLEnergySource
@@ -87,7 +89,7 @@ from openg2g.grid.config import TapPosition, TapSchedule
 from openg2g.grid.generator import SyntheticPV
 from openg2g.grid.load import SyntheticLoad
 from openg2g.grid.opendss import OpenDSSGrid
-from openg2g.metrics.voltage import VoltageStats, compute_allbus_voltage_stats, discover_candidate_buses
+from openg2g.metrics.voltage import VoltageStats, compute_allbus_voltage_stats
 
 from systems import SYSTEMS, tap
 
@@ -2351,7 +2353,7 @@ def compare_with_ofo(
             DatacenterConfig(gpus_per_server=8, base_kw_per_phase=site.base_kw_per_phase),
             OfflineWorkload(
                 inference_data=site_inference,
-                replica_counts={m.spec.model_label: m.num_replicas for m in site.models},
+                replica_schedules={m.spec.model_label: ReplicaSchedule(initial=m.num_replicas) for m in site.models},
             ),
             name=site_id,
             dt_s=DT_DC,
@@ -2401,6 +2403,7 @@ def compare_with_ofo(
                         config=ofo_config,
                         dt_s=DT_CTRL,
                         initial_batch_sizes={m.spec.model_label: m.initial_batch_size for m in site.models},
+                        grid=grid,
                     )
                 )
 

@@ -553,8 +553,8 @@ class OFOBatchSizeController(Controller[LLMBatchSizeControlledDatacenter[LLMData
     def __init__(
         self,
         inference_models: tuple[InferenceModelSpec, ...],
-        *,
         datacenter: LLMBatchSizeControlledDatacenter[LLMDatacenterState],
+        grid: OpenDSSGrid,
         models: LogisticModelStore,
         config: OFOConfig | None = None,
         dt_s: Fraction = Fraction(1),
@@ -588,6 +588,7 @@ class OFOBatchSizeController(Controller[LLMBatchSizeControlledDatacenter[LLMData
         self._models = model_specs
         self._config = config
         self._datacenter = datacenter
+        self._grid = grid
         self._itl_deadline_by_model = {ms.model_label: ms.itl_deadline_s for ms in model_specs}
 
         self._voltage_dual: VoltageDualVariables | None = None
@@ -639,17 +640,13 @@ class OFOBatchSizeController(Controller[LLMBatchSizeControlledDatacenter[LLMData
     def dt_s(self) -> Fraction:
         return self._dt_s
 
-    @property
-    def datacenters(self) -> list:
-        return [self._datacenter]
-
     def step(
         self,
         clock: SimulationClock,
-        grid: OpenDSSGrid,
         events: EventEmitter,
     ) -> list[DatacenterCommand | GridCommand]:
         datacenter = self._datacenter
+        grid = self._grid
 
         if self._voltage_dual is None:
             self._voltage_dual = VoltageDualVariables(len(grid.v_index), self._config)
@@ -733,7 +730,7 @@ class OFOBatchSizeController(Controller[LLMBatchSizeControlledDatacenter[LLMData
                 "latency_dual_by_model": dict(self._latency_dual_by_model),
             },
         )
-        return [SetBatchSize(batch_size_by_model=batch_next)]
+        return [SetBatchSize(batch_size_by_model=batch_next, target=self._datacenter)]
 
 
 def _plot_logistic_fits(

@@ -36,9 +36,9 @@ from openg2g.coordinator import Coordinator
 from openg2g.datacenter.config import (
     DatacenterConfig,
     InferenceModelSpec,
-    InferenceRamp,
     ModelDeployment,
     PowerAugmentationConfig,
+    ReplicaSchedule,
 )
 from openg2g.datacenter.offline import OfflineDatacenter, OfflineWorkload
 from openg2g.datacenter.workloads.inference import InferenceData, MLEnergySource
@@ -144,14 +144,13 @@ def _setup_ieee13(inference_data, training_trace, logistic_models):
 
     workload = OfflineWorkload(
         inference_data=site_inference,
-        replica_counts={md.spec.model_label: md.num_replicas for md in models_default},
-        inference_ramps=(
-            InferenceRamp(target=144, model="Llama-3.1-8B").at(t_start=2500, t_end=3000)
-            | InferenceRamp(target=36, model="Llama-3.1-70B").at(t_start=2500, t_end=3000)
-            | InferenceRamp(target=18, model="Llama-3.1-405B").at(t_start=2500, t_end=3000)
-            | InferenceRamp(target=96, model="Qwen3-30B-A3B").at(t_start=2500, t_end=3000)
-            | InferenceRamp(target=42, model="Qwen3-235B-A22B").at(t_start=2500, t_end=3000)
-        ),
+        replica_schedules={
+            "Llama-3.1-8B": ReplicaSchedule(initial=720).ramp_to(144, t_start=2500, t_end=3000),
+            "Llama-3.1-70B": ReplicaSchedule(initial=180).ramp_to(36, t_start=2500, t_end=3000),
+            "Llama-3.1-405B": ReplicaSchedule(initial=90).ramp_to(18, t_start=2500, t_end=3000),
+            "Qwen3-30B-A3B": ReplicaSchedule(initial=480).ramp_to(96, t_start=2500, t_end=3000),
+            "Qwen3-235B-A22B": ReplicaSchedule(initial=210).ramp_to(42, t_start=2500, t_end=3000),
+        },
     )
     dc_default = OfflineDatacenter(
         DatacenterConfig(gpus_per_server=8, base_kw_per_phase=500.0),
@@ -222,7 +221,7 @@ def _setup_ieee34(inference_data, training_trace, logistic_models):
         DatacenterConfig(gpus_per_server=8, base_kw_per_phase=120.0),
         OfflineWorkload(
             inference_data=inference_data.filter_models(specs_upstream),
-            replica_counts={md.spec.model_label: md.num_replicas for md in models_upstream},
+            replica_schedules={md.spec.model_label: ReplicaSchedule(initial=md.num_replicas) for md in models_upstream},
         ),
         name="upstream",
         dt_s=DT_DC,
@@ -234,7 +233,9 @@ def _setup_ieee34(inference_data, training_trace, logistic_models):
         DatacenterConfig(gpus_per_server=8, base_kw_per_phase=80.0),
         OfflineWorkload(
             inference_data=inference_data.filter_models(specs_downstream),
-            replica_counts={md.spec.model_label: md.num_replicas for md in models_downstream},
+            replica_schedules={
+                md.spec.model_label: ReplicaSchedule(initial=md.num_replicas) for md in models_downstream
+            },
         ),
         name="downstream",
         dt_s=DT_DC,
@@ -320,8 +321,9 @@ def _setup_ieee123(inference_data, training_trace, logistic_models):
         DatacenterConfig(gpus_per_server=8, base_kw_per_phase=310.0),
         OfflineWorkload(
             inference_data=inference_data.filter_models(specs_z1),
-            replica_counts={md.spec.model_label: md.num_replicas for md in models_z1},
-            inference_ramps=InferenceRamp(target=180, model="Llama-3.1-8B").at(t_start=500, t_end=1000),
+            replica_schedules={
+                "Llama-3.1-8B": ReplicaSchedule(initial=120).ramp_to(180, t_start=500, t_end=1000),
+            },
         ),
         name="z1_sw",
         dt_s=DT_DC,
@@ -333,8 +335,9 @@ def _setup_ieee123(inference_data, training_trace, logistic_models):
         DatacenterConfig(gpus_per_server=8, base_kw_per_phase=265.0),
         OfflineWorkload(
             inference_data=inference_data.filter_models(specs_z2),
-            replica_counts={md.spec.model_label: md.num_replicas for md in models_z2},
-            inference_ramps=InferenceRamp(target=104, model="Qwen3-30B-A3B").at(t_start=1500, t_end=2500),
+            replica_schedules={
+                "Qwen3-30B-A3B": ReplicaSchedule(initial=80).ramp_to(104, t_start=1500, t_end=2500),
+            },
         ),
         name="z2_nw",
         dt_s=DT_DC,
@@ -346,8 +349,10 @@ def _setup_ieee123(inference_data, training_trace, logistic_models):
         DatacenterConfig(gpus_per_server=8, base_kw_per_phase=295.0),
         OfflineWorkload(
             inference_data=inference_data.filter_models(specs_z3),
-            replica_counts={md.spec.model_label: md.num_replicas for md in models_z3},
-            inference_ramps=InferenceRamp(target=45, model="Llama-3.1-70B").at(t_start=700, t_end=1100),
+            replica_schedules={
+                "Llama-3.1-70B": ReplicaSchedule(initial=30).ramp_to(45, t_start=700, t_end=1100),
+                "Llama-3.1-405B": ReplicaSchedule(initial=35),
+            },
         ),
         name="z3_se",
         dt_s=DT_DC,
@@ -359,8 +364,9 @@ def _setup_ieee123(inference_data, training_trace, logistic_models):
         DatacenterConfig(gpus_per_server=8, base_kw_per_phase=325.0),
         OfflineWorkload(
             inference_data=inference_data.filter_models(specs_z4),
-            replica_counts={md.spec.model_label: md.num_replicas for md in models_z4},
-            inference_ramps=InferenceRamp(target=27, model="Qwen3-235B-A22B").at(t_start=2000, t_end=2500),
+            replica_schedules={
+                "Qwen3-235B-A22B": ReplicaSchedule(initial=55).ramp_to(27, t_start=2000, t_end=2500),
+            },
         ),
         name="z4_ne",
         dt_s=DT_DC,
@@ -659,6 +665,7 @@ def main(
                     models=logistic_models,
                     config=ofo_config,
                     dt_s=DT_CTRL,
+                    grid=grid,
                 )
                 controllers.append(ofo_ctrl)
 
@@ -670,6 +677,7 @@ def main(
                     config=rb_config,
                     dt_s=DT_CTRL,
                     exclude_buses=exclude_buses,
+                    grid=grid,
                 )
                 controllers.append(rb_ctrl)
 

@@ -48,10 +48,9 @@ from openg2g.coordinator import Coordinator
 from openg2g.datacenter.config import (
     DatacenterConfig,
     InferenceModelSpec,
-    InferenceRamp,
-    InferenceRampSchedule,
     ModelDeployment,
     PowerAugmentationConfig,
+    ReplicaSchedule,
     TrainingRun,
 )
 from openg2g.datacenter.offline import OfflineDatacenter, OfflineWorkload
@@ -143,7 +142,7 @@ class _DCSiteConfig:
     models: tuple[ModelDeployment, ...] = ()
     seed: int = 0
     connection_type: str = "wye"
-    inference_ramps: InferenceRampSchedule | None = None
+    replica_schedules: dict[str, ReplicaSchedule] | None = None
     load_shift_headroom: float = 0.0
 
 
@@ -631,14 +630,13 @@ def setup_ieee13(
         deploy("Qwen3-235B-A22B", 210),
     )
 
-    # Ramp target=0.2 of initial replicas: 144, 36, 18, 96, 42
-    inference_ramps = (
-        InferenceRamp(target=144, model="Llama-3.1-8B").at(t_start=2500, t_end=3000)
-        | InferenceRamp(target=36, model="Llama-3.1-70B").at(t_start=2500, t_end=3000)
-        | InferenceRamp(target=18, model="Llama-3.1-405B").at(t_start=2500, t_end=3000)
-        | InferenceRamp(target=96, model="Qwen3-30B-A3B").at(t_start=2500, t_end=3000)
-        | InferenceRamp(target=42, model="Qwen3-235B-A22B").at(t_start=2500, t_end=3000)
-    )
+    replica_schedules = {
+        "Llama-3.1-8B": ReplicaSchedule(initial=720).ramp_to(144, t_start=2500, t_end=3000),
+        "Llama-3.1-70B": ReplicaSchedule(initial=180).ramp_to(36, t_start=2500, t_end=3000),
+        "Llama-3.1-405B": ReplicaSchedule(initial=90).ramp_to(18, t_start=2500, t_end=3000),
+        "Qwen3-30B-A3B": ReplicaSchedule(initial=480).ramp_to(96, t_start=2500, t_end=3000),
+        "Qwen3-235B-A22B": ReplicaSchedule(initial=210).ramp_to(42, t_start=2500, t_end=3000),
+    }
 
     dc_sites = {
         "default": _DCSiteConfig(
@@ -647,7 +645,7 @@ def setup_ieee13(
             models=models,
             seed=0,
             total_gpu_capacity=7200,
-            inference_ramps=inference_ramps,
+            replica_schedules=replica_schedules,
         ),
     }
 
@@ -764,7 +762,9 @@ def setup_ieee123(
             models=(deploy("Llama-3.1-8B", 120),),
             seed=0,
             total_gpu_capacity=120,
-            inference_ramps=InferenceRamp(target=180, model="Llama-3.1-8B").at(t_start=500, t_end=1000),
+            replica_schedules={
+                "Llama-3.1-8B": ReplicaSchedule(initial=120).ramp_to(180, t_start=500, t_end=1000),
+            },
         ),
         "z2_nw": _DCSiteConfig(
             bus="23",
@@ -772,7 +772,9 @@ def setup_ieee123(
             models=(deploy("Qwen3-30B-A3B", 80),),
             seed=17,
             total_gpu_capacity=160,
-            inference_ramps=InferenceRamp(target=104, model="Qwen3-30B-A3B").at(t_start=1500, t_end=2500),
+            replica_schedules={
+                "Qwen3-30B-A3B": ReplicaSchedule(initial=80).ramp_to(104, t_start=1500, t_end=2500),
+            },
         ),
         "z3_se": _DCSiteConfig(
             bus="60",
@@ -780,10 +782,10 @@ def setup_ieee123(
             models=(deploy("Llama-3.1-70B", 30), deploy("Llama-3.1-405B", 35)),
             seed=34,
             total_gpu_capacity=400,
-            inference_ramps=(
-                InferenceRamp(target=45, model="Llama-3.1-70B").at(t_start=700, t_end=1100)
-                | InferenceRamp(target=52, model="Llama-3.1-405B").at(t_start=700, t_end=1100)
-            ),
+            replica_schedules={
+                "Llama-3.1-70B": ReplicaSchedule(initial=30).ramp_to(45, t_start=700, t_end=1100),
+                "Llama-3.1-405B": ReplicaSchedule(initial=35).ramp_to(52, t_start=700, t_end=1100),
+            },
         ),
         "z4_ne": _DCSiteConfig(
             bus="105",
@@ -791,7 +793,9 @@ def setup_ieee123(
             models=(deploy("Qwen3-235B-A22B", 55),),
             seed=51,
             total_gpu_capacity=440,
-            inference_ramps=InferenceRamp(target=27, model="Qwen3-235B-A22B").at(t_start=2000, t_end=2500),
+            replica_schedules={
+                "Qwen3-235B-A22B": ReplicaSchedule(initial=55).ramp_to(27, t_start=2000, t_end=2500),
+            },
         ),
     }
 
@@ -860,6 +864,7 @@ def _run_single_sim(
             models=logistic_models,
             config=ofo_cfg,
             dt_s=dt_ctrl,
+            grid=grid,
         )
         controllers.append(ofo_ctrl)
 
@@ -1139,11 +1144,12 @@ def main(
 
         dc_config = DatacenterConfig(gpus_per_server=8, base_kw_per_phase=site.base_kw_per_phase)
 
-        workload_kwargs: dict = {"inference_data": site_inference}
+        rs = site.replica_schedules or {
+            md.spec.model_label: ReplicaSchedule(initial=md.num_replicas) for md in site.models
+        }
+        workload_kwargs: dict = {"inference_data": site_inference, "replica_schedules": rs}
         if training is not None:
             workload_kwargs["training"] = training
-        if site.inference_ramps is not None:
-            workload_kwargs["inference_ramps"] = site.inference_ramps
         workload = OfflineWorkload(**workload_kwargs)
 
         dc = OfflineDatacenter(

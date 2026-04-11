@@ -45,6 +45,8 @@ from matplotlib.lines import Line2D
 
 matplotlib.use("Agg")
 
+from utils import discover_candidate_buses, extract_all_voltages, find_violations
+
 from openg2g.controller.ofo import (
     LogisticModelStore,
     OFOBatchSizeController,
@@ -55,10 +57,9 @@ from openg2g.coordinator import Coordinator
 from openg2g.datacenter.config import (
     DatacenterConfig,
     InferenceModelSpec,
-    InferenceRamp,
-    InferenceRampSchedule,
     ModelDeployment,
     PowerAugmentationConfig,
+    ReplicaSchedule,
     TrainingRun,
 )
 from openg2g.datacenter.offline import OfflineDatacenter, OfflineWorkload
@@ -68,12 +69,7 @@ from openg2g.grid.config import TapPosition, TapSchedule
 from openg2g.grid.generator import ConstantGenerator, SyntheticPV
 from openg2g.grid.load import SyntheticLoad
 from openg2g.grid.opendss import OpenDSSGrid
-from openg2g.metrics.voltage import (
-    compute_allbus_voltage_stats,
-    discover_candidate_buses,
-    extract_all_voltages,
-    find_violations,
-)
+from openg2g.metrics.voltage import compute_allbus_voltage_stats
 
 from plotting import plot_allbus_voltages_per_phase, plot_model_timeseries_4panel
 from systems import SYSTEMS, TAP_STEP, tap
@@ -153,7 +149,7 @@ class _DCSiteConfig:
     models: tuple[ModelDeployment, ...] = ()
     seed: int = 0
     connection_type: str = "wye"
-    inference_ramps: InferenceRampSchedule | None = None
+    replica_schedules: dict[str, ReplicaSchedule] | None = None
     load_shift_headroom: float = 0.0
 
 
@@ -175,9 +171,8 @@ def optimize_taps_for_bus(
     inference_data: InferenceData,
     training_trace: TrainingTrace,
     training: TrainingRun | None,
-    inference_ramps: InferenceRampSchedule | None,
+    replica_schedules: dict[str, ReplicaSchedule] | None,
     initial_tap_position: TapPosition,
-    replica_counts: dict[str, int] | None = None,
     total_gpu_capacity: int = 0,
     pv_systems: list | None = None,
     time_varying_loads: list | None = None,
@@ -203,12 +198,10 @@ def optimize_taps_for_bus(
         dc_config = DatacenterConfig(gpus_per_server=8, base_kw_per_phase=base_kw_per_phase)
 
         workload_kwargs: dict = {"inference_data": inference_data}
-        if replica_counts is not None:
-            workload_kwargs["replica_counts"] = replica_counts
+        if replica_schedules is not None:
+            workload_kwargs["replica_schedules"] = replica_schedules
         if training is not None:
             workload_kwargs["training"] = training
-        if inference_ramps is not None:
-            workload_kwargs["inference_ramps"] = inference_ramps
         workload = OfflineWorkload(**workload_kwargs)
 
         dc = OfflineDatacenter(
@@ -227,6 +220,7 @@ def optimize_taps_for_bus(
             source_pu=sys["source_pu"],
             dt_s=dt_coarse,
             initial_tap_position=tap_pos,
+            exclude_buses=sys.get("exclude_buses", []),
         )
         grid.attach_dc(dc, bus=dc_bus, connection_type=connection_type, power_factor=dc_config.power_factor)
         for bus, gen in pv_systems or []:
@@ -300,13 +294,12 @@ def optimize_taps_multiscenario(
     inference_data: InferenceData,
     training_trace: TrainingTrace,
     training: TrainingRun | None,
-    inference_ramps: InferenceRampSchedule | None,
+    replica_schedules: dict[str, ReplicaSchedule] | None,
     initial_tap_position: TapPosition,
     tap_schedule_entries: list[tuple[float, TapPosition]] | None = None,
     training_t_start: float = 0,
     training_t_end: float = 0,
     ramp_t_end: float = 0,
-    replica_counts: dict[str, int] | None = None,
     total_gpu_capacity: int = 0,
     pv_systems: list | None = None,
     time_varying_loads: list | None = None,
@@ -332,7 +325,7 @@ def optimize_taps_multiscenario(
     if len(sorted_entries) >= 1 and training is not None:
         bases["training"] = sorted_entries[0][1]
 
-    if len(sorted_entries) >= 2 and inference_ramps is not None:
+    if len(sorted_entries) >= 2 and replica_schedules is not None:
         bases["low_load"] = sorted_entries[-1][1]
 
     COARSE_TICK = 60
@@ -353,7 +346,7 @@ def optimize_taps_multiscenario(
     if training is not None and "training" in bases:
         scenarios.append(("training", _round_up(t_te + 120), t_ts, bases["training"]))
 
-    if inference_ramps is not None and "low_load" in bases:
+    if replica_schedules is not None and "low_load" in bases:
         t_re = int(ramp_t_end) if ramp_t_end > 0 else total_duration_s
         scenarios.append(("low_load", _round_up(total_duration_s), t_re, bases["low_load"]))
 
@@ -375,9 +368,8 @@ def optimize_taps_multiscenario(
             inference_data=inference_data,
             training_trace=training_trace,
             training=training,
-            inference_ramps=inference_ramps,
+            replica_schedules=replica_schedules,
             initial_tap_position=init_taps,
-            replica_counts=replica_counts,
             total_gpu_capacity=total_gpu_capacity,
             pv_systems=pv_systems,
             time_varying_loads=time_varying_loads,
@@ -408,8 +400,7 @@ def run_case_1d(
     use_ofo: bool,
     ofo_config: OFOConfig | None = None,
     training: TrainingRun | None = None,
-    inference_ramps: InferenceRampSchedule | None = None,
-    replica_counts: dict[str, int] | None = None,
+    replica_schedules: dict[str, ReplicaSchedule] | None = None,
     total_gpu_capacity: int = 0,
     pv_systems: list | None = None,
     time_varying_loads: list | None = None,
@@ -427,12 +418,10 @@ def run_case_1d(
     dc_config = DatacenterConfig(gpus_per_server=8, base_kw_per_phase=base_kw_per_phase)
 
     workload_kwargs: dict = {"inference_data": inference_data}
-    if replica_counts is not None:
-        workload_kwargs["replica_counts"] = replica_counts
+    if replica_schedules is not None:
+        workload_kwargs["replica_schedules"] = replica_schedules
     if training is not None:
         workload_kwargs["training"] = training
-    if inference_ramps is not None:
-        workload_kwargs["inference_ramps"] = inference_ramps
     workload = OfflineWorkload(**workload_kwargs)
 
     dc = OfflineDatacenter(
@@ -451,6 +440,7 @@ def run_case_1d(
         source_pu=sys["source_pu"],
         dt_s=dt_grid,
         initial_tap_position=initial_taps,
+        exclude_buses=sys.get("exclude_buses", []),
     )
     grid.attach_dc(dc, bus=dc_bus, connection_type=connection_type, power_factor=dc_config.power_factor)
     for bus, gen in pv_systems or []:
@@ -470,6 +460,7 @@ def run_case_1d(
             models=logistic_models,
             config=ofo_config,
             dt_s=dt_ctrl,
+            grid=grid,
         )
         controllers.append(ofo_ctrl)
 
@@ -481,7 +472,9 @@ def run_case_1d(
     )
     log = coord.run()
 
-    stats = compute_allbus_voltage_stats(log.grid_states, v_min=v_min, v_max=v_max)
+    stats = compute_allbus_voltage_stats(
+        log.grid_states, v_min=v_min, v_max=v_max, exclude_buses=tuple(sys.get("exclude_buses", ()))
+    )
 
     dc_kW = np.array([(s.power_w.a + s.power_w.b + s.power_w.c) / 3e3 for s in log.dc_states])
     avg_power = float(dc_kW.mean()) if dc_kW.size > 0 else 0.0
@@ -568,7 +561,7 @@ def main_1d(
     logistic_models: LogisticModelStore,
     ofo_config: OFOConfig,
     training: TrainingRun | None = None,
-    inference_ramps: InferenceRampSchedule | None = None,
+    replica_schedules: dict[str, ReplicaSchedule] | None = None,
     tap_schedule_entries: list[tuple[float, TapPosition]] | None = None,
     training_t_start: float = 0,
     training_t_end: float = 0,
@@ -584,7 +577,8 @@ def main_1d(
     output_dir: Path | None = None,
 ) -> None:
     """1-D sweep: single DC site swept across candidate buses."""
-    replica_counts = {md.spec.model_label: md.num_replicas for md in dc_site.models}
+    if replica_schedules is None:
+        replica_schedules = {md.spec.model_label: ReplicaSchedule(initial=md.num_replicas) for md in dc_site.models}
     site_gpu_capacity = dc_site.total_gpu_capacity
 
     dt_dc = DT_DC
@@ -640,13 +634,12 @@ def main_1d(
                 inference_data=inference_data,
                 training_trace=training_trace,
                 training=training,
-                inference_ramps=inference_ramps,
+                replica_schedules=replica_schedules,
                 initial_tap_position=initial_taps,
                 tap_schedule_entries=tap_schedule_entries,
                 training_t_start=training_t_start,
                 training_t_end=training_t_end,
                 ramp_t_end=ramp_t_end,
-                replica_counts=replica_counts,
                 total_gpu_capacity=site_gpu_capacity,
                 pv_systems=pv_systems,
                 time_varying_loads=time_varying_loads,
@@ -701,7 +694,7 @@ def main_1d(
         bus_tap_schedule_entries = []
         if "training" in bus_taps and training is not None:
             bus_tap_schedule_entries.append((training_t_start, bus_taps["training"]))
-        if "low_load" in bus_taps and inference_ramps is not None:
+        if "low_load" in bus_taps and replica_schedules is not None:
             t_low = ramp_t_end + 120 if ramp_t_end > 0 else total_duration_s
             bus_tap_schedule_entries.append((t_low, bus_taps["low_load"]))
 
@@ -740,8 +733,7 @@ def main_1d(
                     use_ofo=use_ofo,
                     ofo_config=ofo_config,
                     training=training,
-                    inference_ramps=inference_ramps,
-                    replica_counts=replica_counts,
+                    replica_schedules=replica_schedules,
                     total_gpu_capacity=site_gpu_capacity,
                     pv_systems=pv_systems,
                     time_varying_loads=time_varying_loads,
@@ -958,18 +950,18 @@ def main_2d(
             dc_config_A = DatacenterConfig(gpus_per_server=8, base_kw_per_phase=site_A.base_kw_per_phase)
             dc_config_B = DatacenterConfig(gpus_per_server=8, base_kw_per_phase=site_B.base_kw_per_phase)
 
-            replica_counts_A = {md.spec.model_label: md.num_replicas for md in site_A.models}
-            replica_counts_B = {md.spec.model_label: md.num_replicas for md in site_B.models}
+            rs_A = site_A.replica_schedules or {
+                md.spec.model_label: ReplicaSchedule(initial=md.num_replicas) for md in site_A.models
+            }
+            rs_B = site_B.replica_schedules or {
+                md.spec.model_label: ReplicaSchedule(initial=md.num_replicas) for md in site_B.models
+            }
 
-            wl_kwargs_A: dict = {"inference_data": inference_A, "replica_counts": replica_counts_A}
-            if site_A.inference_ramps is not None:
-                wl_kwargs_A["inference_ramps"] = site_A.inference_ramps
+            wl_kwargs_A: dict = {"inference_data": inference_A, "replica_schedules": rs_A}
             if training is not None:
                 wl_kwargs_A["training"] = training
 
-            wl_kwargs_B: dict = {"inference_data": inference_B, "replica_counts": replica_counts_B}
-            if site_B.inference_ramps is not None:
-                wl_kwargs_B["inference_ramps"] = site_B.inference_ramps
+            wl_kwargs_B: dict = {"inference_data": inference_B, "replica_schedules": rs_B}
             if training is not None:
                 wl_kwargs_B["training"] = training
 
@@ -1017,6 +1009,7 @@ def main_2d(
                 models=logistic_models,
                 config=ofo_config,
                 dt_s=dt_ctrl,
+                grid=grid,
             )
             ofo_B = OFOBatchSizeController(
                 specs_B,
@@ -1024,6 +1017,7 @@ def main_2d(
                 models=logistic_models,
                 config=ofo_config,
                 dt_s=dt_ctrl,
+                grid=grid,
             )
 
             coord = Coordinator(
@@ -1123,8 +1117,10 @@ def _run_multi_dc_case(
             gpus_per_server=8,
             base_kw_per_phase=site.base_kw_per_phase,
         )
-        replica_counts = {md.spec.model_label: md.num_replicas for md in site.models}
-        wl_kwargs: dict = {"inference_data": site_inference_data[sid], "replica_counts": replica_counts}
+        rs = site.replica_schedules or {
+            md.spec.model_label: ReplicaSchedule(initial=md.num_replicas) for md in site.models
+        }
+        wl_kwargs: dict = {"inference_data": site_inference_data[sid]}
 
         if stress_test:
             # Immediate per-model ramps to fill total GPU capacity
@@ -1132,16 +1128,17 @@ def _run_multi_dc_case(
             total_cap = site.total_gpu_capacity or current_gpus
             scale = total_cap / current_gpus if current_gpus > 0 else 1.0
             if scale > 1.0:
-                ramp_schedule: InferenceRampSchedule | None = None
+                stress_rs = {}
                 for md in site.models:
                     abs_target = round(scale * md.num_replicas)
-                    entry = InferenceRamp(target=abs_target, model=md.spec.model_label).at(t_start=0, t_end=1)
-                    ramp_schedule = entry if ramp_schedule is None else (ramp_schedule | entry)
-                if ramp_schedule is not None:
-                    wl_kwargs["inference_ramps"] = ramp_schedule
+                    stress_rs[md.spec.model_label] = ReplicaSchedule(initial=md.num_replicas).ramp_to(
+                        abs_target, t_start=0, t_end=1
+                    )
+                wl_kwargs["replica_schedules"] = stress_rs
+            else:
+                wl_kwargs["replica_schedules"] = rs
         else:
-            if site.inference_ramps is not None:
-                wl_kwargs["inference_ramps"] = site.inference_ramps
+            wl_kwargs["replica_schedules"] = rs
             if training is not None:
                 wl_kwargs["training"] = training
 
@@ -1193,6 +1190,7 @@ def _run_multi_dc_case(
             models=logistic_models,
             config=ofo_config,
             dt_s=dt_ctrl,
+            grid=grid,
         )
         controllers.append(ofo_ctrl)
 
@@ -1896,16 +1894,13 @@ def setup_ieee13(sys_const, training_trace):
         deploy("Qwen3-235B-A22B", 210),
     )
 
-    # Per-model ramps: target = round(fraction * num_replicas) with fraction=0.2
-    # 8B: round(0.2*720)=144, 70B: round(0.2*180)=36, 405B: round(0.2*90)=18,
-    # Qwen-32B: round(0.2*480)=96, Qwen-72B: round(0.2*210)=42
-    inference_ramps = (
-        InferenceRamp(target=144, model="Llama-3.1-8B").at(t_start=2500, t_end=3000)
-        | InferenceRamp(target=36, model="Llama-3.1-70B").at(t_start=2500, t_end=3000)
-        | InferenceRamp(target=18, model="Llama-3.1-405B").at(t_start=2500, t_end=3000)
-        | InferenceRamp(target=96, model="Qwen3-30B-A3B").at(t_start=2500, t_end=3000)
-        | InferenceRamp(target=42, model="Qwen3-235B-A22B").at(t_start=2500, t_end=3000)
-    )
+    replica_schedules = {
+        "Llama-3.1-8B": ReplicaSchedule(initial=720).ramp_to(144, t_start=2500, t_end=3000),
+        "Llama-3.1-70B": ReplicaSchedule(initial=180).ramp_to(36, t_start=2500, t_end=3000),
+        "Llama-3.1-405B": ReplicaSchedule(initial=90).ramp_to(18, t_start=2500, t_end=3000),
+        "Qwen3-30B-A3B": ReplicaSchedule(initial=480).ramp_to(96, t_start=2500, t_end=3000),
+        "Qwen3-235B-A22B": ReplicaSchedule(initial=210).ramp_to(42, t_start=2500, t_end=3000),
+    }
 
     dc_sites = {
         "default": _DCSiteConfig(
@@ -1914,7 +1909,7 @@ def setup_ieee13(sys_const, training_trace):
             models=models,
             seed=0,
             total_gpu_capacity=7200,
-            inference_ramps=inference_ramps,
+            replica_schedules=replica_schedules,
         ),
     }
 
@@ -2034,8 +2029,9 @@ def setup_ieee123(sys_const, training_trace):
             models=(deploy("Llama-3.1-8B", 120),),
             seed=0,
             total_gpu_capacity=120,
-            # 8B: round(1.5 * 120) = 180
-            inference_ramps=InferenceRamp(target=180, model="Llama-3.1-8B").at(t_start=500, t_end=1000),
+            replica_schedules={
+                "Llama-3.1-8B": ReplicaSchedule(initial=120).ramp_to(180, t_start=500, t_end=1000),
+            },
         ),
         "z2_nw": _DCSiteConfig(
             bus="23",
@@ -2043,8 +2039,9 @@ def setup_ieee123(sys_const, training_trace):
             models=(deploy("Qwen3-30B-A3B", 80),),
             seed=17,
             total_gpu_capacity=160,
-            # 30B: round(1.3 * 80) = 104
-            inference_ramps=InferenceRamp(target=104, model="Qwen3-30B-A3B").at(t_start=1500, t_end=2500),
+            replica_schedules={
+                "Qwen3-30B-A3B": ReplicaSchedule(initial=80).ramp_to(104, t_start=1500, t_end=2500),
+            },
         ),
         "z3_se": _DCSiteConfig(
             bus="60",
@@ -2052,11 +2049,10 @@ def setup_ieee123(sys_const, training_trace):
             models=(deploy("Llama-3.1-70B", 30), deploy("Llama-3.1-405B", 35)),
             seed=34,
             total_gpu_capacity=400,
-            # 70B: round(1.5 * 30) = 45, 405B: round(1.5 * 35) = 52
-            inference_ramps=(
-                InferenceRamp(target=45, model="Llama-3.1-70B").at(t_start=700, t_end=1100)
-                | InferenceRamp(target=52, model="Llama-3.1-405B").at(t_start=700, t_end=1100)
-            ),
+            replica_schedules={
+                "Llama-3.1-70B": ReplicaSchedule(initial=30).ramp_to(45, t_start=700, t_end=1100),
+                "Llama-3.1-405B": ReplicaSchedule(initial=35).ramp_to(52, t_start=700, t_end=1100),
+            },
         ),
         "z4_ne": _DCSiteConfig(
             bus="105",
@@ -2064,8 +2060,9 @@ def setup_ieee123(sys_const, training_trace):
             models=(deploy("Qwen3-235B-A22B", 55),),
             seed=51,
             total_gpu_capacity=440,
-            # 235B: round(0.5 * 55) = 27
-            inference_ramps=InferenceRamp(target=27, model="Qwen3-235B-A22B").at(t_start=2000, t_end=2500),
+            replica_schedules={
+                "Qwen3-235B-A22B": ReplicaSchedule(initial=55).ramp_to(27, t_start=2000, t_end=2500),
+            },
         ),
     }
 
@@ -2198,7 +2195,7 @@ def main(
             logistic_models=logistic_models,
             ofo_config=config["ofo_config"],
             training=config.get("training"),
-            inference_ramps=dc_site.inference_ramps,
+            replica_schedules=dc_site.replica_schedules,
             tap_schedule_entries=config.get("tap_schedule_entries"),
             training_t_start=config.get("training_t_start", 0),
             training_t_end=config.get("training_t_end", 0),

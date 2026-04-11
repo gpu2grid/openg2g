@@ -15,7 +15,7 @@ from openg2g.controller.base import Controller
 from openg2g.datacenter.base import DatacenterBackend, DCStateT
 from openg2g.datacenter.command import DatacenterCommand
 from openg2g.events import EventEmitter, SimEvent
-from openg2g.grid.base import GridBackend, GridStateT, PhaseVoltages
+from openg2g.grid.base import GridBackend, GridStateT
 from openg2g.grid.command import GridCommand
 
 logger = logging.getLogger(__name__)
@@ -31,9 +31,6 @@ class SimulationLog(Generic[DCStateT, GridStateT]):
         grid_states: Every grid state produced by the grid.
         commands: All commands emitted by controllers.
         time_s: Simulation time at each grid step (seconds).
-        voltage_a_pu: DC-bus voltage phase A at each grid step (pu).
-        voltage_b_pu: DC-bus voltage phase B at each grid step (pu).
-        voltage_c_pu: DC-bus voltage phase C at each grid step (pu).
         events: Clock-stamped simulation events from all components.
     """
 
@@ -43,9 +40,6 @@ class SimulationLog(Generic[DCStateT, GridStateT]):
     commands: list[DatacenterCommand | GridCommand] = field(default_factory=list)
 
     time_s: list[float] = field(default_factory=list)
-    voltage_a_pu: list[float] = field(default_factory=list)
-    voltage_b_pu: list[float] = field(default_factory=list)
-    voltage_c_pu: list[float] = field(default_factory=list)
 
     events: list[SimEvent] = field(default_factory=list)
 
@@ -54,19 +48,10 @@ class SimulationLog(Generic[DCStateT, GridStateT]):
         self.dc_states.append(state)
         self.dc_states_by_site.setdefault(dc_name, []).append(state)
 
-    def record_grid(self, state: GridStateT, *, dc_bus: str) -> None:
-        """Append a grid state snapshot and extract DC bus voltages."""
+    def record_grid(self, state: GridStateT) -> None:
+        """Append a grid state snapshot."""
         self.grid_states.append(state)
         self.time_s.append(state.time_s)
-
-        v_dc = (
-            state.voltages[dc_bus]
-            if dc_bus in state.voltages
-            else PhaseVoltages(a=float("nan"), b=float("nan"), c=float("nan"))
-        )
-        self.voltage_a_pu.append(v_dc.a)
-        self.voltage_b_pu.append(v_dc.b)
-        self.voltage_c_pu.append(v_dc.c)
 
     def record_commands(self, commands: list[DatacenterCommand | GridCommand]) -> None:
         """Append control commands issued during a tick."""
@@ -119,11 +104,8 @@ class Coordinator(Generic[DCStateT, GridStateT]):
             raise ValueError(f"Datacenter names must be unique. Duplicates: {dupes}")
 
         self.grid = grid
-        self.controllers = list(controllers or [])
+        self.controllers: list[Controller] = list(controllers or [])
         self.total_duration_s = int(total_duration_s)
-
-        # Use first DC's bus for voltage logging
-        self._dc_bus = grid.dc_bus(self._datacenters[0])
 
         # Compute tick as GCD of all component periods
         periods = [grid.dt_s] + [dc.dt_s for dc in self._datacenters] + [c.dt_s for c in self.controllers]
@@ -156,10 +138,7 @@ class Coordinator(Generic[DCStateT, GridStateT]):
 
         self.clock = SimulationClock(tick_s=tick, live=live)
 
-    @property
-    def datacenters(self) -> list[DatacenterBackend[DCStateT]]:
-        """List of datacenter backends."""
-        return list(self._datacenters)
+        self._validate_controller_compatibility()
 
     def reset(self) -> None:
         """Reset coordinator and all sub-components for a fresh run."""
@@ -220,8 +199,6 @@ class Coordinator(Generic[DCStateT, GridStateT]):
         grid_events = EventEmitter(self.clock, log, "grid")
         controller_events = EventEmitter(self.clock, log, "controller")
 
-        self._validate_controller_compatibility()
-
         self.reset()
         self.start()
 
@@ -260,26 +237,20 @@ class Coordinator(Generic[DCStateT, GridStateT]):
                     grid_state = self.grid.do_step(self.clock, power_arg, grid_events)
                     for buf in dc_buffers.values():
                         buf.clear()
-                    log.record_grid(grid_state, dc_bus=self._dc_bus)
+                    log.record_grid(grid_state)
 
                 # 3. Controllers (if due). In order, actions applied immediately.
                 for ctrl in self.controllers:
                     if self.clock.is_due(ctrl.dt_s):
-                        commands = ctrl.step(self.clock, self.grid, controller_events)
+                        commands = ctrl.step(self.clock, controller_events)
                         for command in commands:
                             if isinstance(command, DatacenterCommand):
-                                target = command.target
-                                if target is None:
-                                    ctrl_dcs = ctrl.datacenters
-                                    if len(ctrl_dcs) == 1:
-                                        target = ctrl_dcs[0]
-                                    else:
-                                        raise ValueError(
-                                            f"{type(ctrl).__name__} returned {type(command).__name__} "
-                                            f"without target, but has {len(ctrl_dcs)} datacenters. "
-                                            "Multi-DC controllers must set command.target explicitly."
-                                        )
-                                target.apply_control(command, dc_events)
+                                if command.target is None:
+                                    raise ValueError(
+                                        f"{type(ctrl).__name__} returned {type(command).__name__} "
+                                        f"without target. Controllers must set command.target."
+                                    )
+                                command.target.apply_control(command, dc_events)
                             elif isinstance(command, GridCommand):
                                 self.grid.apply_control(command, grid_events)
                             else:

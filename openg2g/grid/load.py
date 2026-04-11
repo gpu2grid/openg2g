@@ -63,14 +63,14 @@ class CSVProfileLoad(ExternalLoad):
 
 
 class SyntheticLoad(ExternalLoad):
-    """Demonstration load profile with bumps and fluctuation.
+    """Synthetic load profile with bumps and fluctuation.
 
     Each `site_idx` produces a visually distinct curve with different
     diurnal patterns. These are synthetic profiles for demonstration.
 
     Args:
         peak_kw: Peak load consumption in kW.
-        site_idx: Site index for distinct per-site profiles.
+        site_idx: Site index for distinct per-site profiles (0 to 4).
     """
 
     def __init__(self, peak_kw: float, site_idx: int = 0) -> None:
@@ -98,9 +98,10 @@ class SyntheticLoad(ExternalLoad):
         elif idx == 3:
             base = 0.10 + 0.90 * smooth_bump(t, 3120, 800)
             return max(0.0, self._peak_kw * base * fluct)
-        else:
+        elif idx == 4:
             base = 0.10
             base += 0.60 * smooth_bump(t, 1080, 300)
             base += 0.75 * smooth_bump(t, 2100, 350)
             base += 0.90 * smooth_bump(t, 3300, 300)
             return max(0.0, self._peak_kw * base * fluct)
+        raise ValueError(f"Invalid site_idx {idx} for SyntheticLoad; must be 0 to 4.")

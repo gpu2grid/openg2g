@@ -97,8 +97,9 @@ def _make_model_store() -> LogisticModelStore:
     return LogisticModelStore(power, latency, throughput)
 
 
-def _build_controller(datacenter: LLMBatchSizeControlledDatacenter) -> OFOBatchSizeController:
+def _build_controller(datacenter: LLMBatchSizeControlledDatacenter, grid=None) -> OFOBatchSizeController:
     model = InferenceModelSpec(
+        model_id="test/Model",
         model_label="M1",
         gpus_per_replica=1,
         itl_deadline_s=0.1,
@@ -107,6 +108,7 @@ def _build_controller(datacenter: LLMBatchSizeControlledDatacenter) -> OFOBatchS
     return OFOBatchSizeController(
         (model,),
         datacenter=datacenter,
+        grid=grid,
         models=_make_model_store(),
         config=OFOConfig(
             primal_step_size=0.05,
@@ -124,8 +126,8 @@ def _build_controller(datacenter: LLMBatchSizeControlledDatacenter) -> OFOBatchS
 
 def test_ofo_uses_observed_latency_for_dual_update():
     dc = _DCStub()
-    ctrl = _build_controller(dc)
     grid = _GridStub()
+    ctrl = _build_controller(dc, grid=grid)
 
     dc_state = LLMDatacenterState(
         time_s=0.0,
@@ -143,15 +145,15 @@ def test_ofo_uses_observed_latency_for_dual_update():
     log = SimulationLog()
     events = EventEmitter(SimulationClock(Fraction(1)), log, "controller")
 
-    action = ctrl.step(SimulationClock(Fraction(1)), grid, events)
+    action = ctrl.step(SimulationClock(Fraction(1)), events)
     assert len(action) == 1
     assert ctrl._latency_dual_by_model["M1"] > 0.0
 
 
 def test_ofo_requires_observed_latency_map():
     dc = _DCStub()
-    ctrl = _build_controller(dc)
     grid = _GridStub()
+    ctrl = _build_controller(dc, grid=grid)
 
     dc_state = LLMDatacenterState(
         time_s=0.0,
@@ -165,7 +167,7 @@ def test_ofo_requires_observed_latency_map():
     events = EventEmitter(SimulationClock(Fraction(1)), log, "controller")
 
     try:
-        ctrl.step(SimulationClock(Fraction(1)), grid, events)
+        ctrl.step(SimulationClock(Fraction(1)), events)
     except RuntimeError as exc:
         assert "observed_itl_s_by_model" in str(exc)
     else:

@@ -8,12 +8,18 @@ Note: Discovery tests depend on OpenDSS. If unavailable, they are skipped.
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
 import numpy as np
 import pytest
 
 from openg2g.grid.generator import SyntheticPV
 from openg2g.grid.load import SyntheticLoad
-from openg2g.metrics.voltage import find_violations
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "examples" / "offline"))
+from utils import find_violations
+
 from openg2g.utils import smooth_bump
 
 
@@ -70,7 +76,7 @@ class TestFindViolations:
 
 # Discovery tests require OpenDSS
 try:
-    from openg2g.metrics.voltage import discover_candidate_buses
+    from utils import discover_candidate_buses
 
     _HAS_OPENDSS = True
 except Exception:

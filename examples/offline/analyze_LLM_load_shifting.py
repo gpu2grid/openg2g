@@ -40,6 +40,7 @@ from openg2g.datacenter.config import (
     InferenceModelSpec,
     ModelDeployment,
     PowerAugmentationConfig,
+    ReplicaSchedule,
 )
 from openg2g.datacenter.offline import OfflineDatacenter, OfflineWorkload
 from openg2g.datacenter.workloads.inference import InferenceData, MLEnergySource
@@ -218,7 +219,7 @@ def _build_setup(
             DatacenterConfig(gpus_per_server=8, base_kw_per_phase=site_def["base_kw_per_phase"]),
             OfflineWorkload(
                 inference_data=inference_data.filter_models(specs),
-                replica_counts={m.spec.model_label: m.num_replicas for m in models},
+                replica_schedules={m.spec.model_label: ReplicaSchedule(initial=m.num_replicas) for m in models},
             ),
             name=site_name,
             dt_s=DT_DC,
@@ -585,6 +586,7 @@ def _run_case(
                 models=logistic_models,
                 config=ofo_config,
                 dt_s=DT_CTRL,
+                grid=grid,
             )
         )
 
@@ -600,6 +602,7 @@ def _run_case(
                 ),
                 dt_s=DT_CTRL,
                 datacenters=datacenters,
+                grid=grid,
                 dc_bus_map=dc_bus_map,
                 models_by_dc=models_by_dc,
                 gpus_per_replica_by_model={m: s.gpus_per_replica for m, s in all_specs_flat.items()},

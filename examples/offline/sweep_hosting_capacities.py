@@ -49,6 +49,7 @@ import numpy as np
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from utils import discover_candidate_buses, extract_all_voltages, find_violations
 
 from openg2g.controller.ofo import (
     LogisticModelStore,
@@ -60,9 +61,9 @@ from openg2g.coordinator import Coordinator
 from openg2g.datacenter.config import (
     DatacenterConfig,
     InferenceModelSpec,
-    InferenceRamp,
     ModelDeployment,
     PowerAugmentationConfig,
+    ReplicaSchedule,
 )
 from openg2g.datacenter.offline import OfflineDatacenter, OfflineWorkload
 from openg2g.datacenter.workloads.inference import InferenceData, MLEnergySource
@@ -70,13 +71,7 @@ from openg2g.grid.config import TapPosition, TapSchedule
 from openg2g.grid.generator import SyntheticPV
 from openg2g.grid.load import SyntheticLoad
 from openg2g.grid.opendss import OpenDSSGrid
-from openg2g.metrics.voltage import (
-    VoltageStats,
-    compute_allbus_voltage_stats,
-    discover_candidate_buses,
-    extract_all_voltages,
-    find_violations,
-)
+from openg2g.metrics.voltage import VoltageStats, compute_allbus_voltage_stats
 
 from systems import SYSTEMS, TAP_STEP
 
@@ -275,7 +270,6 @@ def run_step_check(
     total_gpu_power_w = num_replicas * model_spec.gpus_per_replica * 700
     base_kw_per_phase = total_gpu_power_w / 3.0 / 1000.0
     total_gpus = num_replicas * model_spec.gpus_per_replica
-    replica_counts = {model_spec.model_label: num_replicas}
 
     single_inference = InferenceData(
         models=(model_spec,),
@@ -290,9 +284,12 @@ def run_step_check(
     dc_list: list[OfflineDatacenter] = []
     for i in range(len(dc_buses)):
         sid = f"site_{i}" if len(dc_buses) > 1 else "dc"
-        ramps = InferenceRamp(target=abs_target, model=model_spec.model_label).at(t_start=0, t_end=0)
+        replica_schedules = {
+            model_spec.model_label: ReplicaSchedule(initial=num_replicas).ramp_to(abs_target, t_start=0, t_end=0),
+        }
         workload = OfflineWorkload(
-            inference_data=single_inference, replica_counts=replica_counts, inference_ramps=ramps
+            inference_data=single_inference,
+            replica_schedules=replica_schedules,
         )
         dc_list.append(
             OfflineDatacenter(
@@ -313,6 +310,7 @@ def run_step_check(
         dt_s=STEP_DT,
         dss_controls=False,
         initial_tap_position=tap_position,
+        exclude_buses=config.exclude_buses,
     )
     for dc, bus in zip(dc_list, dc_buses, strict=False):
         grid.attach_dc(dc, bus=bus, connection_type=config.connection_type, power_factor=dc_config.power_factor)
@@ -532,21 +530,23 @@ def check_all_steps(
 # OFO + tap-change staircase
 
 
-def _build_staircase_ramps(model_label: str, num_replicas: int):
-    """Build InferenceRampSchedule for the staircase activation pattern.
+def _build_staircase_replica_schedules(model_label: str, num_replicas: int) -> dict[str, ReplicaSchedule]:
+    """Build ReplicaSchedule for the staircase activation pattern.
 
     Args:
         model_label: Model label string (e.g. `"Llama-3.1-8B"`).
         num_replicas: Total number of replicas; fractions are converted to
             absolute counts via `round(fraction * num_replicas)`.
     """
-    ramps = InferenceRamp(target=round(0.0 * num_replicas), model=model_label).at(t_start=0, t_end=0)
-    ramps = ramps | InferenceRamp(target=round(0.2 * num_replicas), model=model_label).at(t_start=0, t_end=60)
-    ramps = ramps | InferenceRamp(target=round(0.4 * num_replicas), model=model_label).at(t_start=60, t_end=120)
-    ramps = ramps | InferenceRamp(target=round(0.6 * num_replicas), model=model_label).at(t_start=120, t_end=180)
-    ramps = ramps | InferenceRamp(target=round(0.8 * num_replicas), model=model_label).at(t_start=180, t_end=240)
-    ramps = ramps | InferenceRamp(target=round(1.0 * num_replicas), model=model_label).at(t_start=240, t_end=300)
-    return ramps
+    schedule = (
+        ReplicaSchedule(initial=round(0.0 * num_replicas))
+        .ramp_to(round(0.2 * num_replicas), t_start=0, t_end=60)
+        .ramp_to(round(0.4 * num_replicas), t_start=60, t_end=120)
+        .ramp_to(round(0.6 * num_replicas), t_start=120, t_end=180)
+        .ramp_to(round(0.8 * num_replicas), t_start=180, t_end=240)
+        .ramp_to(round(1.0 * num_replicas), t_start=240, t_end=300)
+    )
+    return {model_label: schedule}
 
 
 def _build_tap_schedule_from_steps(steps: list[StepResult]) -> TapSchedule:
@@ -583,7 +583,6 @@ def run_ofo_staircase(
     total_gpu_power_w = num_replicas * model_spec.gpus_per_replica * 700
     base_kw_per_phase = total_gpu_power_w / 3.0 / 1000.0
     total_gpus = num_replicas * model_spec.gpus_per_replica
-    replica_counts = {model_spec.model_label: num_replicas}
 
     single_inference = InferenceData(
         models=(model_spec,),
@@ -609,13 +608,28 @@ def run_ofo_staircase(
 
     tap_ctrl = TapScheduleController(schedule=tap_schedule, dt_s=STAIRCASE_DT)
 
+    grid = OpenDSSGrid(
+        dss_case_dir=config.dss_case_dir,
+        dss_master_file=config.dss_master_file,
+        source_pu=config.source_pu,
+        dt_s=STAIRCASE_DT,
+        dss_controls=False,
+        initial_tap_position=initial_taps,
+        exclude_buses=config.exclude_buses,
+    )
+    for bus, gen in config.pv_systems:
+        grid.attach_generator(gen, bus=bus)
+    for bus, ld in config.time_varying_loads:
+        grid.attach_load(ld, bus=bus)
+
     dc_list: list[OfflineDatacenter] = []
     controllers = [tap_ctrl]
     for i in range(len(dc_buses)):
         sid = f"site_{i}" if len(dc_buses) > 1 else "dc"
-        ramps = _build_staircase_ramps(model_spec.model_label, num_replicas)
+        staircase_rs = _build_staircase_replica_schedules(model_spec.model_label, num_replicas)
         workload = OfflineWorkload(
-            inference_data=single_inference, replica_counts=replica_counts, inference_ramps=ramps
+            inference_data=single_inference,
+            replica_schedules=staircase_rs,
         )
         dc = OfflineDatacenter(
             dc_config,
@@ -627,6 +641,7 @@ def run_ofo_staircase(
             total_gpu_capacity=total_gpus,
         )
         dc_list.append(dc)
+        grid.attach_dc(dc, bus=dc_buses[i], connection_type=config.connection_type, power_factor=dc_config.power_factor)
         controllers.append(
             OFOBatchSizeController(
                 (model_spec,),
@@ -634,23 +649,9 @@ def run_ofo_staircase(
                 models=logistic_models,
                 config=ofo_config,
                 dt_s=STAIRCASE_DT,
+                grid=grid,
             )
         )
-
-    grid = OpenDSSGrid(
-        dss_case_dir=config.dss_case_dir,
-        dss_master_file=config.dss_master_file,
-        source_pu=config.source_pu,
-        dt_s=STAIRCASE_DT,
-        dss_controls=False,
-        initial_tap_position=initial_taps,
-    )
-    for dc, bus in zip(dc_list, dc_buses, strict=False):
-        grid.attach_dc(dc, bus=bus, connection_type=config.connection_type, power_factor=dc_config.power_factor)
-    for bus, gen in config.pv_systems:
-        grid.attach_generator(gen, bus=bus)
-    for bus, ld in config.time_varying_loads:
-        grid.attach_load(ld, bus=bus)
 
     coord = Coordinator(
         datacenters=dc_list,

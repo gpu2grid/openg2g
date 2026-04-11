@@ -102,7 +102,7 @@ class OpenDSSGrid(GridBackend[GridState]):
         source_pu: float | None = None,
         dss_controls: bool = False,
         initial_tap_position: TapPosition | None = None,
-        exclude_buses: Sequence[str] = ("rg60",),
+        exclude_buses: Sequence[str] = (),
     ) -> None:
         super().__init__()
         if dss is None:
@@ -132,8 +132,6 @@ class OpenDSSGrid(GridBackend[GridState]):
         self.all_buses: list[str] = []
         self.buses_with_phase: dict[int, list[str]] = {}
         self._v_index: list[tuple[str, int]] = []
-
-    # Attach API (must be called before start)
 
     def attach_dc(
         self,
