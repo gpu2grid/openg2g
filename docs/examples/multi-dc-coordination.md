@@ -48,15 +48,14 @@ The `LoadShiftController` follows five rules:
 
 ## Configuration
 
-Load shifting is configured via `LoadShiftConfig` and `OfflineDatacenter` parameters:
+Load shifting is configured via `LoadShiftConfig`:
 
 ```python
-LoadShiftConfig(enabled=True, gpus_per_shift=8, headroom=0.3)
+LoadShiftConfig(enabled=True, gpus_per_shift=8)
 ```
 
 - `enabled`: Enable/disable the load shifting controller
 - `gpus_per_shift`: GPUs moved per control step (default 8)
-- `headroom`: Fraction of extra server capacity to pre-allocate (default 0.3)
 - `total_gpu_capacity` on `OfflineDatacenter`: Maximum GPUs per site (enforced during shifting)
 - Each site must have at least 3 models for warm-start shifting
 

@@ -55,23 +55,21 @@ class InferenceModelSpec(BaseModel):
 class ModelDeployment:
     """One model's deployment at a datacenter site.
 
-    Pairs an [`InferenceModelSpec`][openg2g.datacenter.config.InferenceModelSpec] (model identity) with
-    deployment-specific parameters.
+    Pairs an [`InferenceModelSpec`][openg2g.datacenter.config.InferenceModelSpec] (model identity)
+    with the initial batch size. Replica counts (including runtime ramps)
+    live on [`ReplicaSchedule`][openg2g.datacenter.config.ReplicaSchedule]
+    and are passed separately via `OfflineWorkload.replica_schedules`.
 
     Attributes:
         spec: The model specification.
-        num_replicas: Number of replicas deployed at this site.
         initial_batch_size: Starting batch size for this deployment.
             Must be in `spec.feasible_batch_sizes`.
     """
 
     spec: InferenceModelSpec
-    num_replicas: int
     initial_batch_size: int
 
     def __post_init__(self) -> None:
-        if self.num_replicas < 0:
-            raise ValueError(f"num_replicas must be >= 0, got {self.num_replicas}.")
         if self.initial_batch_size <= 0:
             raise ValueError(f"initial_batch_size must be > 0, got {self.initial_batch_size}.")
         if self.initial_batch_size not in self.spec.feasible_batch_sizes:
@@ -237,7 +235,12 @@ class ReplicaSchedule:
         return self._initial
 
     def ramp_to(self, target: int, *, t_start: float, t_end: float) -> ReplicaSchedule:
-        """Append a linear ramp to `target` over `[t_start, t_end]`.
+        """Add a linear ramp to `target` over `[t_start, t_end]`.
+
+        Ramps may be specified in any order; they are sorted by `t_start`
+        in the returned schedule. The new ramp must not overlap any
+        existing ramp's window (touching at the boundary is allowed:
+        `prev.t_end == new.t_start`).
 
         Args:
             target: Target replica count after the ramp completes.
@@ -245,14 +248,30 @@ class ReplicaSchedule:
             t_end: Global simulation time when the ramp ends (seconds).
 
         Returns:
-            A new `ReplicaSchedule` with the ramp appended.
+            A new `ReplicaSchedule` with the ramp added and ramps sorted
+            by `t_start`.
+
+        Raises:
+            ValueError: If `target` is negative, `t_end < t_start`, or
+                the new ramp overlaps any existing ramp window.
         """
         if target < 0:
             raise ValueError(f"ramp_to target must be >= 0, got {target}.")
         if t_end < t_start:
             raise ValueError(f"t_end ({t_end}) must be >= t_start ({t_start}).")
+        # Reject overlap with existing ramps: [t_start, t_end] must not
+        # overlap any existing [s, e]. Touching boundaries (t_end == s or
+        # t_start == e) is allowed.
+        for _target, s, e in self._ramps:
+            if t_start < e and t_end > s:
+                raise ValueError(f"ramp_to window [{t_start}, {t_end}] overlaps existing ramp window [{s}, {e}].")
         new = ReplicaSchedule(initial=self._initial)
-        new._ramps = (*self._ramps, (int(target), float(t_start), float(t_end)))
+        new._ramps = tuple(
+            sorted(
+                (*self._ramps, (int(target), float(t_start), float(t_end))),
+                key=lambda r: r[1],
+            )
+        )
         return new
 
     def max_count(self) -> int:

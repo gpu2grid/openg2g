@@ -97,7 +97,6 @@ class OfflineDatacenter(LLMBatchSizeControlledDatacenter[OfflineDatacenterState]
         dt_s: Fraction,
         seed: int = 0,
         power_augmentation: PowerAugmentationConfig | None = None,
-        load_shift_headroom: float = 0.0,
         total_gpu_capacity: int,
     ) -> None:
         super().__init__(name=name)
@@ -107,7 +106,6 @@ class OfflineDatacenter(LLMBatchSizeControlledDatacenter[OfflineDatacenterState]
         self._datacenter = datacenter
         self._workload = workload
         self._power_augmentation = power_augmentation
-        self._load_shift_headroom = load_shift_headroom
         self._total_gpu_capacity = total_gpu_capacity
         self._replica_counts = {label: sched.initial for label, sched in workload.replica_schedules.items()}
         self._dt_s = dt_s
@@ -144,6 +142,7 @@ class OfflineDatacenter(LLMBatchSizeControlledDatacenter[OfflineDatacenterState]
         self._global_step: int = 0
         self._latency_rng = np.random.default_rng(self._seed + 54321)
         self._replica_offset_by_model: dict[str, int] = {ms.model_label: 0 for ms in self._models}
+        self._last_allocation: dict[str, np.ndarray] = {}
 
         logger.info(
             "OfflineDatacenter: %d models, dt=%s s, seed=%d, gpu_capacity=%d",
@@ -234,6 +233,7 @@ class OfflineDatacenter(LLMBatchSizeControlledDatacenter[OfflineDatacenterState]
             replica_counts[label] = max(0, int(round(schedule.count_at(t_now))) + offset)
 
         inference_aug = self._inference_augmenter.augment(per_gpu_by_model, replica_counts)
+        self._last_allocation = inference_aug.allocation
 
         power_by_model = dict(inference_aug.power_by_model_w)
         active_replicas_by_model = dict(inference_aug.active_replicas_by_model)
@@ -337,6 +337,7 @@ class OfflineDatacenter(LLMBatchSizeControlledDatacenter[OfflineDatacenterState]
             for ms in self._models
         }
         self._replica_offset_by_model = {ms.model_label: 0 for ms in self._models}
+        self._last_allocation = {}
         self._layout_rng = np.random.default_rng(self._seed)
         self._model_schedules = {
             ms.model_label: self._workload.replica_schedules[ms.model_label]
@@ -396,25 +397,14 @@ class OfflineDatacenter(LLMBatchSizeControlledDatacenter[OfflineDatacenterState]
 
     @property
     def phase_share_by_model(self) -> dict[str, np.ndarray]:
-        """Per-model phase share vectors based on current pool allocation.
+        """Per-model phase share vectors from the last pool allocation.
 
         Returns:
             Mapping of model label to a 3-element array `[frac_A, frac_B, frac_C]`
                 representing the fraction of allocated servers on each phase.
         """
-        # Compute current allocation
-        gpu_demands = {}
-        for ms in self._models:
-            label = ms.model_label
-            initial = self._replica_counts.get(label, 0)
-            offset = self._replica_offset_by_model.get(label, 0)
-            effective = max(0, initial + offset)
-            gpu_demands[label] = effective * ms.gpus_per_replica
-
-        allocation = self._pool.allocate(gpu_demands)
-
         shares: dict[str, np.ndarray] = {}
-        for label, server_indices in allocation.items():
+        for label, server_indices in self._last_allocation.items():
             if len(server_indices) == 0:
                 continue
             counts = np.bincount(self._pool.phase_list[server_indices], minlength=3).astype(float)

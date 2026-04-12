@@ -75,7 +75,7 @@ from openg2g.metrics.voltage import VoltageStats, compute_allbus_voltage_stats
 
 from systems import SYSTEMS, TAP_STEP
 
-_REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
 DT_DC = Fraction(1, 10)
 DT_GRID = Fraction(1, 10)
@@ -124,7 +124,13 @@ MODEL_SPECS = {s.model_label: s for s in ALL_MODEL_SPECS}
 
 
 def deploy(label, num_replicas, initial_batch_size=128):
-    return ModelDeployment(spec=MODEL_SPECS[label], num_replicas=num_replicas, initial_batch_size=initial_batch_size)
+    """Shorthand: `deploy("Llama-3.1-8B", 720, 128)` -> `ModelDeployment`.
+
+    In this file the replica count flows through separate function
+    arguments rather than the deployment, so `num_replicas` is unused.
+    """
+    _ = num_replicas
+    return ModelDeployment(spec=MODEL_SPECS[label], initial_batch_size=initial_batch_size)
 
 
 def load_data_sources(config_path=None):
@@ -138,7 +144,7 @@ def load_data_sources(config_path=None):
         sorted(sources_raw, key=lambda s: s["model_label"]),
         sort_keys=True,
     ).encode()
-    data_dir = _REPO_ROOT / "data" / "offline" / hashlib.sha256(blob).hexdigest()[:16]
+    data_dir = _PROJECT_ROOT / "data" / "offline" / hashlib.sha256(blob).hexdigest()[:16]
     return data_sources, data_dir
 
 

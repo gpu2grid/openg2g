@@ -44,21 +44,30 @@ class ServerPool:
     model_priorities: dict[str, np.ndarray]
 
     def allocate(self, gpu_demands: dict[str, int]) -> dict[str, np.ndarray]:
-        """Allocate servers to models based on GPU demand.
+        """Allocate servers to models with phase-balanced round-robin.
 
-        Models are processed in sorted label order. Each model claims
-        its top-k unclaimed servers by its priority ordering, where
-        k = ceil(gpu_demand / gpus_per_server).
+        Each model gets k = ceil(gpu_demand / gpus_per_server) servers.
+        Servers are picked by cycling through phases (A, B, C, A, B, C, ...)
+        and within each phase, picking the highest-priority unclaimed server.
+        This ensures each model's allocation is as phase-balanced as possible.
 
         Args:
             gpu_demands: Mapping of model label to total GPUs needed.
 
         Returns:
-            Mapping of model label to array of allocated server indices
-            (in priority order).
+            Mapping of model label to array of allocated server indices.
         """
         claimed = np.zeros(self.num_servers, dtype=bool)
         result: dict[str, np.ndarray] = {}
+
+        # Pre-group servers by phase, sorted by priority per model
+        phase_groups: dict[str, list[list[int]]] = {}
+        for label in sorted(gpu_demands):
+            priority = self.model_priorities[label]
+            groups: list[list[int]] = [[], [], []]
+            for idx in priority:
+                groups[self.phase_list[idx]].append(idx)
+            phase_groups[label] = groups
 
         for label in sorted(gpu_demands):
             demand = gpu_demands[label]
@@ -66,10 +75,33 @@ class ServerPool:
                 result[label] = np.array([], dtype=int)
                 continue
             k = math.ceil(demand / self.gpus_per_server)
-            priority = self.model_priorities[label]
-            unclaimed = priority[~claimed[priority]]
-            allocated = unclaimed[:k]
-            claimed[allocated] = True
-            result[label] = allocated
+            groups = phase_groups[label]
+            cursors = [0, 0, 0]
+            allocated: list[int] = []
+            phase = 0
+
+            while len(allocated) < k:
+                # Try each phase starting from current, wrapping around
+                found = False
+                for attempt in range(3):
+                    p = (phase + attempt) % 3
+                    while cursors[p] < len(groups[p]):
+                        idx = groups[p][cursors[p]]
+                        cursors[p] += 1
+                        if not claimed[idx]:
+                            allocated.append(idx)
+                            claimed[idx] = True
+                            phase = (p + 1) % 3
+                            found = True
+                            break
+                    if found:
+                        break
+                if not found:
+                    raise RuntimeError(
+                        f"ServerPool over-subscribed: model {label!r} requested "
+                        f"{k} servers but pool has no more unclaimed servers."
+                    )
+
+            result[label] = np.array(allocated, dtype=int)
 
         return result

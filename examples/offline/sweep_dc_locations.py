@@ -74,7 +74,7 @@ from openg2g.metrics.voltage import compute_allbus_voltage_stats
 from plotting import plot_allbus_voltages_per_phase, plot_model_timeseries_4panel
 from systems import SYSTEMS, TAP_STEP, tap
 
-_REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
 DT_DC = Fraction(1, 10)
 DT_GRID = Fraction(1, 10)
@@ -123,7 +123,11 @@ MODEL_SPECS = {s.model_label: s for s in ALL_MODEL_SPECS}
 
 
 def deploy(label, num_replicas, initial_batch_size=128):
-    return ModelDeployment(spec=MODEL_SPECS[label], num_replicas=num_replicas, initial_batch_size=initial_batch_size)
+    """Shorthand: `deploy("Llama-3.1-8B", 720, 128)` -> `(ModelDeployment, ReplicaSchedule)`."""
+    return (
+        ModelDeployment(spec=MODEL_SPECS[label], initial_batch_size=initial_batch_size),
+        ReplicaSchedule(initial=num_replicas),
+    )
 
 
 def load_data_sources(config_path=None):
@@ -137,7 +141,7 @@ def load_data_sources(config_path=None):
         sorted(sources_raw, key=lambda s: s["model_label"]),
         sort_keys=True,
     ).encode()
-    data_dir = _REPO_ROOT / "data" / "offline" / hashlib.sha256(blob).hexdigest()[:16]
+    data_dir = _PROJECT_ROOT / "data" / "offline" / hashlib.sha256(blob).hexdigest()[:16]
     return data_sources, data_dir
 
 
@@ -146,11 +150,10 @@ class _DCSiteConfig:
     bus: str
     base_kw_per_phase: float
     total_gpu_capacity: int
-    models: tuple[ModelDeployment, ...] = ()
+    models: tuple[tuple[ModelDeployment, ReplicaSchedule], ...] = ()
     seed: int = 0
     connection_type: str = "wye"
     replica_schedules: dict[str, ReplicaSchedule] | None = None
-    load_shift_headroom: float = 0.0
 
 
 logger = logging.getLogger("sweep_dc_locations")
@@ -578,7 +581,7 @@ def main_1d(
 ) -> None:
     """1-D sweep: single DC site swept across candidate buses."""
     if replica_schedules is None:
-        replica_schedules = {md.spec.model_label: ReplicaSchedule(initial=md.num_replicas) for md in dc_site.models}
+        replica_schedules = {md.spec.model_label: s for md, s in dc_site.models}
     site_gpu_capacity = dc_site.total_gpu_capacity
 
     dt_dc = DT_DC
@@ -927,8 +930,8 @@ def main_2d(
         logger.error("Need at least 2 candidate buses for 2-D sweep!")
         return
 
-    specs_A = tuple(md.spec for md in site_A.models)
-    specs_B = tuple(md.spec for md in site_B.models)
+    specs_A = tuple(md.spec for md, _ in site_A.models)
+    specs_B = tuple(md.spec for md, _ in site_B.models)
     inference_A = inference_data.filter_models(specs_A)
     inference_B = inference_data.filter_models(specs_B)
 
@@ -950,12 +953,8 @@ def main_2d(
             dc_config_A = DatacenterConfig(gpus_per_server=8, base_kw_per_phase=site_A.base_kw_per_phase)
             dc_config_B = DatacenterConfig(gpus_per_server=8, base_kw_per_phase=site_B.base_kw_per_phase)
 
-            rs_A = site_A.replica_schedules or {
-                md.spec.model_label: ReplicaSchedule(initial=md.num_replicas) for md in site_A.models
-            }
-            rs_B = site_B.replica_schedules or {
-                md.spec.model_label: ReplicaSchedule(initial=md.num_replicas) for md in site_B.models
-            }
+            rs_A = site_A.replica_schedules or {md.spec.model_label: s for md, s in site_A.models}
+            rs_B = site_B.replica_schedules or {md.spec.model_label: s for md, s in site_B.models}
 
             wl_kwargs_A: dict = {"inference_data": inference_A, "replica_schedules": rs_A}
             if training is not None:
@@ -1117,21 +1116,19 @@ def _run_multi_dc_case(
             gpus_per_server=8,
             base_kw_per_phase=site.base_kw_per_phase,
         )
-        rs = site.replica_schedules or {
-            md.spec.model_label: ReplicaSchedule(initial=md.num_replicas) for md in site.models
-        }
+        rs = site.replica_schedules or {md.spec.model_label: s for md, s in site.models}
         wl_kwargs: dict = {"inference_data": site_inference_data[sid]}
 
         if stress_test:
             # Immediate per-model ramps to fill total GPU capacity
-            current_gpus = sum(md.num_replicas * md.spec.gpus_per_replica for md in site.models)
+            current_gpus = sum(s.initial * md.spec.gpus_per_replica for md, s in site.models)
             total_cap = site.total_gpu_capacity or current_gpus
             scale = total_cap / current_gpus if current_gpus > 0 else 1.0
             if scale > 1.0:
                 stress_rs = {}
-                for md in site.models:
-                    abs_target = round(scale * md.num_replicas)
-                    stress_rs[md.spec.model_label] = ReplicaSchedule(initial=md.num_replicas).ramp_to(
+                for md, s in site.models:
+                    abs_target = round(scale * s.initial)
+                    stress_rs[md.spec.model_label] = ReplicaSchedule(initial=s.initial).ramp_to(
                         abs_target, t_start=0, t_end=1
                     )
                 wl_kwargs["replica_schedules"] = stress_rs
@@ -1183,7 +1180,7 @@ def _run_multi_dc_case(
     dc_list = list(datacenters.values())
     controllers = []
     for sid in site_ids:
-        site_specs = tuple(md.spec for md in dc_sites[sid].models)
+        site_specs = tuple(md.spec for md, _ in dc_sites[sid].models)
         ofo_ctrl = OFOBatchSizeController(
             site_specs,
             datacenter=datacenters[sid],
@@ -1521,7 +1518,7 @@ def main_zoned(
     # Prepare per-site inference data
     site_inference_data: dict[str, InferenceData] = {}
     for sid in site_ids:
-        site_specs = tuple(md.spec for md in dc_sites[sid].models)
+        site_specs = tuple(md.spec for md, _ in dc_sites[sid].models)
         site_inference_data[sid] = inference_data.filter_models(site_specs)
 
     initial_taps = sys["initial_taps"]
@@ -2151,7 +2148,7 @@ def main(
     exp_all_models: list[InferenceModelSpec] = []
     seen_labels: set[str] = set()
     for site in dc_sites.values():
-        for md in site.models:
+        for md, _ in site.models:
             if md.spec.model_label not in seen_labels:
                 exp_all_models.append(md.spec)
                 seen_labels.add(md.spec.model_label)

@@ -858,11 +858,13 @@ class InferenceAugmentedPower:
         power_w: Three-phase inference power (watts), excluding base load.
         power_by_model_w: Per-model total active power (watts).
         active_replicas_by_model: Per-model active replica count.
+        allocation: Server indices allocated to each model in the pool.
     """
 
     power_w: ThreePhase
     power_by_model_w: dict[str, float] = field(default_factory=dict)
     active_replicas_by_model: dict[str, int] = field(default_factory=dict)
+    allocation: dict[str, np.ndarray] = field(default_factory=dict)
 
 
 class InferencePowerAugmenter:
@@ -909,14 +911,13 @@ class InferencePowerAugmenter:
 
         Returns:
             Augmented inference power with three-phase totals, per-model
-                power, and per-model active replica counts.
+                power, per-model active replica counts, and the
+                server-index allocation used.
         """
         pool = self._pool
 
         # Allocate servers from shared pool
-        gpu_demands = {
-            label: max(0, count) * self._gpus_per_replica.get(label, 1) for label, count in replica_counts.items()
-        }
+        gpu_demands = {label: max(0, count) * self._gpus_per_replica[label] for label, count in replica_counts.items()}
         allocation = pool.allocate(gpu_demands)
 
         # Generate noise for all servers once (deterministic RNG consumption)
@@ -950,8 +951,7 @@ class InferencePowerAugmenter:
 
             power_by_model[label] = float(np.sum(server_powers))
             active_gpus = len(server_indices) * pool.gpus_per_server
-            gpus_per_replica = self._gpus_per_replica.get(label, 1)
-            active_replicas_by_model[label] = active_gpus // gpus_per_replica
+            active_replicas_by_model[label] = active_gpus // self._gpus_per_replica[label]
 
         return InferenceAugmentedPower(
             power_w=ThreePhase(
@@ -961,6 +961,7 @@ class InferencePowerAugmenter:
             ),
             power_by_model_w=power_by_model,
             active_replicas_by_model=active_replicas_by_model,
+            allocation=allocation,
         )
 
     def reset(self) -> None:

@@ -213,6 +213,33 @@ class TestReplicaSchedule:
         assert s.count_at(0.0) == 42.0
         assert s.count_at(99999.0) == 42.0
 
+    def test_out_of_order_ramps_sorted(self) -> None:
+        """Ramps added out of order should be sorted by t_start."""
+        s = ReplicaSchedule(initial=100).ramp_to(50, t_start=2000, t_end=2500).ramp_to(80, t_start=500, t_end=1000)
+        # Before any ramp
+        assert s.count_at(0.0) == 100.0
+        # After first (sorted) ramp ends -- level is 80
+        assert s.count_at(1500.0) == pytest.approx(80.0)
+        # After second ramp ends -- level is 50
+        assert s.count_at(3000.0) == pytest.approx(50.0)
+
+    def test_overlapping_ramps_rejected(self) -> None:
+        """Overlapping ramp windows should raise ValueError."""
+        s = ReplicaSchedule(initial=100).ramp_to(50, t_start=1000, t_end=2000)
+        with pytest.raises(ValueError, match=r"overlaps existing ramp"):
+            s.ramp_to(80, t_start=1500, t_end=2500)
+
+    def test_touching_ramps_allowed(self) -> None:
+        """Ramps that touch at the boundary (prev.t_end == new.t_start) are allowed."""
+        s = ReplicaSchedule(initial=100).ramp_to(50, t_start=1000, t_end=2000).ramp_to(80, t_start=2000, t_end=3000)
+        assert len(s) == 2
+
+    def test_overlapping_same_start_rejected(self) -> None:
+        """Two ramps starting at the same time should overlap and be rejected."""
+        s = ReplicaSchedule(initial=100).ramp_to(50, t_start=1000, t_end=2000)
+        with pytest.raises(ValueError, match=r"overlaps existing ramp"):
+            s.ramp_to(80, t_start=1000, t_end=1500)
+
 
 class TestTrainingRun:
     def test_basic(self) -> None:
@@ -346,7 +373,6 @@ class TestServerPoolAllocate:
     def _make_pool(self, num_servers: int = 10, gpus_per_server: int = 8, seed: int = 42) -> ServerPool:
         rng = np.random.default_rng(seed)
         phase_list = np.zeros(num_servers, dtype=int)
-        rng.shuffle(phase_list)
         stagger_offsets = np.zeros(num_servers)
         amplitude_scales = np.ones(num_servers)
         model_priorities = {

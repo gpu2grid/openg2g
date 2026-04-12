@@ -55,7 +55,7 @@ logger = logging.getLogger("analyze_different_controllers")
 
 # Simulation defaults
 
-_REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
 DT_DC = Fraction(1, 10)
 DT_GRID = Fraction(1, 10)
@@ -106,7 +106,18 @@ MODEL_SPECS = {s.model_label: s for s in ALL_MODEL_SPECS}
 
 
 def deploy(label, num_replicas, initial_batch_size=128):
-    return ModelDeployment(spec=MODEL_SPECS[label], num_replicas=num_replicas, initial_batch_size=initial_batch_size)
+    """Shorthand: `deploy("Llama-3.1-8B", 720, 128)` -> `(ModelDeployment, ReplicaSchedule)`."""
+    return (
+        ModelDeployment(spec=MODEL_SPECS[label], initial_batch_size=initial_batch_size),
+        ReplicaSchedule(initial=num_replicas),
+    )
+
+
+def unpack_deployments(*deployments):
+    """Split `deploy()` output pairs into a models tuple and schedules dict."""
+    models = tuple(m for m, _ in deployments)
+    schedules = {m.spec.model_label: s for m, s in deployments}
+    return models, schedules
 
 
 def load_data_sources(config_path=None):
@@ -120,7 +131,7 @@ def load_data_sources(config_path=None):
         sorted(sources_raw, key=lambda s: s["model_label"]),
         sort_keys=True,
     ).encode()
-    data_dir = _REPO_ROOT / "data" / "offline" / hashlib.sha256(blob).hexdigest()[:16]
+    data_dir = _PROJECT_ROOT / "data" / "offline" / hashlib.sha256(blob).hexdigest()[:16]
     return data_sources, data_dir
 
 
@@ -132,7 +143,7 @@ def _setup_ieee13(inference_data, training_trace, logistic_models):
     sys = SYSTEMS["ieee13"]()
     exclude_buses = tuple(sys["exclude_buses"])
 
-    models_default = (
+    models_default, _ = unpack_deployments(
         deploy("Llama-3.1-8B", 720),
         deploy("Llama-3.1-70B", 180),
         deploy("Llama-3.1-405B", 90),
@@ -212,8 +223,10 @@ def _setup_ieee34(inference_data, training_trace, logistic_models):
     sys = SYSTEMS["ieee34"]()
     exclude_buses = tuple(sys["exclude_buses"])
 
-    models_upstream = (deploy("Llama-3.1-8B", 720), deploy("Llama-3.1-70B", 180), deploy("Llama-3.1-405B", 90))
-    models_downstream = (deploy("Qwen3-30B-A3B", 480), deploy("Qwen3-235B-A22B", 210))
+    models_upstream, rs_upstream = unpack_deployments(
+        deploy("Llama-3.1-8B", 720), deploy("Llama-3.1-70B", 180), deploy("Llama-3.1-405B", 90)
+    )
+    models_downstream, rs_downstream = unpack_deployments(deploy("Qwen3-30B-A3B", 480), deploy("Qwen3-235B-A22B", 210))
     specs_upstream = tuple(md.spec for md in models_upstream)
     specs_downstream = tuple(md.spec for md in models_downstream)
 
@@ -221,7 +234,7 @@ def _setup_ieee34(inference_data, training_trace, logistic_models):
         DatacenterConfig(gpus_per_server=8, base_kw_per_phase=120.0),
         OfflineWorkload(
             inference_data=inference_data.filter_models(specs_upstream),
-            replica_schedules={md.spec.model_label: ReplicaSchedule(initial=md.num_replicas) for md in models_upstream},
+            replica_schedules=rs_upstream,
         ),
         name="upstream",
         dt_s=DT_DC,
@@ -233,9 +246,7 @@ def _setup_ieee34(inference_data, training_trace, logistic_models):
         DatacenterConfig(gpus_per_server=8, base_kw_per_phase=80.0),
         OfflineWorkload(
             inference_data=inference_data.filter_models(specs_downstream),
-            replica_schedules={
-                md.spec.model_label: ReplicaSchedule(initial=md.num_replicas) for md in models_downstream
-            },
+            replica_schedules=rs_downstream,
         ),
         name="downstream",
         dt_s=DT_DC,
@@ -308,10 +319,10 @@ def _setup_ieee123(inference_data, training_trace, logistic_models):
     sys = SYSTEMS["ieee123"]()
     exclude_buses = tuple(sys["exclude_buses"])
 
-    models_z1 = (deploy("Llama-3.1-8B", 120),)
-    models_z2 = (deploy("Qwen3-30B-A3B", 80),)
-    models_z3 = (deploy("Llama-3.1-70B", 30), deploy("Llama-3.1-405B", 35))
-    models_z4 = (deploy("Qwen3-235B-A22B", 55),)
+    models_z1, _ = unpack_deployments(deploy("Llama-3.1-8B", 120))
+    models_z2, _ = unpack_deployments(deploy("Qwen3-30B-A3B", 80))
+    models_z3, _ = unpack_deployments(deploy("Llama-3.1-70B", 30), deploy("Llama-3.1-405B", 35))
+    models_z4, _ = unpack_deployments(deploy("Qwen3-235B-A22B", 55))
     specs_z1 = tuple(md.spec for md in models_z1)
     specs_z2 = tuple(md.spec for md in models_z2)
     specs_z3 = tuple(md.spec for md in models_z3)

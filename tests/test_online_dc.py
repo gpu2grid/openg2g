@@ -400,6 +400,9 @@ class TestOnlineDatacenterStep:
     def test_phase_shares_from_layout(self) -> None:
         dep = _make_deployment(num_replicas=100, gpu_indices=(0,))
         with _online_dc([dep]) as (dc, _):
+            dc._started = True
+            clock = SimulationClock(tick_s=Fraction(1, 10))
+            dc.step(clock, _EVENTS)
             shares = dc.phase_share_by_model
             assert dep.model_label in shares
             assert shares[dep.model_label].shape == (3,)

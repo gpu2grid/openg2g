@@ -450,10 +450,9 @@ How it implements the interface:
 
 - **`step(clock, events)`** indexes into pre-built per-GPU power templates using `(global_step + offset) % template_length` per server. Random restart offsets desynchronize servers for a realistic aggregate power profile. Returns an [`OfflineDatacenterState`][openg2g.datacenter.offline.OfflineDatacenterState] (extends [`LLMDatacenterState`][openg2g.datacenter.base.LLMDatacenterState]) with per-model batch sizes, replica counts, and observed ITL.
 - **`apply_control(command, events)`** dispatches [`SetBatchSize`][openg2g.datacenter.command.SetBatchSize] and [`ShiftReplicas`][openg2g.datacenter.command.ShiftReplicas] commands. Batch size changes take effect on the next `step()` call. `ShiftReplicas` adjusts a per-model replica offset; the controller is responsible for checking GPU capacity before issuing the command.
-- **`total_gpu_capacity`**: Maximum number of GPUs this datacenter can physically host. Exposed via `current_gpu_usage()` and `available_gpu_capacity()` for controllers to check before shifting replicas.
-- **`load_shift_headroom`**: Fraction of extra server capacity to pre-allocate (e.g., 0.3 = 30%) so incoming replicas have server slots available.
-- **`reset()`** clears step counter, replica offsets, and RNG state. Rebuilds server layouts from the stored config so the next run starts fresh. History is cleared automatically by `do_reset()`.
-- Each model's [`ServerPool`][openg2g.datacenter.layout.ServerPool] holds a random priority ordering that determines which servers are active for a given replica count. At each step, the datacenter evaluates the [`ReplicaSchedule`][openg2g.datacenter.config.ReplicaSchedule] plus any runtime offsets from load shifting, then activates the top-k servers by priority.
+- **`total_gpu_capacity`**: Maximum number of GPUs this datacenter can physically host. The shared [`ServerPool`][openg2g.datacenter.layout.ServerPool] is sized from this. Exposed via `current_gpu_usage()` and `available_gpu_capacity()` for controllers to check before shifting replicas.
+- **`reset()`** clears step counter, replica offsets, and RNG state. Rebuilds the server pool from the stored config so the next run starts fresh. History is cleared automatically by `do_reset()`.
+- A shared [`ServerPool`][openg2g.datacenter.layout.ServerPool] holds `num_servers` virtual servers with model-independent properties (phase assignment, stagger offset, amplitude scale) and a per-model priority ordering. At each step, the datacenter computes each model's effective replica count (schedule + runtime offset) and the pool allocates servers via phase-balanced round-robin: each model gets `ceil(gpus_needed / gpus_per_server)` servers picked by cycling through phases to keep the allocation phase-balanced.
 - Training workload overlays add transient high-power phases.
 
 ### `OpenDSSGrid`
@@ -520,7 +519,6 @@ controllers = [
         dt_s=Fraction(1),
         datacenters=[dc_a, dc_b],
         grid=grid,
-        dc_bus_map={dc_a: "bus_1", dc_b: "bus_2"},
         models_by_dc={dc_a: ["Model-A", "Model-B"], dc_b: ["Model-B", "Model-C"]},
         gpus_per_replica_by_model={"Model-A": 1, "Model-B": 4, "Model-C": 8},
         feasible_batch_sizes_by_model={"Model-A": [8, 16, 32], ...},

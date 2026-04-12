@@ -74,21 +74,9 @@ class TestModelDeployment:
             itl_deadline_s=0.1,
             feasible_batch_sizes=(64, 128),
         )
-        d = ModelDeployment(spec=spec, num_replicas=10, initial_batch_size=128)
+        d = ModelDeployment(spec=spec, initial_batch_size=128)
         assert d.spec is spec
-        assert d.num_replicas == 10
         assert d.initial_batch_size == 128
-
-    def test_negative_replicas_raises(self) -> None:
-        spec = InferenceModelSpec(
-            model_id="test/Model",
-            model_label="M",
-            gpus_per_replica=1,
-            itl_deadline_s=0.1,
-            feasible_batch_sizes=(128,),
-        )
-        with pytest.raises(ValueError, match="num_replicas must be >= 0"):
-            ModelDeployment(spec=spec, num_replicas=-1, initial_batch_size=128)
 
     def test_zero_batch_size_raises(self) -> None:
         spec = InferenceModelSpec(
@@ -99,7 +87,7 @@ class TestModelDeployment:
             feasible_batch_sizes=(128,),
         )
         with pytest.raises(ValueError, match="initial_batch_size must be > 0"):
-            ModelDeployment(spec=spec, num_replicas=10, initial_batch_size=0)
+            ModelDeployment(spec=spec, initial_batch_size=0)
 
     def test_batch_size_not_in_feasible_raises(self) -> None:
         spec = InferenceModelSpec(
@@ -110,4 +98,4 @@ class TestModelDeployment:
             feasible_batch_sizes=(8, 16, 32, 64),
         )
         with pytest.raises(ValueError, match=r"initial_batch_size.*must be in.*feasible_batch_sizes"):
-            ModelDeployment(spec=spec, num_replicas=10, initial_batch_size=128)
+            ModelDeployment(spec=spec, initial_batch_size=128)

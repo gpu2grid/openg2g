@@ -56,7 +56,7 @@ logger = logging.getLogger("analyze_LLM_load_shifting")
 
 # Simulation defaults
 
-_REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
 DT_DC = Fraction(1, 10)
 DT_GRID = Fraction(1, 10)
@@ -106,9 +106,12 @@ ALL_MODEL_SPECS = (LLAMA_8B, LLAMA_70B, LLAMA_405B, QWEN_30B, QWEN_235B)
 MODEL_SPECS: dict[str, InferenceModelSpec] = {s.model_label: s for s in ALL_MODEL_SPECS}
 
 
-def deploy(label: str, num_replicas: int, initial_batch_size: int = 128) -> ModelDeployment:
-    """Shorthand: `deploy("Llama-3.1-8B", 720, 128)`."""
-    return ModelDeployment(spec=MODEL_SPECS[label], num_replicas=num_replicas, initial_batch_size=initial_batch_size)
+def deploy(label: str, num_replicas: int, initial_batch_size: int = 128) -> tuple[ModelDeployment, ReplicaSchedule]:
+    """Shorthand: `deploy("Llama-3.1-8B", 720, 128)` -> `(ModelDeployment, ReplicaSchedule)`."""
+    return (
+        ModelDeployment(spec=MODEL_SPECS[label], initial_batch_size=initial_batch_size),
+        ReplicaSchedule(initial=num_replicas),
+    )
 
 
 def load_data_sources(config_path: Path | None = None) -> tuple[dict[str, MLEnergySource], Path]:
@@ -128,7 +131,7 @@ def load_data_sources(config_path: Path | None = None) -> tuple[dict[str, MLEner
         sorted(sources_raw, key=lambda s: s["model_label"]),
         sort_keys=True,
     ).encode()
-    data_dir = _REPO_ROOT / "data" / "offline" / hashlib.sha256(blob).hexdigest()[:16]
+    data_dir = _PROJECT_ROOT / "data" / "offline" / hashlib.sha256(blob).hexdigest()[:16]
     return data_sources, data_dir
 
 
@@ -175,21 +178,14 @@ _SITE_DEFS: dict[str, dict[str, Any]] = {
 LOAD_SHIFT_TAP_SCHEDULE = TapSchedule(((1800, TapPosition(regulators={"creg4a": tap(15)})),))
 
 LOAD_SHIFT_GPUS_PER_SHIFT = 8
-LOAD_SHIFT_HEADROOM = 0.3
 
 
 def _build_setup(
     inference_data: InferenceData,
     training_trace: TrainingTrace,
     logistic_models: LogisticModelStore,
-    *,
-    load_shift_headroom: float = 0.0,
 ) -> dict[str, Any]:
     """Construct datacenters and grid for one simulation run.
-
-    Args:
-        load_shift_headroom: Fraction of extra GPU capacity for load shifting.
-            0.0 disables headroom (no-shift run), >0 enables it.
 
     Returns:
         Dict with keys: datacenters, dc_specs, dc_bus_map, grid, exclude_buses.
@@ -213,19 +209,19 @@ def _build_setup(
     dc_bus_map: dict[OfflineDatacenter, str] = {}
 
     for site_name, site_def in _SITE_DEFS.items():
-        models: tuple[ModelDeployment, ...] = site_def["models"]
+        deployments: tuple[tuple[ModelDeployment, ReplicaSchedule], ...] = site_def["models"]
+        models = tuple(m for m, _ in deployments)
         specs = tuple(m.spec for m in models)
         dc = OfflineDatacenter(
             DatacenterConfig(gpus_per_server=8, base_kw_per_phase=site_def["base_kw_per_phase"]),
             OfflineWorkload(
                 inference_data=inference_data.filter_models(specs),
-                replica_schedules={m.spec.model_label: ReplicaSchedule(initial=m.num_replicas) for m in models},
+                replica_schedules={m.spec.model_label: s for m, s in deployments},
             ),
             name=site_name,
             dt_s=DT_DC,
             seed=0,
             total_gpu_capacity=site_def["total_gpu_capacity"],
-            load_shift_headroom=load_shift_headroom,
             power_augmentation=POWER_AUG,
         )
         datacenters.append(dc)
@@ -250,55 +246,6 @@ def _build_setup(
         grid=grid,
         exclude_buses=exclude_buses,
     )
-
-
-# Shift timeseries extraction
-
-
-def _extract_shift_timeseries(
-    log: Any,
-    site_ids: list[str],
-    models_by_site: dict[str, list[str]],
-    gpus_per_replica: dict[str, int],
-    dt_ctrl_s: float,
-) -> dict[str, dict[str, list[int]]]:
-    """Extract cumulative replica offset per site per model over time.
-
-    Returns: {site_id: {model_label: [offset_at_t0, offset_at_t1, ...]}}
-    """
-    # Build time axis from grid states
-    time_s = np.array(log.time_s)
-    len(time_s)
-
-    # Initialize offset tracking
-    {sid: {m: 0 for m in models} for sid, models in models_by_site.items()}
-
-    # Collect all ShiftReplicas commands with their approximate time
-    shift_events: list[tuple[float, str, str, int]] = []  # (time, site, model, delta)
-    cmd_time = 0.0
-    for cmd in log.commands:
-        if isinstance(cmd, ShiftReplicas):
-            shift_events.append((cmd_time, cmd.target.name if cmd.target else "", cmd.model_label, cmd.replica_delta))
-        # Approximate time from command order (dt_ctrl spacing)
-        cmd_time += dt_ctrl_s / 2  # rough estimate
-
-    # Build timeseries by replaying shifts
-    result: dict[str, dict[str, list[int]]] = {sid: {m: [] for m in models} for sid, models in models_by_site.items()}
-
-    # Use DC states timestamps for time axis
-    dc_times: dict[str, list[float]] = {}
-    for sid in site_ids:
-        states = log.dc_states_by_site.get(sid, [])
-        dc_times[sid] = [s.time_s for s in states]
-
-    # Reconstruct per-site active replicas from DC states
-    for sid in site_ids:
-        states = log.dc_states_by_site.get(sid, [])
-        for s in states:
-            for m in models_by_site.get(sid, []):
-                result[sid][m].append(s.active_replicas_by_model.get(m, 0))
-
-    return result, dc_times
 
 
 # Plotting
@@ -556,21 +503,14 @@ def _run_case(
     logistic_models: LogisticModelStore,
     ofo_config: OFOConfig,
     load_shift_enabled: bool,
-    load_shift_headroom: float,
     load_shift_gpus_per_shift: int,
     save_dir: Path,
     case_name: str,
 ) -> tuple[VoltageStats, Any]:
     """Build setup, construct controllers, run simulation, return stats + log."""
-    exp = _build_setup(
-        inference_data,
-        training_trace,
-        logistic_models,
-        load_shift_headroom=load_shift_headroom if load_shift_enabled else 0.0,
-    )
+    exp = _build_setup(inference_data, training_trace, logistic_models)
     datacenters: list[OfflineDatacenter] = exp["datacenters"]
     dc_specs: dict[OfflineDatacenter, tuple[InferenceModelSpec, ...]] = exp["dc_specs"]
-    dc_bus_map: dict[OfflineDatacenter, str] = exp["dc_bus_map"]
     grid: OpenDSSGrid = exp["grid"]
     exclude_buses: tuple[str, ...] = exp["exclude_buses"]
 
@@ -598,12 +538,10 @@ def _run_case(
                 config=LoadShiftConfig(
                     enabled=True,
                     gpus_per_shift=load_shift_gpus_per_shift,
-                    headroom=load_shift_headroom,
                 ),
                 dt_s=DT_CTRL,
                 datacenters=datacenters,
                 grid=grid,
-                dc_bus_map=dc_bus_map,
                 models_by_dc=models_by_dc,
                 gpus_per_replica_by_model={m: s.gpus_per_replica for m, s in all_specs_flat.items()},
                 feasible_batch_sizes_by_model={m: s.feasible_batch_sizes for m, s in all_specs_flat.items()},
@@ -720,7 +658,7 @@ def main(*, system: str = "ieee123") -> None:
     all_models: list[ModelDeployment] = []
     seen: set[str] = set()
     for site_def in _SITE_DEFS.values():
-        for m in site_def["models"]:
+        for m, _ in site_def["models"]:
             if m.spec.model_label not in seen:
                 all_models.append(m)
                 seen.add(m.spec.model_label)
@@ -778,7 +716,6 @@ def main(*, system: str = "ieee123") -> None:
     stats_no_shift, log_no_shift = _run_case(
         **shared,
         load_shift_enabled=False,
-        load_shift_headroom=0.0,
         load_shift_gpus_per_shift=LOAD_SHIFT_GPUS_PER_SHIFT,
         case_name="ofo_no_shift",
     )
@@ -792,14 +729,13 @@ def main(*, system: str = "ieee123") -> None:
     stats_with_shift, log_with_shift = _run_case(
         **shared,
         load_shift_enabled=True,
-        load_shift_headroom=LOAD_SHIFT_HEADROOM,
         load_shift_gpus_per_shift=LOAD_SHIFT_GPUS_PER_SHIFT,
         case_name="ofo_with_shift",
     )
 
     # --- Plots ---
     site_ids = list(_SITE_DEFS.keys())
-    models_by_site = {sid: [m.spec.model_label for m in site_def["models"]] for sid, site_def in _SITE_DEFS.items()}
+    models_by_site = {sid: [m.spec.model_label for m, _ in site_def["models"]] for sid, site_def in _SITE_DEFS.items()}
     gpus_per_replica = {m.spec.model_label: m.spec.gpus_per_replica for m in all_models}
 
     sys_const = ieee123()

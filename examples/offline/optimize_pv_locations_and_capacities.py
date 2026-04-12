@@ -2215,7 +2215,7 @@ def compare_with_ofo(
         sys: System constants dict from `systems.py`.
         dc_sites: `{site_id: DCSite}` dict describing the datacenter sites.
     """
-    _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+    _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
     DT_DC = Fraction(1, 10)
     DT_GRID = Fraction(1, 10)
     DT_CTRL = Fraction(1)
@@ -2261,9 +2261,12 @@ def compare_with_ofo(
     ALL_MODEL_SPECS = (LLAMA_8B, LLAMA_70B, LLAMA_405B, QWEN_30B, QWEN_235B)
     _MODEL_SPECS = {s.model_label: s for s in ALL_MODEL_SPECS}
 
-    def _deploy(label: str, num_replicas: int, initial_batch_size: int = 128) -> ModelDeployment:
-        return ModelDeployment(
-            spec=_MODEL_SPECS[label], num_replicas=num_replicas, initial_batch_size=initial_batch_size
+    def _deploy(
+        label: str, num_replicas: int, initial_batch_size: int = 128
+    ) -> tuple[ModelDeployment, ReplicaSchedule]:
+        return (
+            ModelDeployment(spec=_MODEL_SPECS[label], initial_batch_size=initial_batch_size),
+            ReplicaSchedule(initial=num_replicas),
         )
 
     def _load_data_sources(config_path=None):
@@ -2277,7 +2280,7 @@ def compare_with_ofo(
             sorted(sources_raw, key=lambda s: s["model_label"]),
             sort_keys=True,
         ).encode()
-        data_dir = _REPO_ROOT / "data" / "offline" / hashlib.sha256(blob).hexdigest()[:16]
+        data_dir = _PROJECT_ROOT / "data" / "offline" / hashlib.sha256(blob).hexdigest()[:16]
         return data_sources, data_dir
 
     logger.info("")
@@ -2347,13 +2350,13 @@ def compare_with_ofo(
     datacenters: list[OfflineDatacenter] = []
     dc_specs_map: dict[str, tuple] = {}
     for site_id, site in dc_sites.items():
-        specs = tuple(m.spec for m in site.models)
+        specs = tuple(m.spec for m, _ in site.models)
         site_inference = inference_data.filter_models(specs)
         dc = OfflineDatacenter(
             DatacenterConfig(gpus_per_server=8, base_kw_per_phase=site.base_kw_per_phase),
             OfflineWorkload(
                 inference_data=site_inference,
-                replica_schedules={m.spec.model_label: ReplicaSchedule(initial=m.num_replicas) for m in site.models},
+                replica_schedules={m.spec.model_label: s for m, s in site.models},
             ),
             name=site_id,
             dt_s=DT_DC,
@@ -2402,7 +2405,7 @@ def compare_with_ofo(
                         models=logistic_models,
                         config=ofo_config,
                         dt_s=DT_CTRL,
-                        initial_batch_sizes={m.spec.model_label: m.initial_batch_size for m in site.models},
+                        initial_batch_sizes={m.spec.model_label: m.initial_batch_size for m, _ in site.models},
                         grid=grid,
                     )
                 )
@@ -2560,9 +2563,10 @@ def main_pv_and_dc(
     )
     _MODEL_SPECS = {s.model_label: s for s in (LLAMA_8B, LLAMA_70B, LLAMA_405B, QWEN_30B, QWEN_235B)}
 
-    def deploy(label: str, num_replicas: int, initial_batch_size: int = 128) -> ModelDeployment:
-        return ModelDeployment(
-            spec=_MODEL_SPECS[label], num_replicas=num_replicas, initial_batch_size=initial_batch_size
+    def deploy(label: str, num_replicas: int, initial_batch_size: int = 128) -> tuple[ModelDeployment, ReplicaSchedule]:
+        return (
+            ModelDeployment(spec=_MODEL_SPECS[label], initial_batch_size=initial_batch_size),
+            ReplicaSchedule(initial=num_replicas),
         )
 
     # Build system config with experiment-specific overrides
@@ -2583,7 +2587,7 @@ def main_pv_and_dc(
         )
 
         # DC site descriptors (models referenced by label for GPU count estimation)
-        all_models: tuple[ModelDeployment, ...] = (
+        all_deployments: tuple[tuple[ModelDeployment, ReplicaSchedule], ...] = (
             deploy("Llama-3.1-8B", 720),
             deploy("Llama-3.1-70B", 180),
             deploy("Llama-3.1-405B", 90),
@@ -2615,7 +2619,7 @@ def main_pv_and_dc(
         ]
 
     elif system == "ieee123":
-        all_models = (
+        all_deployments = (
             deploy("Llama-3.1-8B", 120),
             deploy("Llama-3.1-70B", 30),
             deploy("Llama-3.1-405B", 35),
@@ -2660,7 +2664,7 @@ def main_pv_and_dc(
     zones = sys.get("regulator_zones") or sys.get("zones")
 
     # Build model GPU map for demand estimation
-    model_gpu_map = {m.spec.model_label: m.num_replicas * m.spec.gpus_per_replica for m in all_models}
+    model_gpu_map = {m.spec.model_label: s.initial * m.spec.gpus_per_replica for m, s in all_deployments}
 
     save_dir = Path(__file__).resolve().parent / "outputs" / system / "pv_dc_coopt"
     save_dir.mkdir(parents=True, exist_ok=True)
@@ -3268,9 +3272,10 @@ def main(
     )
     _MODEL_SPECS = {s.model_label: s for s in (LLAMA_8B, LLAMA_70B, LLAMA_405B, QWEN_30B, QWEN_235B)}
 
-    def deploy(label: str, num_replicas: int, initial_batch_size: int = 128) -> ModelDeployment:
-        return ModelDeployment(
-            spec=_MODEL_SPECS[label], num_replicas=num_replicas, initial_batch_size=initial_batch_size
+    def deploy(label: str, num_replicas: int, initial_batch_size: int = 128) -> tuple[ModelDeployment, ReplicaSchedule]:
+        return (
+            ModelDeployment(spec=_MODEL_SPECS[label], initial_batch_size=initial_batch_size),
+            ReplicaSchedule(initial=num_replicas),
         )
 
     @dataclass
@@ -3278,10 +3283,9 @@ def main(
         bus: str
         base_kw_per_phase: float
         total_gpu_capacity: int
-        models: tuple[ModelDeployment, ...] = ()
+        models: tuple[tuple[ModelDeployment, ReplicaSchedule], ...] = ()
         seed: int = 0
         connection_type: str = "wye"
-        load_shift_headroom: float = 0.0
 
     # Build system config with PV-optimisation overrides
     sys = SYSTEMS[system]()
@@ -3413,7 +3417,7 @@ def main(
 
     dc_sites_dict: dict[str, dict] = {}
     for sid, site in dc_sites.items():
-        total_gpus = site.total_gpu_capacity or sum(m.spec.gpus_per_replica * m.num_replicas for m in site.models)
+        total_gpus = site.total_gpu_capacity or sum(m.spec.gpus_per_replica * s.initial for m, s in site.models)
         gpu_kw_per_phase = total_gpus * TYPICAL_GPU_W / 1000.0 / 3.0
         peak_kw_per_phase = site.base_kw_per_phase + gpu_kw_per_phase
         dc_sites_dict[sid] = {

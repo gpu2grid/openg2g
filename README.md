@@ -121,16 +121,19 @@ The first run downloads benchmark data from the [ML.ENERGY Benchmark v3 dataset]
 export HF_TOKEN=hf_xxxxxxxxxxx  # needed for first run only
 
 # Baseline: fixed taps
-python examples/offline/run_baseline.py --system ieee13 --mode no-tap
+python examples/offline/run_ofo.py --system ieee13 --mode baseline-no-tap
 
 # Baseline: scheduled tap changes
-python examples/offline/run_baseline.py --system ieee13 --mode tap-change
+python examples/offline/run_ofo.py --system ieee13 --mode baseline-tap-change
 
 # OFO closed-loop control
-python examples/offline/run_ofo.py --system ieee13
+python examples/offline/run_ofo.py --system ieee13 --mode ofo-no-tap
+
+# Run all four cases (both baselines + OFO with/without tap changes)
+python examples/offline/run_ofo.py --system ieee13 --mode all
 ```
 
-`--system` selects the IEEE test feeder (ieee13, ieee34, or ieee123). Model specs and data sources are in `config.json`; all other experiment parameters are defined inline in each script. Generated data is cached in `data/offline/{hash}/`.
+`--system` selects the IEEE test feeder (ieee13, ieee34, or ieee123). `--mode` selects one of `baseline-no-tap`, `baseline-tap-change`, `ofo-no-tap`, `ofo-tap-change`, or `all`. Data sources are in `data_sources.json`; all other experiment parameters are defined inline in each script. Generated data is cached in `data/offline/{hash}/`.
 
 ## Documentation
 

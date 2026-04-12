@@ -14,8 +14,8 @@ from pydantic import BaseModel
 
 from openg2g.clock import SimulationClock
 from openg2g.controller.base import Controller
-from openg2g.datacenter.base import LLMBatchSizeControlledDatacenter
 from openg2g.datacenter.command import DatacenterCommand, ShiftReplicas
+from openg2g.datacenter.offline import OfflineDatacenter
 from openg2g.events import EventEmitter
 from openg2g.grid.command import GridCommand
 from openg2g.grid.opendss import OpenDSSGrid
@@ -28,12 +28,9 @@ class LoadShiftConfig(BaseModel):
 
     enabled: bool = False
     gpus_per_shift: int = 8
-    headroom: float = 0.3
-    """Fraction of extra server capacity to pre-allocate at each DC
-    so incoming replicas have room (e.g. 0.3 = 30% headroom)."""
 
 
-class LoadShiftController(Controller[LLMBatchSizeControlledDatacenter, OpenDSSGrid]):
+class LoadShiftController(Controller[OfflineDatacenter, OpenDSSGrid]):
     """Shift LLM replicas between datacenters to resolve voltage violations.
 
     Rules:
@@ -50,10 +47,9 @@ class LoadShiftController(Controller[LLMBatchSizeControlledDatacenter, OpenDSSGr
         *,
         config: LoadShiftConfig,
         dt_s: Fraction,
-        datacenters: list[LLMBatchSizeControlledDatacenter],
+        datacenters: list[OfflineDatacenter],
         grid: OpenDSSGrid,
-        dc_bus_map: dict[LLMBatchSizeControlledDatacenter, str],
-        models_by_dc: dict[LLMBatchSizeControlledDatacenter, list[str]],
+        models_by_dc: dict[OfflineDatacenter, list[str]],
         gpus_per_replica_by_model: dict[str, int],
         feasible_batch_sizes_by_model: dict[str, list[int]],
         v_min: float = 0.95,
@@ -63,7 +59,7 @@ class LoadShiftController(Controller[LLMBatchSizeControlledDatacenter, OpenDSSGr
         self._dt_s = dt_s
         self._datacenters = list(datacenters)
         self._grid = grid
-        self._dc_bus_map = dict(dc_bus_map)
+        self._dc_bus_map = {dc: grid.dc_bus(dc) for dc in datacenters}
         self._models_by_dc = dict(models_by_dc)
         self._gpus_per_replica = gpus_per_replica_by_model
         self._feasible_bs = feasible_batch_sizes_by_model
@@ -89,12 +85,12 @@ class LoadShiftController(Controller[LLMBatchSizeControlledDatacenter, OpenDSSGr
         voltages = grid.voltages_vector()
         v_index = grid.v_index
         bus_voltages: dict[str, list[float]] = {}
-        for (bus, _phase), v in zip(v_index, voltages, strict=False):
+        for (bus, _phase), v in zip(v_index, voltages, strict=True):
             bus_voltages.setdefault(bus.lower(), []).append(float(v))
 
         # Per-DC min/max voltage
-        dc_vmin: dict[LLMBatchSizeControlledDatacenter, float] = {}
-        dc_vmax: dict[LLMBatchSizeControlledDatacenter, float] = {}
+        dc_vmin: dict[OfflineDatacenter, float] = {}
+        dc_vmax: dict[OfflineDatacenter, float] = {}
         for dc, bus in self._dc_bus_map.items():
             vs = bus_voltages.get(bus.lower(), [])
             if vs:
@@ -200,14 +196,11 @@ class LoadShiftController(Controller[LLMBatchSizeControlledDatacenter, OpenDSSGr
 
     def _is_batch_saturated(
         self,
-        dc: LLMBatchSizeControlledDatacenter,
+        dc: OfflineDatacenter,
         is_undervoltage: bool,
     ) -> bool:
         """Check if all models at DC have batch sizes at their limit."""
         state = dc.state
-        if state is None:
-            return False
-
         dc_models = self._models_by_dc.get(dc, [])
         for model_label in dc_models:
             current_bs = state.batch_size_by_model.get(model_label)

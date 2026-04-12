@@ -775,6 +775,7 @@ class OnlineDatacenter(LLMBatchSizeControlledDatacenter[OnlineDatacenterState]):
             [d.model_label for d in deployments],
             max_samples=max(int(STAGGER_BUFFER_S * 100), 1000),
         )
+        self._last_allocation: dict[str, np.ndarray] = {}
 
         self._started = False
 
@@ -843,11 +844,9 @@ class OnlineDatacenter(LLMBatchSizeControlledDatacenter[OnlineDatacenterState]):
 
     @property
     def phase_share_by_model(self) -> dict[str, np.ndarray]:
-        """Per-model phase share vectors based on current pool allocation."""
-        gpu_demands = {d.model_label: d.simulated_num_replicas * d.spec.gpus_per_replica for d in self._deployments}
-        allocation = self._pool.allocate(gpu_demands)
+        """Per-model phase share vectors from the last pool allocation."""
         shares: dict[str, np.ndarray] = {}
-        for label, server_indices in allocation.items():
+        for label, server_indices in self._last_allocation.items():
             if len(server_indices) == 0:
                 continue
             counts = np.bincount(self._pool.phase_list[server_indices], minlength=3).astype(float)
@@ -874,6 +873,7 @@ class OnlineDatacenter(LLMBatchSizeControlledDatacenter[OnlineDatacenterState]):
             seed=self._seed + 12345,
         )
         self._rolling_buffer.clear()
+        self._last_allocation = {}
         for d in self._deployments:
             d.batch_size = d.initial_batch_size
         self._started = False
@@ -1131,6 +1131,7 @@ class OnlineDatacenter(LLMBatchSizeControlledDatacenter[OnlineDatacenterState]):
             replica_counts[label] = int(round(schedule.count_at(clock.time_s)))
 
         inference_aug = self._inference_augmenter.augment(per_gpu_by_model, replica_counts)
+        self._last_allocation = inference_aug.allocation
 
         measured_total = sum(measured_power_by_model.values())
         measured_per_phase = measured_total / 3.0
@@ -1178,9 +1179,11 @@ class OnlineDatacenter(LLMBatchSizeControlledDatacenter[OnlineDatacenterState]):
             b_int = int(b)
             if b_int <= 0:
                 raise ValueError(f"Batch size must be positive for model {label!r}, got {b_int}.")
-            dep = self._deployment_map.get(label)
-            if dep is not None:
-                dep.set_batch_size(b_int, ramp_up_rate=command.ramp_up_rate_by_model.get(label, 0.0))
+            if label not in self._deployment_map:
+                raise ValueError(f"Unknown model label {label!r}. Known: {sorted(self._deployment_map)}")
+            self._deployment_map[label].set_batch_size(
+                b_int, ramp_up_rate=command.ramp_up_rate_by_model.get(label, 0.0)
+            )
 
         events.emit(
             "datacenter.batch_size.updated",

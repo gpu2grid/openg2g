@@ -67,7 +67,7 @@ from plotting import (
 )
 from systems import SYSTEMS, TAP_STEP, tap
 
-_REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
 MAX_BUSES_FOR_INDIVIDUAL_LINES = 30
 
@@ -123,9 +123,21 @@ ALL_MODEL_SPECS = (LLAMA_8B, LLAMA_70B, LLAMA_405B, QWEN_30B, QWEN_235B)
 MODEL_SPECS: dict[str, InferenceModelSpec] = {s.model_label: s for s in ALL_MODEL_SPECS}
 
 
-def deploy(label: str, num_replicas: int, initial_batch_size: int = 128) -> ModelDeployment:
-    """Shorthand: `deploy("Llama-3.1-8B", 720, 128)`."""
-    return ModelDeployment(spec=MODEL_SPECS[label], num_replicas=num_replicas, initial_batch_size=initial_batch_size)
+def deploy(label: str, num_replicas: int, initial_batch_size: int = 128) -> tuple[ModelDeployment, ReplicaSchedule]:
+    """Shorthand: `deploy("Llama-3.1-8B", 720, 128)` -> `(ModelDeployment, ReplicaSchedule)`."""
+    return (
+        ModelDeployment(spec=MODEL_SPECS[label], initial_batch_size=initial_batch_size),
+        ReplicaSchedule(initial=num_replicas),
+    )
+
+
+def unpack_deployments(
+    *deployments: tuple[ModelDeployment, ReplicaSchedule],
+) -> tuple[tuple[ModelDeployment, ...], dict[str, ReplicaSchedule]]:
+    """Split `deploy()` output pairs into a models tuple and schedules dict."""
+    models = tuple(m for m, _ in deployments)
+    schedules = {m.spec.model_label: s for m, s in deployments}
+    return models, schedules
 
 
 # Data pipeline
@@ -152,7 +164,7 @@ def load_data_sources(
         sorted(sources_raw, key=lambda s: s["model_label"]),
         sort_keys=True,
     ).encode()
-    data_dir = _REPO_ROOT / "data" / "offline" / hashlib.sha256(blob).hexdigest()[:16]
+    data_dir = _PROJECT_ROOT / "data" / "offline" / hashlib.sha256(blob).hexdigest()[:16]
 
     return data_sources, data_dir
 
@@ -337,20 +349,17 @@ def _build_dc(
     name: str,
     *,
     models: tuple[ModelDeployment, ...],
+    replica_schedules: dict[str, ReplicaSchedule],
     inference_data: InferenceData,
     base_kw_per_phase: float,
     total_gpu_capacity: int,
     seed: int = 0,
-    replica_schedules: dict[str, ReplicaSchedule] | None = None,
     training: TrainingRun | None = None,
 ) -> OfflineDatacenter:
     """Create a single OfflineDatacenter from model deployments."""
     specs = tuple(m.spec for m in models)
     site_inference = inference_data.filter_models(specs)
     batch_sizes = {m.spec.model_label: m.initial_batch_size for m in models}
-
-    if replica_schedules is None:
-        replica_schedules = {m.spec.model_label: ReplicaSchedule(initial=m.num_replicas) for m in models}
 
     workload_kwargs: dict[str, Any] = {
         "inference_data": site_inference,
@@ -375,7 +384,7 @@ def setup_ieee13(inference_data, training_trace, logistic_models):
     """IEEE 13-bus: single DC at bus 671 with training overlay."""
     sys = SYSTEMS["ieee13"]()
 
-    models = (
+    models, _ = unpack_deployments(
         deploy("Llama-3.1-8B", 720),
         deploy("Llama-3.1-70B", 180),
         deploy("Llama-3.1-405B", 90),
@@ -384,11 +393,11 @@ def setup_ieee13(inference_data, training_trace, logistic_models):
     )
 
     replica_schedules = {
-        "Llama-3.1-8B": ReplicaSchedule(initial=720).ramp_to(144, t_start=2500, t_end=3000),
-        "Llama-3.1-70B": ReplicaSchedule(initial=180).ramp_to(36, t_start=2500, t_end=3000),
-        "Llama-3.1-405B": ReplicaSchedule(initial=90).ramp_to(18, t_start=2500, t_end=3000),
-        "Qwen3-30B-A3B": ReplicaSchedule(initial=480).ramp_to(96, t_start=2500, t_end=3000),
-        "Qwen3-235B-A22B": ReplicaSchedule(initial=210).ramp_to(42, t_start=2500, t_end=3000),
+        "Llama-3.1-8B": ReplicaSchedule(initial=720).ramp_to(360, t_start=2500, t_end=3000),
+        "Llama-3.1-70B": ReplicaSchedule(initial=180).ramp_to(90, t_start=2500, t_end=3000),
+        "Llama-3.1-405B": ReplicaSchedule(initial=90).ramp_to(45, t_start=2500, t_end=3000),
+        "Qwen3-30B-A3B": ReplicaSchedule(initial=480).ramp_to(240, t_start=2500, t_end=3000),
+        "Qwen3-235B-A22B": ReplicaSchedule(initial=210).ramp_to(105, t_start=2500, t_end=3000),
     }
 
     training = (
@@ -458,12 +467,12 @@ def setup_ieee34(inference_data, training_trace, logistic_models):
     """IEEE 34-bus: two DC sites (upstream + downstream)."""
     sys = SYSTEMS["ieee34"]()
 
-    upstream_models = (
+    upstream_models, upstream_schedules = unpack_deployments(
         deploy("Llama-3.1-8B", 720),
         deploy("Llama-3.1-70B", 180),
         deploy("Llama-3.1-405B", 90),
     )
-    downstream_models = (
+    downstream_models, downstream_schedules = unpack_deployments(
         deploy("Qwen3-30B-A3B", 480),
         deploy("Qwen3-235B-A22B", 210),
     )
@@ -471,6 +480,7 @@ def setup_ieee34(inference_data, training_trace, logistic_models):
     dc_upstream = _build_dc(
         "upstream",
         models=upstream_models,
+        replica_schedules=upstream_schedules,
         inference_data=inference_data,
         base_kw_per_phase=120.0,
         total_gpu_capacity=2400,
@@ -479,6 +489,7 @@ def setup_ieee34(inference_data, training_trace, logistic_models):
     dc_downstream = _build_dc(
         "downstream",
         models=downstream_models,
+        replica_schedules=downstream_schedules,
         inference_data=inference_data,
         base_kw_per_phase=80.0,
         total_gpu_capacity=2880,
@@ -545,55 +556,55 @@ def setup_ieee123(inference_data, training_trace, logistic_models):
     """IEEE 123-bus: four DC zones with per-site ramps."""
     sys = SYSTEMS["ieee123"]()
 
-    z1_models = (deploy("Llama-3.1-8B", 120),)
-    z2_models = (deploy("Qwen3-30B-A3B", 80),)
-    z3_models = (deploy("Llama-3.1-70B", 30), deploy("Llama-3.1-405B", 35))
-    z4_models = (deploy("Qwen3-235B-A22B", 55),)
+    z1_models, _ = unpack_deployments(deploy("Llama-3.1-8B", 120))
+    z2_models, _ = unpack_deployments(deploy("Qwen3-30B-A3B", 80))
+    z3_models, _ = unpack_deployments(deploy("Llama-3.1-70B", 30), deploy("Llama-3.1-405B", 35))
+    z4_models, _ = unpack_deployments(deploy("Qwen3-235B-A22B", 55))
 
     dc_z1 = _build_dc(
         "z1_sw",
         models=z1_models,
+        replica_schedules={
+            "Llama-3.1-8B": ReplicaSchedule(initial=120).ramp_to(180, t_start=500, t_end=1000),
+        },
         inference_data=inference_data,
         base_kw_per_phase=310.0,
         total_gpu_capacity=180,
         seed=0,
-        replica_schedules={
-            "Llama-3.1-8B": ReplicaSchedule(initial=120).ramp_to(180, t_start=500, t_end=1000),
-        },
     )
     dc_z2 = _build_dc(
         "z2_nw",
         models=z2_models,
+        replica_schedules={
+            "Qwen3-30B-A3B": ReplicaSchedule(initial=80).ramp_to(104, t_start=1500, t_end=2500),
+        },
         inference_data=inference_data,
         base_kw_per_phase=265.0,
         total_gpu_capacity=208,
         seed=17,
-        replica_schedules={
-            "Qwen3-30B-A3B": ReplicaSchedule(initial=80).ramp_to(104, t_start=1500, t_end=2500),
-        },
     )
     dc_z3 = _build_dc(
         "z3_se",
         models=z3_models,
-        inference_data=inference_data,
-        base_kw_per_phase=295.0,
-        total_gpu_capacity=600,
-        seed=34,
         replica_schedules={
             "Llama-3.1-70B": ReplicaSchedule(initial=30).ramp_to(45, t_start=700, t_end=1100),
             "Llama-3.1-405B": ReplicaSchedule(initial=35).ramp_to(52, t_start=700, t_end=1100),
         },
+        inference_data=inference_data,
+        base_kw_per_phase=295.0,
+        total_gpu_capacity=600,
+        seed=34,
     )
     dc_z4 = _build_dc(
         "z4_ne",
         models=z4_models,
+        replica_schedules={
+            "Qwen3-235B-A22B": ReplicaSchedule(initial=55).ramp_to(27, t_start=2000, t_end=2500),
+        },
         inference_data=inference_data,
         base_kw_per_phase=325.0,
         total_gpu_capacity=440,
         seed=51,
-        replica_schedules={
-            "Qwen3-235B-A22B": ReplicaSchedule(initial=55).ramp_to(27, t_start=2000, t_end=2500),
-        },
     )
 
     generators = [
@@ -653,7 +664,7 @@ SETUPS = {"ieee13": setup_ieee13, "ieee34": setup_ieee34, "ieee123": setup_ieee1
 # Main
 
 
-def main(*, system: str, mode: str = "no-tap") -> None:
+def main(*, system: str, mode: str = "baseline-no-tap") -> None:
     # Load data pipeline
     data_sources, data_dir = load_data_sources()
 

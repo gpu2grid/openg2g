@@ -67,7 +67,7 @@ from plotting import (
 )
 from systems import SYSTEMS
 
-_REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
 DT_DC = Fraction(1, 10)
 DT_GRID = Fraction(1, 10)
@@ -116,7 +116,11 @@ MODEL_SPECS = {s.model_label: s for s in ALL_MODEL_SPECS}
 
 
 def deploy(label, num_replicas, initial_batch_size=128):
-    return ModelDeployment(spec=MODEL_SPECS[label], num_replicas=num_replicas, initial_batch_size=initial_batch_size)
+    """Shorthand: `deploy("Llama-3.1-8B", 720, 128)` -> `(ModelDeployment, ReplicaSchedule)`."""
+    return (
+        ModelDeployment(spec=MODEL_SPECS[label], initial_batch_size=initial_batch_size),
+        ReplicaSchedule(initial=num_replicas),
+    )
 
 
 def load_data_sources(config_path=None):
@@ -130,7 +134,7 @@ def load_data_sources(config_path=None):
         sorted(sources_raw, key=lambda s: s["model_label"]),
         sort_keys=True,
     ).encode()
-    data_dir = _REPO_ROOT / "data" / "offline" / hashlib.sha256(blob).hexdigest()[:16]
+    data_dir = _PROJECT_ROOT / "data" / "offline" / hashlib.sha256(blob).hexdigest()[:16]
     return data_sources, data_dir
 
 
@@ -139,11 +143,10 @@ class _DCSiteConfig:
     bus: str
     base_kw_per_phase: float
     total_gpu_capacity: int
-    models: tuple[ModelDeployment, ...] = ()
+    models: tuple[tuple[ModelDeployment, ReplicaSchedule], ...] = ()
     seed: int = 0
     connection_type: str = "wye"
     replica_schedules: dict[str, ReplicaSchedule] | None = None
-    load_shift_headroom: float = 0.0
 
 
 logger = logging.getLogger("sweep_ofo_parameters")
@@ -1138,15 +1141,13 @@ def main(
     site_models_map: dict[str, tuple[InferenceModelSpec, ...]] = {}
 
     for site_id, site in dc_sites.items():
-        site_specs = tuple(md.spec for md in site.models)
+        site_specs = tuple(md.spec for md, _ in site.models)
         site_models_map[site_id] = site_specs
         site_inference = inference_data.filter_models(site_specs)
 
         dc_config = DatacenterConfig(gpus_per_server=8, base_kw_per_phase=site.base_kw_per_phase)
 
-        rs = site.replica_schedules or {
-            md.spec.model_label: ReplicaSchedule(initial=md.num_replicas) for md in site.models
-        }
+        rs = site.replica_schedules or {md.spec.model_label: s for md, s in site.models}
         workload_kwargs: dict = {"inference_data": site_inference, "replica_schedules": rs}
         if training is not None:
             workload_kwargs["training"] = training
@@ -1160,7 +1161,6 @@ def main(
             seed=site.seed,
             power_augmentation=POWER_AUG,
             total_gpu_capacity=site.total_gpu_capacity,
-            load_shift_headroom=site.load_shift_headroom,
         )
         datacenters[site_id] = dc
 

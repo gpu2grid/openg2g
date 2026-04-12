@@ -128,9 +128,6 @@ class RuleBasedBatchSizeController(
     ) -> list[DatacenterCommand | GridCommand]:
         datacenter = self._datacenter
         grid = self._grid
-        if grid.state is None:
-            return []
-
         cfg = self._config
         voltages = grid.state.voltages
 
@@ -165,7 +162,7 @@ class RuleBasedBatchSizeController(
 
         # 3. Read latency state for guard
         dc_state = datacenter.state
-        itl_by_model = dc_state.observed_itl_s_by_model if dc_state else {}
+        itl_by_model = dc_state.observed_itl_s_by_model
 
         # 4. Adjust batch sizes
         new_batches: dict[str, int] = {}
