@@ -6,7 +6,7 @@ How large can an AI datacenter be on a given feeder before voltage violations be
 
 ## Overview
 
-Hosting capacity analysis determines the maximum datacenter size (in GPUs or MW) that a bus can support while keeping voltage violations below a specified threshold. This is critical for grid interconnection planning — utilities need to know whether a proposed datacenter can be accommodated without infrastructure upgrades.
+Hosting capacity analysis determines the maximum datacenter size (in GPUs or MW) that a bus can support while keeping voltage violations below a specified threshold. This is critical for grid interconnection planning: utilities need to know whether a proposed datacenter can be accommodated without infrastructure upgrades.
 
 ## Definition
 
@@ -75,15 +75,17 @@ python examples/offline/sweep_hosting_capacities.py \
     --max-power-mw 15 --tolerance 3
 ```
 
-## Key Results
+## Outputs
 
-Outputs are saved to `outputs/<system>/hosting_capacity/`:
+Saved to `outputs/<system>/hosting_capacity/`:
 
-- `hosting_capacity_{system}_{fraction}.png` — Bar chart of per-bus hosting capacity
-- `hosting_capacity_{system}_{fraction}.csv` — Detailed results (bus, capacity MW, best model, GPU count)
+- `hosting_capacity_{system}_{fraction}.png`: bar chart of per-bus hosting capacity
+- `hosting_capacity_{system}_{fraction}.csv`: detailed results (bus, capacity MW, best model, GPU count)
 - Heatmaps (2-D mode) showing capacity for each bus pair
 
-Buses closer to the substation typically have higher hosting capacity due to lower voltage sensitivity. Downstream buses on long laterals may have 10× lower capacity.
+## What to Look For
+
+Buses closer to the substation typically have higher hosting capacity due to lower voltage sensitivity. Downstream buses on long laterals may have an order of magnitude lower capacity.
 
 ## Configuration
 
@@ -91,7 +93,7 @@ Experiment parameters are defined inline in the script:
 
 - **DC power levels**: `base_kw_per_phase` on `DatacenterConfig`
 - **Initial taps**: `TapPosition(regulators={...})` from `systems.py` feeder constants (optimized per bus during analysis)
-- **Regulator zones**: `regulator_zones` from `systems.py` feeder constants — maps regulators to downstream buses for zone-aware tap optimization
+- **Regulator zones**: `regulator_zones` from `systems.py` feeder constants, maps regulators to downstream buses for zone-aware tap optimization
 - **Exclude buses**: From `systems.py` feeder constants
 
 See [Building Simulators](../guide/building-simulators.md) for the full component API.

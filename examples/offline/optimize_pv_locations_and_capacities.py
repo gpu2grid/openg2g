@@ -89,6 +89,7 @@ from openg2g.grid.config import TapPosition, TapSchedule
 from openg2g.grid.generator import SyntheticPV
 from openg2g.grid.load import SyntheticLoad
 from openg2g.grid.opendss import OpenDSSGrid
+from openg2g.metrics.performance import PerformanceStats, compute_performance_stats
 from openg2g.metrics.voltage import VoltageStats, compute_allbus_voltage_stats
 
 from systems import SYSTEMS, tap
@@ -2369,6 +2370,7 @@ def compare_with_ofo(
 
     # Run all three modes inline (construct grid + controllers per mode)
     results: dict[str, VoltageStats] = {}
+    perf_results: dict[str, PerformanceStats] = {}
     for mode_name, ctrl_mode, sched in [
         ("tap_only", "baseline", milp_tap_schedule),
         ("ofo_only", "ofo", None),
@@ -2418,23 +2420,52 @@ def compare_with_ofo(
         )
         log = coord.run()
         stats = compute_allbus_voltage_stats(log.grid_states, v_min=V_MIN, v_max=V_MAX, exclude_buses=exclude_buses)
+        pstats = compute_performance_stats(
+            log.dc_states, itl_deadline_s_by_model={ms.model_label: ms.itl_deadline_s for ms in all_models}
+        )
 
         results[mode_name] = stats
+        perf_results[mode_name] = pstats
         logger.info(
-            "    Violation time: %.1f s, Vmin: %.4f, Vmax: %.4f, Integral: %.4f",
+            "    Violation time: %.1f s, Vmin: %.4f, Vmax: %.4f, Integral: %.4f, Thpt: %.1f k tok/s, ITL miss: %.2f%%",
             stats.violation_time_s,
             stats.worst_vmin,
             stats.worst_vmax,
             stats.integral_violation_pu_s,
+            pstats.mean_throughput_tps / 1e3,
+            pstats.itl_deadline_fraction * 100.0,
         )
 
     # Comparison CSV
     csv_path = ofo_save_dir / f"ofo_comparison_{system}.csv"
     with open(csv_path, "w", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(["mode", "violation_time_s", "worst_vmin", "worst_vmax", "integral_violation_pu_s"])
+        writer.writerow(
+            [
+                "mode",
+                "violation_time_s",
+                "worst_vmin",
+                "worst_vmax",
+                "integral_violation_pu_s",
+                "mean_throughput_tps",
+                "integrated_throughput_tokens",
+                "itl_deadline_fraction",
+            ]
+        )
         for mode_name, s in results.items():
-            writer.writerow([mode_name, s.violation_time_s, s.worst_vmin, s.worst_vmax, s.integral_violation_pu_s])
+            p = perf_results[mode_name]
+            writer.writerow(
+                [
+                    mode_name,
+                    s.violation_time_s,
+                    s.worst_vmin,
+                    s.worst_vmax,
+                    s.integral_violation_pu_s,
+                    p.mean_throughput_tps,
+                    p.integrated_throughput_tokens,
+                    p.itl_deadline_fraction,
+                ]
+            )
     logger.info("OFO comparison CSV: %s", csv_path)
 
     # Comparison bar chart

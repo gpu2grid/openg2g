@@ -10,8 +10,8 @@ The OFO controller has several tuning parameters that trade off between voltage 
 
 The sweep mode auto-selects based on the number of DC sites:
 
-- **1 DC site** (e.g., IEEE 13): shared sweep — varies each parameter while keeping others at baseline.
-- **2+ DC sites** (e.g., IEEE 34): per-site sweep — sweeps all per-site parameter combinations independently, producing heatmap visualizations.
+- **1 DC site** (e.g., IEEE 13): shared sweep, which varies each parameter while keeping others at baseline.
+- **2+ DC sites** (e.g., IEEE 34): per-site sweep, which sweeps all per-site parameter combinations independently, producing heatmap visualizations.
 
 ## Scripts
 
@@ -53,23 +53,23 @@ python examples/offline/sweep_ofo_parameters.py \
 
 | Parameter | `OFOConfig` field | Effect |
 |-----------|------------------|--------|
-| `voltage_dual_step_size` | `voltage_dual_step_size` | Aggressiveness of voltage constraint enforcement. **Most impactful** — values 5–10 can cut violation time 3x vs baseline (1.0). |
+| `voltage_dual_step_size` | `voltage_dual_step_size` | Aggressiveness of voltage constraint enforcement. **Most impactful**: values 5-10 can cut violation time 3x vs baseline (1.0). |
 | `primal_step_size` | `primal_step_size` | Learning rate for batch-size updates. Sweet spot ~0.05; default 0.1 is slightly suboptimal. |
 | `latency_dual_step_size` | `latency_dual_step_size` | Aggressiveness of latency constraint enforcement. Nearly no effect under standard load (latency dual not binding). |
 | `w_throughput` | `w_throughput` | Weight on throughput preservation in objective. Values > 0.01 cause severe degradation; keep <= 1e-3. |
 | `w_switch` | `w_switch` | Regularization for batch-size changes. Value of 5.0 gives mild improvement over baseline 1.0. |
 
-## Key Results
+## Outputs
 
-Outputs are saved to `outputs/<system>/sweep_ofo_parameters/`:
+Saved to `outputs/<system>/sweep_ofo_parameters/`:
 
-- `results_<system>_sweep_ofo_parameters.csv` — One row per run with all metrics
+- `results_<system>_sweep_ofo_parameters.csv`: one row per run with voltage metrics (violation time, integral, worst vmin/vmax), per-site power, and per-model throughput (`avg_throughput_tokens_per_s__<model>`) and ITL-miss fraction (`itl_violation_frac__<model>`)
 - Per-parameter subdirectories with voltage and batch-size plots
 - Heatmaps (per-site mode) showing cross-site parameter interactions
 
 ## Configuration
 
-- **Baseline OFO parameters**: `OFOConfig(...)` — center of the sweep grid, defined inline in each script's experiment function
+- **Baseline OFO parameters**: `OFOConfig(...)`, the center of the sweep grid, defined inline in each script's experiment function
 - **Simulation length**: `TOTAL_DURATION_S` constant in each script (default 3600s)
 
 See [Building Simulators](../guide/building-simulators.md) for the full component API.

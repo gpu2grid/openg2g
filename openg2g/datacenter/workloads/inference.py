@@ -905,7 +905,9 @@ class InferencePowerAugmenter:
 
         Args:
             per_gpu_by_model: Mapping of model label to per-GPU power
-                value (scalar, broadcast to all allocated servers).
+                array of shape `(pool.num_servers,)`. Indexed by absolute
+                server index; only entries at indices returned by
+                `pool.allocate()` for this model contribute to its power.
             replica_counts: Mapping of model label to effective replica
                 count (schedule + runtime adjustments).
 

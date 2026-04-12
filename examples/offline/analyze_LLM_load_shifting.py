@@ -47,6 +47,7 @@ from openg2g.datacenter.workloads.inference import InferenceData, MLEnergySource
 from openg2g.datacenter.workloads.training import TrainingTrace
 from openg2g.grid.config import TapPosition, TapSchedule
 from openg2g.grid.opendss import OpenDSSGrid
+from openg2g.metrics.performance import PerformanceStats, compute_performance_stats
 from openg2g.metrics.voltage import VoltageStats, compute_allbus_voltage_stats
 
 from plotting import plot_model_timeseries_4panel, plot_power_and_itl_2panel
@@ -256,6 +257,8 @@ def plot_load_shift_comparison(
     log_with_shift: Any,
     stats_no_shift: VoltageStats,
     stats_with_shift: VoltageStats,
+    perf_no_shift: PerformanceStats,
+    perf_with_shift: PerformanceStats,
     site_ids: list[str],
     models_by_site: dict[str, list[str]],
     gpus_per_replica: dict[str, int],
@@ -484,10 +487,15 @@ def plot_load_shift_comparison(
     print("-" * 80)
     vt1, vt2 = stats_no_shift.violation_time_s, stats_with_shift.violation_time_s
     iv1, iv2 = stats_no_shift.integral_violation_pu_s, stats_with_shift.integral_violation_pu_s
+    t1, t2 = perf_no_shift.mean_throughput_tps, perf_with_shift.mean_throughput_tps
+    m1, m2 = perf_no_shift.itl_deadline_fraction, perf_with_shift.itl_deadline_fraction
     print(f"{'Violation time (s)':<30s} {vt1:>15.1f} {vt2:>15.1f} {(1 - vt2 / vt1) * 100 if vt1 else 0:>14.0f}%")
     print(f"{'Integral violation (pu·s)':<30s} {iv1:>15.2f} {iv2:>15.2f} {(1 - iv2 / iv1) * 100 if iv1 else 0:>14.0f}%")
     print(f"{'Worst Vmin (pu)':<30s} {stats_no_shift.worst_vmin:>15.4f} {stats_with_shift.worst_vmin:>15.4f}")
     print(f"{'Worst Vmax (pu)':<30s} {stats_no_shift.worst_vmax:>15.4f} {stats_with_shift.worst_vmax:>15.4f}")
+    tdelta = ((t2 - t1) / t1) * 100 if t1 else 0
+    print(f"{'Mean throughput (k tok/s)':<30s} {t1 / 1e3:>15.1f} {t2 / 1e3:>15.1f} {tdelta:>+14.0f}%")
+    print(f"{'ITL over deadline (%)':<30s} {m1 * 100:>15.2f} {m2 * 100:>15.2f}")
     print(f"{'Load shift events':<30s} {'--':>15s} {n_shifts:>15d}")
     print("-" * 80)
     print(f"Outputs: {save_dir}")
@@ -506,7 +514,7 @@ def _run_case(
     load_shift_gpus_per_shift: int,
     save_dir: Path,
     case_name: str,
-) -> tuple[VoltageStats, Any]:
+) -> tuple[VoltageStats, PerformanceStats, Any]:
     """Build setup, construct controllers, run simulation, return stats + log."""
     exp = _build_setup(inference_data, training_trace, logistic_models)
     datacenters: list[OfflineDatacenter] = exp["datacenters"]
@@ -559,12 +567,19 @@ def _run_case(
     log = coord.run()
 
     vstats = compute_allbus_voltage_stats(log.grid_states, v_min=V_MIN, v_max=V_MAX, exclude_buses=exclude_buses)
+    itl_deadlines: dict[str, float] = {}
+    for specs in dc_specs.values():
+        for ms in specs:
+            itl_deadlines[ms.model_label] = ms.itl_deadline_s
+    pstats = compute_performance_stats(log.dc_states, itl_deadline_s_by_model=itl_deadlines)
     logger.info(
-        "  viol=%.1fs  integral=%.4f  vmin=%.4f  vmax=%.4f",
+        "  viol=%.1fs  integral=%.4f  vmin=%.4f  vmax=%.4f  thpt=%.1f k tok/s  itl_over_deadline=%.2f%%",
         vstats.violation_time_s,
         vstats.integral_violation_pu_s,
         vstats.worst_vmin,
         vstats.worst_vmax,
+        pstats.mean_throughput_tps / 1e3,
+        pstats.itl_deadline_fraction * 100.0,
     )
 
     # Per-case plots and CSV
@@ -645,12 +660,32 @@ def _run_case(
     # Per-case CSV
     with open(run_dir / f"result_{case_name}.csv", "w", newline="") as f:
         w = csv.writer(f)
-        w.writerow(["case", "violation_time_s", "integral_violation_pu_s", "worst_vmin", "worst_vmax"])
         w.writerow(
-            [case_name, vstats.violation_time_s, vstats.integral_violation_pu_s, vstats.worst_vmin, vstats.worst_vmax]
+            [
+                "case",
+                "violation_time_s",
+                "integral_violation_pu_s",
+                "worst_vmin",
+                "worst_vmax",
+                "mean_throughput_tps",
+                "integrated_throughput_tokens",
+                "itl_deadline_fraction",
+            ]
+        )
+        w.writerow(
+            [
+                case_name,
+                vstats.violation_time_s,
+                vstats.integral_violation_pu_s,
+                vstats.worst_vmin,
+                vstats.worst_vmax,
+                pstats.mean_throughput_tps,
+                pstats.integrated_throughput_tokens,
+                pstats.itl_deadline_fraction,
+            ]
         )
 
-    return vstats, log
+    return vstats, pstats, log
 
 
 def main(*, system: str = "ieee123") -> None:
@@ -713,7 +748,7 @@ def main(*, system: str = "ieee123") -> None:
     logger.info("RUN 1: OFO without load shifting")
     logger.info("=" * 70)
 
-    stats_no_shift, log_no_shift = _run_case(
+    stats_no_shift, perf_no_shift, log_no_shift = _run_case(
         **shared,
         load_shift_enabled=False,
         load_shift_gpus_per_shift=LOAD_SHIFT_GPUS_PER_SHIFT,
@@ -726,7 +761,7 @@ def main(*, system: str = "ieee123") -> None:
     logger.info("RUN 2: OFO with load shifting")
     logger.info("=" * 70)
 
-    stats_with_shift, log_with_shift = _run_case(
+    stats_with_shift, perf_with_shift, log_with_shift = _run_case(
         **shared,
         load_shift_enabled=True,
         load_shift_gpus_per_shift=LOAD_SHIFT_GPUS_PER_SHIFT,
@@ -756,6 +791,8 @@ def main(*, system: str = "ieee123") -> None:
         log_with_shift,
         stats_no_shift,
         stats_with_shift,
+        perf_no_shift,
+        perf_with_shift,
         site_ids,
         models_by_site,
         gpus_per_replica,

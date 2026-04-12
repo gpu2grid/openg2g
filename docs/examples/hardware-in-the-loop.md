@@ -39,6 +39,24 @@ python examples/online/run_ofo.py --config examples/online/config.json --mode of
 
 The online config specifies vLLM server endpoints, GPU-to-bus mapping, and the same OFO parameters as offline mode. The `OnlineDatacenter` reads power measurements at each tick and the controller adjusts batch sizes in real time.
 
+### Output
+
+Each run prints a voltage statistics block and a performance statistics block, then writes a per-case CSV (`result_<mode>.csv`) with the same schema as offline `run_ofo.py`:
+
+```
+=== Voltage Statistics (all-bus) ===
+  voltage_violation_time = <seconds>
+  worst_vmin             = <pu>
+  worst_vmax             = <pu>
+  integral_violation     = <pu-s>
+=== Performance Statistics ===
+  mean_throughput        = <k tok/s>
+  integrated_throughput  = <tokens>
+  itl_over_deadline      = <percent>
+```
+
+The CSV columns are `case, violation_time_s, integral_violation_pu_s, worst_vmin, worst_vmax, mean_throughput_tps, integrated_throughput_tokens, itl_deadline_fraction`, matching the offline convention. Throughput is derived from the live vLLM batch sizes, observed ITL, and active replica counts; ITL-over-deadline reflects real latencies measured against each model's `itl_deadline_s`.
+
 ## Key Differences from Offline Mode
 
 | Aspect | Offline | Online |

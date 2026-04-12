@@ -47,6 +47,7 @@ from openg2g.grid.config import TapPosition, TapSchedule
 from openg2g.grid.generator import SyntheticPV
 from openg2g.grid.load import SyntheticLoad
 from openg2g.grid.opendss import OpenDSSGrid
+from openg2g.metrics.performance import PerformanceStats, compute_performance_stats
 from openg2g.metrics.voltage import VoltageStats, compute_allbus_voltage_stats
 
 from systems import SYSTEMS, tap
@@ -156,11 +157,11 @@ def _setup_ieee13(inference_data, training_trace, logistic_models):
     workload = OfflineWorkload(
         inference_data=site_inference,
         replica_schedules={
-            "Llama-3.1-8B": ReplicaSchedule(initial=720).ramp_to(144, t_start=2500, t_end=3000),
-            "Llama-3.1-70B": ReplicaSchedule(initial=180).ramp_to(36, t_start=2500, t_end=3000),
-            "Llama-3.1-405B": ReplicaSchedule(initial=90).ramp_to(18, t_start=2500, t_end=3000),
-            "Qwen3-30B-A3B": ReplicaSchedule(initial=480).ramp_to(96, t_start=2500, t_end=3000),
-            "Qwen3-235B-A22B": ReplicaSchedule(initial=210).ramp_to(42, t_start=2500, t_end=3000),
+            "Llama-3.1-8B": ReplicaSchedule(initial=720).ramp_to(360, t_start=2500, t_end=3000),
+            "Llama-3.1-70B": ReplicaSchedule(initial=180).ramp_to(90, t_start=2500, t_end=3000),
+            "Llama-3.1-405B": ReplicaSchedule(initial=90).ramp_to(45, t_start=2500, t_end=3000),
+            "Qwen3-30B-A3B": ReplicaSchedule(initial=480).ramp_to(240, t_start=2500, t_end=3000),
+            "Qwen3-235B-A22B": ReplicaSchedule(initial=210).ramp_to(105, t_start=2500, t_end=3000),
         },
     )
     dc_default = OfflineDatacenter(
@@ -641,6 +642,7 @@ def main(
     # Run all modes
     modes = ["baseline", "rule_based", "ofo"]
     all_stats: dict[str, VoltageStats] = {}
+    all_perf: dict[str, PerformanceStats] = {}
     all_logs: dict[str, object] = {}
 
     for mode in modes:
@@ -710,16 +712,21 @@ def main(
             v_max=V_MAX,
             exclude_buses=exclude_buses,
         )
+        itl_deadlines = {ms.model_label: ms.itl_deadline_s for ms in all_specs_tuple}
+        pstats = compute_performance_stats(log.dc_states, itl_deadline_s_by_model=itl_deadlines)
         logger.info(
-            "  %s: viol=%.1fs  integral=%.4f  vmin=%.4f  vmax=%.4f",
+            "  %s: viol=%.1fs  integral=%.4f  vmin=%.4f  vmax=%.4f  thpt=%.1f k tok/s  itl_over_deadline=%.2f%%",
             mode,
             vstats.violation_time_s,
             vstats.integral_violation_pu_s,
             vstats.worst_vmin,
             vstats.worst_vmax,
+            pstats.mean_throughput_tps / 1e3,
+            pstats.itl_deadline_fraction * 100.0,
         )
 
         all_stats[mode] = vstats
+        all_perf[mode] = pstats
         all_logs[mode] = log
 
     # Summary table
@@ -728,33 +735,61 @@ def main(
     logger.info("SUMMARY")
     logger.info("=" * 80)
     logger.info(
-        "%-15s %12s %12s %12s %12s",
+        "%-15s %10s %10s %10s %10s %14s %10s",
         "Mode",
         "Viol(s)",
         "Integral",
-        "Worst Vmin",
-        "Worst Vmax",
+        "Vmin",
+        "Vmax",
+        "Thpt(k tok/s)",
+        "ITL_miss%",
     )
-    logger.info("-" * 80)
+    logger.info("-" * 95)
     for mode in modes:
         s = all_stats[mode]
+        p = all_perf[mode]
         logger.info(
-            "%-15s %12.1f %12.4f %12.4f %12.4f",
+            "%-15s %10.1f %10.4f %10.4f %10.4f %14.1f %9.2f%%",
             mode,
             s.violation_time_s,
             s.integral_violation_pu_s,
             s.worst_vmin,
             s.worst_vmax,
+            p.mean_throughput_tps / 1e3,
+            p.itl_deadline_fraction * 100.0,
         )
 
     # Save results CSV
     csv_path = save_dir / f"results_{system}.csv"
     with open(csv_path, "w", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(["mode", "violation_time_s", "integral_violation_pu_s", "worst_vmin", "worst_vmax"])
+        writer.writerow(
+            [
+                "mode",
+                "violation_time_s",
+                "integral_violation_pu_s",
+                "worst_vmin",
+                "worst_vmax",
+                "mean_throughput_tps",
+                "integrated_throughput_tokens",
+                "itl_deadline_fraction",
+            ]
+        )
         for mode in modes:
             s = all_stats[mode]
-            writer.writerow([mode, s.violation_time_s, s.integral_violation_pu_s, s.worst_vmin, s.worst_vmax])
+            p = all_perf[mode]
+            writer.writerow(
+                [
+                    mode,
+                    s.violation_time_s,
+                    s.integral_violation_pu_s,
+                    s.worst_vmin,
+                    s.worst_vmax,
+                    p.mean_throughput_tps,
+                    p.integrated_throughput_tokens,
+                    p.itl_deadline_fraction,
+                ]
+            )
     logger.info("Results CSV: %s", csv_path)
 
     # Plots

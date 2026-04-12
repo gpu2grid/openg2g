@@ -68,10 +68,8 @@ training_trace = TrainingTrace.ensure(data_dir / "training_trace.csv")
 workload = OfflineWorkload(
     inference_data=inference_data,
     replica_schedules={
-        "Llama-3.1-8B": ReplicaSchedule(initial=720)
-            .ramp_to(360, t_start=1500.0, t_end=2000.0)
-            .ramp_to(864, t_start=2500.0, t_end=3000.0),
-        "Llama-3.1-70B": ReplicaSchedule(initial=180),
+        "Llama-3.1-8B": ReplicaSchedule(initial=720).ramp_to(360, t_start=2500.0, t_end=3000.0),
+        "Llama-3.1-70B": ReplicaSchedule(initial=180).ramp_to(90, t_start=2500.0, t_end=3000.0),
     },
     training=TrainingRun(n_gpus=2400, trace=training_trace).at(t_start=1000.0, t_end=2000.0),
 )
@@ -180,7 +178,7 @@ data/grid/
 
 These are modified from the [OpenDSS IEEE Test Cases](https://github.com/tshort/OpenDSS/tree/master/Distrib/IEEETestCases) for studying datacenter loads on distribution grids. See the header comment in each `.dss` file for system-specific modifications.
 
-**Regulator naming.** OpenDSS models voltage regulators as two separate objects — a `Transformer` (the physical hardware) and a `RegControl` (the control logic that adjusts the transformer's tap). Names follow the convention `reg{bank}{phase}` / `creg{bank}{phase}` (the `c` prefix stands for "control"):
+**Regulator naming.** OpenDSS models voltage regulators as two separate objects: a `Transformer` (the physical hardware) and a `RegControl` (the control logic that adjusts the transformer's tap). Names follow the convention `reg{bank}{phase}` / `creg{bank}{phase}` (the `c` prefix stands for "control"):
 
 | Component | Pattern | Example | Meaning |
 |-----------|---------|---------|---------|
@@ -192,7 +190,7 @@ Each `RegControl` points to its transformer: `new regcontrol.creg1a transformer=
 **Adding a new test system.** When adding a new `.dss` file:
 
 1. Name the master file `IEEE{N}Bus.dss`.
-2. Use explicit phase suffixes on regulator transformer buses (e.g., `buses=[650.1 RG60.1]`). The simulator determines phase-to-regulator mapping from bus node data — if phase cannot be determined, users must address regulators by name in `TapPosition`.
+2. Use explicit phase suffixes on regulator transformer buses (e.g., `buses=[650.1 RG60.1]`). The simulator determines phase-to-regulator mapping from bus node data; if phase cannot be determined, users must address regulators by name in `TapPosition`.
 3. Follow the `reg{bank}{phase}` / `creg{bank}{phase}` naming convention for regulators.
 4. Use `SetBusXY bus=... X=... Y=...` for inline bus coordinates (no external CSV files).
 
@@ -208,14 +206,16 @@ logistic_models = LogisticModelStore.ensure(
     data_dir / "logistic_fits.csv", models, data_sources,
 )
 
+model_specs = tuple(m.spec for m in models)
 coord = Coordinator(
     datacenters=[dc],
     grid=grid,
     controllers=[
         TapScheduleController(schedule=tap_schedule, dt_s=Fraction(1)),
         OFOBatchSizeController(
-            models,
+            model_specs,
             datacenter=dc,
+            grid=grid,
             models=logistic_models,
             config=OFOConfig(v_min=0.95, v_max=1.05),
         ),
@@ -233,10 +233,19 @@ Actions from all controllers are applied before the next tick. Put tap controlle
 ```python
 log = coord.run()
 
-# Voltage statistics
+# Voltage statistics (grid-side quality)
 from openg2g.metrics.voltage import compute_allbus_voltage_stats
-stats = compute_allbus_voltage_stats(log.grid_states, v_min=0.95, v_max=1.05)
-print(f"Violation time: {stats.violation_time_s:.1f} s")
+vstats = compute_allbus_voltage_stats(log.grid_states, v_min=0.95, v_max=1.05)
+print(f"Violation time: {vstats.violation_time_s:.1f} s  (integral {vstats.integral_violation_pu_s:.4f} pu-s)")
+
+# Performance statistics (datacenter-side quality of service)
+from openg2g.metrics.performance import compute_performance_stats
+pstats = compute_performance_stats(
+    log.dc_states,
+    itl_deadline_s_by_model={ms.model_label: ms.itl_deadline_s for ms in models},
+)
+print(f"Throughput: {pstats.mean_throughput_tps / 1e3:.1f} k tok/s  "
+      f"(ITL over deadline on {pstats.itl_deadline_fraction * 100:.2f}% of samples)")
 
 # Time-series data for plotting
 import numpy as np
@@ -246,6 +255,8 @@ kW_A = np.array([s.power_w.a / 1e3 for s in log.dc_states])
 kW_B = np.array([s.power_w.b / 1e3 for s in log.dc_states])
 kW_C = np.array([s.power_w.c / 1e3 for s in log.dc_states])
 ```
+
+Result CSVs written by the example scripts include a mode/case label plus the seven metric fields: `violation_time_s`, `integral_violation_pu_s`, `worst_vmin`, `worst_vmax`, `mean_throughput_tps`, `integrated_throughput_tokens`, `itl_deadline_fraction` (column ordering may differ between per-case and comparison CSVs). Voltage-only metrics give you grid operator quality; performance metrics give you DC operator quality. Examples like `analyze_different_controllers.py` show OFO wins on both axes simultaneously where rule-based keeps voltage in bounds but leaves throughput on the table.
 
 See [`examples/offline/plotting.py`](https://github.com/gpu2grid/openg2g/blob/master/examples/offline/plotting.py) for reusable plot functions used by the example scripts.
 
@@ -482,7 +493,7 @@ How it implements the interface:
 
 ### `RuleBasedBatchSizeController`
 
-[`RuleBasedBatchSizeController`][openg2g.controller.rule_based.RuleBasedBatchSizeController] implements a proportional rule-based controller for batch-size regulation. Unlike OFO, it requires no sensitivity matrix, no logistic curve fits, and no dual variables — making it a simple baseline for comparison.
+[`RuleBasedBatchSizeController`][openg2g.controller.rule_based.RuleBasedBatchSizeController] implements a proportional rule-based controller for batch-size regulation. Unlike OFO, it requires no sensitivity matrix, no logistic curve fits, and no dual variables, making it a simple baseline for comparison.
 
 How it works:
 

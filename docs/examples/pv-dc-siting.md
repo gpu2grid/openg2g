@@ -131,15 +131,16 @@ Run the co-optimization with different cost parameters to understand solution ro
 | `s_max_kw` | 500 | 250, 1000 | Smaller PV spreads across more buses |
 | `n_pv` | 3 | 1, 5 | Fewer PVs → DCs shift to compensate |
 
-## Key Results
+## Outputs
 
-Outputs are saved to `outputs/<system>/pv_dc_coopt/` (or `pv_expansion/`):
+Saved to `outputs/<system>/pv_dc_coopt/` (or `pv_expansion/`):
 
-- `pv_placements_{system}.csv` — Selected PV buses and capacities
-- `dc_assignments_{system}.csv` — DC site → bus assignments (co-optimization only)
-- `optimized_topology_{system}.png` — Topology map with optimized locations
-- `validation_{system}.csv` — Per-scenario nonlinear validation results
-- `milp_summary_{system}.json` — Full optimization results
+- `pv_placements_{system}.csv`: selected PV buses and capacities
+- `dc_assignments_{system}.csv`: DC site → bus assignments (co-optimization only)
+- `optimized_topology_{system}.png`: topology map with optimized locations
+- `validation_{system}.csv`: per-scenario nonlinear validation results
+- `milp_summary_{system}.json`: full optimization results
+- `ofo_comparison_{system}.csv`: post-MILP OFO validation: voltage columns plus `mean_throughput_tps`, `integrated_throughput_tokens`, `itl_deadline_fraction`
 
 ## Configuration
 

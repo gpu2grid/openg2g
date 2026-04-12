@@ -69,6 +69,7 @@ from openg2g.grid.config import TapPosition, TapSchedule
 from openg2g.grid.generator import ConstantGenerator, SyntheticPV
 from openg2g.grid.load import SyntheticLoad
 from openg2g.grid.opendss import OpenDSSGrid
+from openg2g.metrics.performance import compute_performance_stats
 from openg2g.metrics.voltage import compute_allbus_voltage_stats
 
 from plotting import plot_allbus_voltages_per_phase, plot_model_timeseries_4panel
@@ -478,6 +479,9 @@ def run_case_1d(
     stats = compute_allbus_voltage_stats(
         log.grid_states, v_min=v_min, v_max=v_max, exclude_buses=tuple(sys.get("exclude_buses", ()))
     )
+    pstats = compute_performance_stats(
+        log.dc_states, itl_deadline_s_by_model={ms.model_label: ms.itl_deadline_s for ms in all_models}
+    )
 
     dc_kW = np.array([(s.power_w.a + s.power_w.b + s.power_w.c) / 3e3 for s in log.dc_states])
     avg_power = float(dc_kW.mean()) if dc_kW.size > 0 else 0.0
@@ -488,6 +492,8 @@ def run_case_1d(
         "worst_vmax": stats.worst_vmax,
         "integral_violation_pu_s": stats.integral_violation_pu_s,
         "avg_power_kw_per_phase": avg_power,
+        "mean_throughput_tps": pstats.mean_throughput_tps,
+        "itl_deadline_fraction": pstats.itl_deadline_fraction,
     }
 
     if save_dir is not None:
@@ -1036,6 +1042,10 @@ def main_2d(
                 v_max=v_max,
                 exclude_buses=exclude_buses,
             )
+            pstats = compute_performance_stats(
+                log.dc_states,
+                itl_deadline_s_by_model={ms.model_label: ms.itl_deadline_s for ms in all_models},
+            )
 
             row = {
                 "bus_A": bus_A,
@@ -1044,14 +1054,18 @@ def main_2d(
                 "integral_violation_pu_s": vstats.integral_violation_pu_s,
                 "worst_vmin": vstats.worst_vmin,
                 "worst_vmax": vstats.worst_vmax,
+                "mean_throughput_tps": pstats.mean_throughput_tps,
+                "itl_deadline_fraction": pstats.itl_deadline_fraction,
                 "wall_time_s": wall_s,
             }
             rows.append(row)
             logger.info(
-                "  -> viol=%.1fs  integral=%.4f pu·s  vmin=%.4f  wall=%.1fs",
+                "  -> viol=%.1fs  integral=%.4f pu·s  vmin=%.4f  thpt=%.1f k tok/s  itl_miss=%.2f%%  wall=%.1fs",
                 vstats.violation_time_s,
                 vstats.integral_violation_pu_s,
                 vstats.worst_vmin,
+                pstats.mean_throughput_tps / 1e3,
+                pstats.itl_deadline_fraction * 100.0,
                 wall_s,
             )
 
@@ -1208,6 +1222,11 @@ def _run_multi_dc_case(
         v_max=v_max,
         exclude_buses=exclude_buses,
     )
+    all_site_specs = tuple(ms for sid in site_ids for md, _ in dc_sites[sid].models for ms in (md.spec,))
+    pstats = compute_performance_stats(
+        log.dc_states,
+        itl_deadline_s_by_model={ms.model_label: ms.itl_deadline_s for ms in all_site_specs},
+    )
 
     row: dict = {}
     for sid in site_ids:
@@ -1218,6 +1237,8 @@ def _run_multi_dc_case(
             "integral_violation_pu_s": vstats.integral_violation_pu_s,
             "worst_vmin": vstats.worst_vmin,
             "worst_vmax": vstats.worst_vmax,
+            "mean_throughput_tps": pstats.mean_throughput_tps,
+            "itl_deadline_fraction": pstats.itl_deadline_fraction,
             "wall_time_s": wall_s,
         }
     )
@@ -1892,11 +1913,11 @@ def setup_ieee13(sys_const, training_trace):
     )
 
     replica_schedules = {
-        "Llama-3.1-8B": ReplicaSchedule(initial=720).ramp_to(144, t_start=2500, t_end=3000),
-        "Llama-3.1-70B": ReplicaSchedule(initial=180).ramp_to(36, t_start=2500, t_end=3000),
-        "Llama-3.1-405B": ReplicaSchedule(initial=90).ramp_to(18, t_start=2500, t_end=3000),
-        "Qwen3-30B-A3B": ReplicaSchedule(initial=480).ramp_to(96, t_start=2500, t_end=3000),
-        "Qwen3-235B-A22B": ReplicaSchedule(initial=210).ramp_to(42, t_start=2500, t_end=3000),
+        "Llama-3.1-8B": ReplicaSchedule(initial=720).ramp_to(360, t_start=2500, t_end=3000),
+        "Llama-3.1-70B": ReplicaSchedule(initial=180).ramp_to(90, t_start=2500, t_end=3000),
+        "Llama-3.1-405B": ReplicaSchedule(initial=90).ramp_to(45, t_start=2500, t_end=3000),
+        "Qwen3-30B-A3B": ReplicaSchedule(initial=480).ramp_to(240, t_start=2500, t_end=3000),
+        "Qwen3-235B-A22B": ReplicaSchedule(initial=210).ramp_to(105, t_start=2500, t_end=3000),
     }
 
     dc_sites = {

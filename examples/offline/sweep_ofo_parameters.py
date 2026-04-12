@@ -27,6 +27,7 @@ import json
 import logging
 import math
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from fractions import Fraction
 from pathlib import Path
@@ -59,6 +60,7 @@ from openg2g.datacenter.workloads.training import TrainingTrace
 from openg2g.grid.generator import SyntheticPV
 from openg2g.grid.load import SyntheticLoad
 from openg2g.grid.opendss import OpenDSSGrid
+from openg2g.metrics.performance import compute_performance_stats
 from openg2g.metrics.voltage import compute_allbus_voltage_stats
 
 from plotting import (
@@ -266,6 +268,8 @@ def _collect_metrics(
 ) -> dict:
     """Extract scalar metrics from a SimulationLog into a flat dict."""
     vstats = compute_allbus_voltage_stats(log.grid_states, v_min=v_min, v_max=v_max, exclude_buses=exclude_buses)
+    deadlines = {ms.model_label: ms.itl_deadline_s for ms in models}
+    pstats = compute_performance_stats(log.dc_states, itl_deadline_s_by_model=deadlines)
 
     row: dict = {
         "param_name": param_name,
@@ -274,11 +278,13 @@ def _collect_metrics(
         "integral_violation_pu_s": vstats.integral_violation_pu_s,
         "worst_vmin": vstats.worst_vmin,
         "worst_vmax": vstats.worst_vmax,
+        "mean_throughput_tps": pstats.mean_throughput_tps,
+        "integrated_throughput_tokens": pstats.integrated_throughput_tokens,
+        "itl_deadline_fraction": pstats.itl_deadline_fraction,
         "wall_time_s": wall_time_s,
     }
 
     # Per-site metrics (use per-site states to avoid interleaving artefacts)
-    deadlines = {ms.model_label: ms.itl_deadline_s for ms in models}
     for site_id, site_states in log.dc_states_by_site.items():
         if not site_states:
             continue
@@ -634,11 +640,11 @@ def setup_ieee13(
     )
 
     replica_schedules = {
-        "Llama-3.1-8B": ReplicaSchedule(initial=720).ramp_to(144, t_start=2500, t_end=3000),
-        "Llama-3.1-70B": ReplicaSchedule(initial=180).ramp_to(36, t_start=2500, t_end=3000),
-        "Llama-3.1-405B": ReplicaSchedule(initial=90).ramp_to(18, t_start=2500, t_end=3000),
-        "Qwen3-30B-A3B": ReplicaSchedule(initial=480).ramp_to(96, t_start=2500, t_end=3000),
-        "Qwen3-235B-A22B": ReplicaSchedule(initial=210).ramp_to(42, t_start=2500, t_end=3000),
+        "Llama-3.1-8B": ReplicaSchedule(initial=720).ramp_to(360, t_start=2500, t_end=3000),
+        "Llama-3.1-70B": ReplicaSchedule(initial=180).ramp_to(90, t_start=2500, t_end=3000),
+        "Llama-3.1-405B": ReplicaSchedule(initial=90).ramp_to(45, t_start=2500, t_end=3000),
+        "Qwen3-30B-A3B": ReplicaSchedule(initial=480).ramp_to(240, t_start=2500, t_end=3000),
+        "Qwen3-235B-A22B": ReplicaSchedule(initial=210).ramp_to(105, t_start=2500, t_end=3000),
     }
 
     dc_sites = {
@@ -839,6 +845,63 @@ SETUPS = {
 # Simulation and sweep runners
 
 
+def _build_datacenters_and_grid(
+    *,
+    sys: dict,
+    dc_sites: dict[str, _DCSiteConfig],
+    inference_data: InferenceData,
+    training: TrainingRun | None,
+    pv_systems: list,
+    time_varying_loads: list,
+    dt_dc: Fraction,
+    dt_grid: Fraction,
+) -> tuple[dict[str, OfflineDatacenter], OpenDSSGrid]:
+    """Build fresh datacenter and grid objects for one sweep iteration.
+
+    Called once per sim to guarantee no DSS or RNG state leaks between
+    iterations (see MEMORY: "Fresh objects per case").
+    """
+    datacenters: dict[str, OfflineDatacenter] = {}
+    for site_id, site in dc_sites.items():
+        site_specs = tuple(md.spec for md, _ in site.models)
+        site_inference = inference_data.filter_models(site_specs)
+
+        dc_config = DatacenterConfig(gpus_per_server=8, base_kw_per_phase=site.base_kw_per_phase)
+        rs = site.replica_schedules or {md.spec.model_label: s for md, s in site.models}
+        workload_kwargs: dict = {"inference_data": site_inference, "replica_schedules": rs}
+        if training is not None:
+            workload_kwargs["training"] = training
+        workload = OfflineWorkload(**workload_kwargs)
+
+        datacenters[site_id] = OfflineDatacenter(
+            dc_config,
+            workload,
+            name=site_id,
+            dt_s=dt_dc,
+            seed=site.seed,
+            power_augmentation=POWER_AUG,
+            total_gpu_capacity=site.total_gpu_capacity,
+        )
+
+    grid = OpenDSSGrid(
+        dss_case_dir=sys["dss_case_dir"],
+        dss_master_file=sys["dss_master_file"],
+        source_pu=sys["source_pu"],
+        dt_s=dt_grid,
+        initial_tap_position=sys["initial_taps"],
+        exclude_buses=tuple(sys["exclude_buses"]),
+    )
+    pf = DatacenterConfig(base_kw_per_phase=0).power_factor
+    for site_id, site in dc_sites.items():
+        grid.attach_dc(datacenters[site_id], bus=site.bus, connection_type=site.connection_type, power_factor=pf)
+    for bus, gen in pv_systems:
+        grid.attach_generator(gen, bus=bus)
+    for bus, ld in time_varying_loads:
+        grid.attach_load(ld, bus=bus)
+
+    return datacenters, grid
+
+
 def _run_single_sim(
     *,
     site_ids: list[str],
@@ -846,8 +909,7 @@ def _run_single_sim(
     logistic_models,
     site_models_map,
     site_bus_map,
-    datacenters,
-    grid,
+    build_fn: Callable[[], tuple[dict[str, OfflineDatacenter], OpenDSSGrid]],
     exclude_buses,
     dt_ctrl,
     all_models,
@@ -857,6 +919,8 @@ def _run_single_sim(
     v_max: float = V_MAX,
 ):
     """Run one simulation with per-site OFO configs. Returns (log, wall_time_s)."""
+    datacenters, grid = build_fn()
+
     controllers = []
     for site_id in site_ids:
         site_models = site_models_map[site_id]
@@ -903,8 +967,7 @@ def _run_sweep_shared(
     site_ids: list[str],
     site_models_map: dict[str, tuple[InferenceModelSpec, ...]],
     site_bus_map: dict[str, str],
-    datacenters: dict[str, OfflineDatacenter],
-    grid: OpenDSSGrid,
+    build_fn: Callable[[], tuple[dict[str, OfflineDatacenter], OpenDSSGrid]],
     exclude_buses: tuple[str, ...],
     save_dir: Path,
     dt_ctrl: Fraction,
@@ -930,8 +993,7 @@ def _run_sweep_shared(
                 logistic_models=logistic_models,
                 site_models_map=site_models_map,
                 site_bus_map=site_bus_map,
-                datacenters=datacenters,
-                grid=grid,
+                build_fn=build_fn,
                 exclude_buses=exclude_buses,
                 dt_ctrl=dt_ctrl,
                 all_models=all_models,
@@ -982,8 +1044,7 @@ def _run_sweep_per_site(
     site_ids: list[str],
     site_models_map: dict[str, tuple[InferenceModelSpec, ...]],
     site_bus_map: dict[str, str],
-    datacenters: dict[str, OfflineDatacenter],
-    grid: OpenDSSGrid,
+    build_fn: Callable[[], tuple[dict[str, OfflineDatacenter], OpenDSSGrid]],
     exclude_buses: tuple[str, ...],
     save_dir: Path,
     dt_ctrl: Fraction,
@@ -1015,8 +1076,7 @@ def _run_sweep_per_site(
                 logistic_models=logistic_models,
                 site_models_map=site_models_map,
                 site_bus_map=site_bus_map,
-                datacenters=datacenters,
-                grid=grid,
+                build_fn=build_fn,
                 exclude_buses=exclude_buses,
                 dt_ctrl=dt_ctrl,
                 all_models=all_models,
@@ -1137,51 +1197,24 @@ def main(
     # Build shared datacenters and grid
 
     site_ids = list(dc_sites.keys())
-    datacenters: dict[str, OfflineDatacenter] = {}
-    site_models_map: dict[str, tuple[InferenceModelSpec, ...]] = {}
-
-    for site_id, site in dc_sites.items():
-        site_specs = tuple(md.spec for md, _ in site.models)
-        site_models_map[site_id] = site_specs
-        site_inference = inference_data.filter_models(site_specs)
-
-        dc_config = DatacenterConfig(gpus_per_server=8, base_kw_per_phase=site.base_kw_per_phase)
-
-        rs = site.replica_schedules or {md.spec.model_label: s for md, s in site.models}
-        workload_kwargs: dict = {"inference_data": site_inference, "replica_schedules": rs}
-        if training is not None:
-            workload_kwargs["training"] = training
-        workload = OfflineWorkload(**workload_kwargs)
-
-        dc = OfflineDatacenter(
-            dc_config,
-            workload,
-            name=site_id,
-            dt_s=dt_dc,
-            seed=site.seed,
-            power_augmentation=POWER_AUG,
-            total_gpu_capacity=site.total_gpu_capacity,
-        )
-        datacenters[site_id] = dc
-
+    site_models_map: dict[str, tuple[InferenceModelSpec, ...]] = {
+        site_id: tuple(md.spec for md, _ in site.models) for site_id, site in dc_sites.items()
+    }
     site_bus_map = {sid: dc_sites[sid].bus for sid in dc_sites}
     exclude_buses = tuple(sys["exclude_buses"])
 
-    grid = OpenDSSGrid(
-        dss_case_dir=sys["dss_case_dir"],
-        dss_master_file=sys["dss_master_file"],
-        source_pu=sys["source_pu"],
-        dt_s=dt_grid,
-        initial_tap_position=sys["initial_taps"],
-        exclude_buses=exclude_buses,
-    )
-    pf = DatacenterConfig(base_kw_per_phase=0).power_factor
-    for site_id, site in dc_sites.items():
-        grid.attach_dc(datacenters[site_id], bus=site.bus, connection_type=site.connection_type, power_factor=pf)
-    for bus, gen in pv_systems:
-        grid.attach_generator(gen, bus=bus)
-    for bus, ld in time_varying_loads:
-        grid.attach_load(ld, bus=bus)
+    # Factory: produces fresh DCs + grid per sweep iteration (avoids DSS / RNG state leak).
+    def build_fn() -> tuple[dict[str, OfflineDatacenter], OpenDSSGrid]:
+        return _build_datacenters_and_grid(
+            sys=sys,
+            dc_sites=dc_sites,
+            inference_data=inference_data,
+            training=training,
+            pv_systems=pv_systems,
+            time_varying_loads=time_varying_loads,
+            dt_dc=dt_dc,
+            dt_grid=dt_grid,
+        )
 
     # Select sweep mode
 
@@ -1210,8 +1243,7 @@ def main(
         site_ids=site_ids,
         site_models_map=site_models_map,
         site_bus_map=site_bus_map,
-        datacenters=datacenters,
-        grid=grid,
+        build_fn=build_fn,
         exclude_buses=exclude_buses,
         save_dir=save_dir,
         dt_ctrl=dt_ctrl,

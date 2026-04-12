@@ -57,6 +57,7 @@ from openg2g.grid.config import TapPosition, TapSchedule
 from openg2g.grid.generator import Generator, SyntheticPV
 from openg2g.grid.load import ExternalLoad, SyntheticLoad
 from openg2g.grid.opendss import OpenDSSGrid
+from openg2g.metrics.performance import PerformanceStats, compute_performance_stats
 from openg2g.metrics.voltage import VoltageStats, compute_allbus_voltage_stats
 
 from plotting import (
@@ -712,6 +713,7 @@ def main(*, system: str, mode: str = "baseline-no-tap") -> None:
     logger.info("Running %d cases for %s: %s", len(cases), system, [c[1] for c in cases])
 
     results: dict[str, VoltageStats] = {}
+    perf_results: dict[str, PerformanceStats] = {}
     for ctrl_mode, case_name, sched in cases:
         # Fresh DCs and grid per case (no state leakage between runs)
         config = setup_fn(inference_data, training_trace, logistic_models)
@@ -757,15 +759,24 @@ def main(*, system: str, mode: str = "baseline-no-tap") -> None:
         log = coord.run()
 
         vstats = compute_allbus_voltage_stats(log.grid_states, v_min=V_MIN, v_max=V_MAX, exclude_buses=exclude_buses)
+        # Throughput + ITL across every model served by any DC in this case
+        itl_deadlines: dict[str, float] = {}
+        for info in dc_info.values():
+            for ms in info.specs:
+                itl_deadlines[ms.model_label] = ms.itl_deadline_s
+        pstats = compute_performance_stats(log.dc_states, itl_deadline_s_by_model=itl_deadlines)
         logger.info(
-            "  %s: viol=%.1fs  integral=%.4f  vmin=%.4f  vmax=%.4f",
+            "  %s: viol=%.1fs  integral=%.4f  vmin=%.4f  vmax=%.4f  thpt=%.1f k tok/s  itl_over_deadline=%.2f%%",
             case_name,
             vstats.violation_time_s,
             vstats.integral_violation_pu_s,
             vstats.worst_vmin,
             vstats.worst_vmax,
+            pstats.mean_throughput_tps / 1e3,
+            pstats.itl_deadline_fraction * 100.0,
         )
         results[case_name] = vstats
+        perf_results[case_name] = pstats
 
         # Plots
         time_s = np.array(log.time_s)
@@ -842,7 +853,18 @@ def main(*, system: str, mode: str = "baseline-no-tap") -> None:
 
         with open(run_dir / f"result_{case_name}.csv", "w", newline="") as f:
             writer = csv.writer(f)
-            writer.writerow(["case", "violation_time_s", "integral_violation_pu_s", "worst_vmin", "worst_vmax"])
+            writer.writerow(
+                [
+                    "case",
+                    "violation_time_s",
+                    "integral_violation_pu_s",
+                    "worst_vmin",
+                    "worst_vmax",
+                    "mean_throughput_tps",
+                    "integrated_throughput_tokens",
+                    "itl_deadline_fraction",
+                ]
+            )
             writer.writerow(
                 [
                     case_name,
@@ -850,6 +872,9 @@ def main(*, system: str, mode: str = "baseline-no-tap") -> None:
                     vstats.integral_violation_pu_s,
                     vstats.worst_vmin,
                     vstats.worst_vmax,
+                    pstats.mean_throughput_tps,
+                    pstats.integrated_throughput_tokens,
+                    pstats.itl_deadline_fraction,
                 ]
             )
         logger.info("Per-case CSV: %s", run_dir / f"result_{case_name}.csv")
@@ -858,9 +883,32 @@ def main(*, system: str, mode: str = "baseline-no-tap") -> None:
     csv_path = save_dir / f"results_{system}_comparison.csv"
     with open(csv_path, "w", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(["mode", "violation_time_s", "worst_vmin", "worst_vmax", "integral_violation_pu_s"])
+        writer.writerow(
+            [
+                "mode",
+                "violation_time_s",
+                "worst_vmin",
+                "worst_vmax",
+                "integral_violation_pu_s",
+                "mean_throughput_tps",
+                "integrated_throughput_tokens",
+                "itl_deadline_fraction",
+            ]
+        )
         for case_name, s in results.items():
-            writer.writerow([case_name, s.violation_time_s, s.worst_vmin, s.worst_vmax, s.integral_violation_pu_s])
+            p = perf_results[case_name]
+            writer.writerow(
+                [
+                    case_name,
+                    s.violation_time_s,
+                    s.worst_vmin,
+                    s.worst_vmax,
+                    s.integral_violation_pu_s,
+                    p.mean_throughput_tps,
+                    p.integrated_throughput_tokens,
+                    p.itl_deadline_fraction,
+                ]
+            )
     logger.info("Comparison CSV: %s", csv_path)
 
     _plot_comparison(results, save_dir, system)
@@ -870,16 +918,28 @@ def main(*, system: str, mode: str = "baseline-no-tap") -> None:
     logger.info("=" * 90)
     logger.info("%s Comparison", system.upper())
     logger.info("=" * 90)
-    logger.info("%-22s %10s %10s %10s %14s", "Mode", "Viol(s)", "Vmin", "Vmax", "Integral")
-    logger.info("-" * 90)
+    logger.info(
+        "%-22s %10s %10s %10s %14s %14s %10s",
+        "Mode",
+        "Viol(s)",
+        "Vmin",
+        "Vmax",
+        "Integral",
+        "Thpt(k tok/s)",
+        "ITL_miss%",
+    )
+    logger.info("-" * 100)
     for case_name, s in results.items():
+        p = perf_results[case_name]
         logger.info(
-            "%-22s %10.1f %10.4f %10.4f %14.4f",
+            "%-22s %10.1f %10.4f %10.4f %14.4f %14.1f %9.2f%%",
             case_name,
             s.violation_time_s,
             s.worst_vmin,
             s.worst_vmax,
             s.integral_violation_pu_s,
+            p.mean_throughput_tps / 1e3,
+            p.itl_deadline_fraction * 100.0,
         )
     logger.info("-" * 90)
     logger.info("Outputs: %s", save_dir)

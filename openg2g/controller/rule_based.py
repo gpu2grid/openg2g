@@ -183,7 +183,7 @@ class RuleBasedBatchSizeController(
 
             # Latency guard: don't increase batch if ITL already exceeds deadline
             if cfg.latency_guard and delta > 0:
-                itl = itl_by_model.get(label, 0.0)
+                itl = itl_by_model[label]
                 if not math.isnan(itl) and itl > self._itl_deadline[label]:
                     new_log2 = log2_b  # revert
 

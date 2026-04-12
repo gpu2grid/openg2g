@@ -48,7 +48,7 @@ A shared `data_sources.json` (`examples/offline/data_sources.json`) stores bench
 - `task` selects which benchmark prompt dataset to use (e.g., `lm-arena-chat`, `gpqa`). Available tasks can be browsed in the [ML.ENERGY Benchmark v3 dataset](https://huggingface.co/datasets/ml-energy/benchmark-v3) on Hugging Face; see the [`mlenergy-data` toolkit](https://ml.energy/data) for details.
 - First run downloads benchmark data from the HuggingFace Hub and caches it in `data/offline/{hash}/`.
 
-Model specifications ([`InferenceModelSpec`][openg2g.datacenter.config.InferenceModelSpec]) are defined as Python constants inline in each example script. All other configuration — datacenter sizing, controller tuning, workload scenarios, grid setup — is also defined programmatically per-script. See [Building Simulators](building-simulators.md) for details.
+Model specifications ([`InferenceModelSpec`][openg2g.datacenter.config.InferenceModelSpec]) are defined as Python constants inline in each example script. All other configuration (datacenter sizing, controller tuning, workload scenarios, grid setup) is also defined programmatically per-script. See [Building Simulators](building-simulators.md) for details.
 
 ## Lazy Generation and Caching
 

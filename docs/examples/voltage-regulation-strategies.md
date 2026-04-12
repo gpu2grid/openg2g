@@ -6,12 +6,12 @@ How does datacenter-side batch-size control compare with grid-side regulator tap
 
 ## Overview
 
-Distribution feeders traditionally regulate voltage using regulator tap changers — mechanical devices that adjust transformer turns ratios. Datacenter batch-size control offers a complementary demand-side approach: adjusting GPU workload parameters to modulate power consumption in real time.
+Distribution feeders traditionally regulate voltage using regulator tap changers: mechanical devices that adjust transformer turns ratios. Datacenter batch-size control offers a complementary demand-side approach: adjusting GPU workload parameters to modulate power consumption in real time.
 
 This analysis compares three control strategies:
 
 1. **Baseline with tap changes**: Traditional grid-side control only (regulator tap schedule, no batch adjustment)
-2. **Rule-based batch control**: Simple proportional controller that reduces batch on undervoltage and increases on overvoltage — no sensitivity matrix or model fits required
+2. **Rule-based batch control**: Simple proportional controller that reduces batch on undervoltage and increases on overvoltage; no sensitivity matrix or model fits required
 3. **OFO batch control**: Primal-dual optimization using voltage sensitivity matrices and logistic curve fits for gradient-based batch adjustment
 
 ## Scripts
@@ -37,10 +37,10 @@ python examples/offline/analyze_different_controllers.py \
 
 Outputs (in `outputs/ieee13/controller_comparison/`):
 
-- `voltage_comparison.png` — Side-by-side voltage envelopes
-- `batch_size_comparison.png` — Per-model batch size traces over time
-- `summary_bar_chart.png` — Violation time, integral violation, worst Vmin
-- `results_ieee13.csv` — Metrics table
+- `voltage_comparison.png`: side-by-side voltage envelopes
+- `batch_size_comparison.png`: per-model batch size traces over time
+- `summary_bar_chart.png`: violation time, integral violation, worst Vmin
+- `results_ieee13.csv`: metrics table (voltage + throughput + ITL-miss columns)
 
 ### Tap vs No-Tap Comparison (IEEE 13)
 
@@ -60,33 +60,29 @@ python examples/offline/analyze_different_controllers.py \
 
 The rule-based controller has two key parameters:
 
-- `--rule-step-size`: Proportional gain (default 10.0). Higher = faster response but more oscillation.
-- `--rule-deadband`: Minimum violation magnitude to act on (default 0.001 pu). Smaller = faster response but more chattering.
+- `--rule-step-size`: Proportional gain (default 0.3). Higher = faster response but more oscillation.
+- `--rule-deadband`: Minimum violation magnitude to act on (default 0.005 pu). Smaller = faster response but more chattering.
 
 ```bash
 python examples/offline/analyze_different_controllers.py \
     --system ieee13 \
-    --rule-step-size 15.0 --rule-deadband 0.0005
+    --rule-step-size 1.0 --rule-deadband 0.001
 ```
 
-## Key Results
+## What to Look For
 
-Typical findings on IEEE 13-bus:
+The script prints a summary table and writes `results_<system>.csv` with voltage + performance columns. Read both together:
 
-| Controller | Violation Time | Integral | Mechanism |
-|-----------|---------------|----------|-----------|
-| Baseline (with taps) | ~1050s | ~42 pu-s | Tap changes at scheduled times |
-| Rule-based (no taps) | ~1250s | ~15 pu-s | Proportional batch reduction on violation |
-| OFO (no taps) | ~120s | ~0.1 pu-s | Sensitivity-aware gradient descent |
-
-OFO outperforms because it: (1) uses model-specific sensitivity to adjust the right models, (2) acts proactively via dual variables before violations occur, and (3) operates in continuous log2-space with gradient information from logistic fits.
+- **Baseline** and **rule-based** typically land close on voltage (both at or near zero violations under moderate load), but rule-based never pushes batch sizes up -- it leaves throughput identical to baseline.
+- **OFO** matches rule-based on voltage while serving several times more tokens per second, at the cost of a small ITL-over-deadline fraction (typically a few percent). This is the win OFO is designed for: it uses model-specific voltage sensitivity, acts proactively via dual variables, and operates in continuous log2-batch space with gradient information from logistic fits.
+- Under harder stress (e.g., ieee34's two-DC setup), OFO additionally beats rule-based on voltage by orders of magnitude because rule-based can only apply a single uniform batch nudge while OFO drives each model independently.
 
 ## Configuration
 
 Experiment parameters are defined inline in each script's setup functions:
 
-- **Tap schedule**: `TapSchedule(...)` — defines when and how regulator taps change (baseline only)
-- **OFO tuning**: `OFOConfig(...)` — controller parameters
-- **Initial taps**: `TapPosition(regulators={...})` — starting tap positions (in `systems.py` feeder constants)
+- **Tap schedule**: `TapPosition(...).at(t=...) | TapPosition(...).at(t=...)`, which defines when and how regulator taps change (baseline only)
+- **OFO tuning**: `OFOConfig(...)` for controller parameters
+- **Initial taps**: `TapPosition(regulators={...})` giving starting tap positions (in `systems.py` feeder constants)
 
 See [Building Simulators](../guide/building-simulators.md) for the full component API.

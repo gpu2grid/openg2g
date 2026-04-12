@@ -49,7 +49,7 @@ python examples/offline/run_ofo.py --system ieee123 --mode all
 
 - **Electrical distance matters**: Buses farther from the substation have higher voltage sensitivity to load changes, making them harder to regulate but also more responsive to batch-size control.
 - **Regulator placement**: Systems with regulators between the substation and DC buses (like IEEE 34) offer an additional control degree of freedom via tap changes.
-- **DER interaction**: PV injection can cause overvoltage at nearby buses while DC loads cause undervoltage — the net effect depends on relative locations and magnitudes.
+- **DER interaction**: PV injection can cause overvoltage at nearby buses while DC loads cause undervoltage; the net effect depends on relative locations and magnitudes.
 - **Zone structure**: In multi-zone systems (IEEE 123), different zones may have independent voltage dynamics, requiring per-zone controller tuning.
 
 ## Configuration

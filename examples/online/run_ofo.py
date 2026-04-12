@@ -43,6 +43,7 @@ from openg2g.datacenter.online import (
 from openg2g.datacenter.workloads.inference import MLEnergySource, RequestsConfig, RequestStore
 from openg2g.grid.config import TapPosition, TapSchedule
 from openg2g.grid.opendss import OpenDSSGrid
+from openg2g.metrics.performance import compute_performance_stats
 from openg2g.metrics.voltage import compute_allbus_voltage_stats
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -194,11 +195,49 @@ def main(*, config_path: Path, mode: str = "ofo") -> None:
     stats = compute_allbus_voltage_stats(
         log.grid_states, v_min=V_MIN, v_max=V_MAX, exclude_buses=("sourcebus", "650", "rg60")
     )
+    itl_deadlines = {d.spec.model_label: d.spec.itl_deadline_s for d in config.deployments}
+    pstats = compute_performance_stats(log.dc_states, itl_deadline_s_by_model=itl_deadlines)
     logger.info("=== Voltage Statistics (all-bus) ===")
     logger.info("  voltage_violation_time = %.1f s", stats.violation_time_s)
     logger.info("  worst_vmin             = %.6f", stats.worst_vmin)
     logger.info("  worst_vmax             = %.6f", stats.worst_vmax)
     logger.info("  integral_violation     = %.5f pu-s", stats.integral_violation_pu_s)
+    logger.info("=== Performance Statistics ===")
+    logger.info("  mean_throughput        = %.1f k tok/s", pstats.mean_throughput_tps / 1e3)
+    logger.info("  integrated_throughput  = %.0f tokens", pstats.integrated_throughput_tokens)
+    logger.info("  itl_over_deadline      = %.2f%%", pstats.itl_deadline_fraction * 100.0)
+
+    # Per-case CSV (matches offline convention)
+    import csv as _csv
+
+    csv_path = save_dir / f"result_{mode.replace('-', '_')}.csv"
+    with open(csv_path, "w", newline="") as f:
+        writer = _csv.writer(f)
+        writer.writerow(
+            [
+                "case",
+                "violation_time_s",
+                "integral_violation_pu_s",
+                "worst_vmin",
+                "worst_vmax",
+                "mean_throughput_tps",
+                "integrated_throughput_tokens",
+                "itl_deadline_fraction",
+            ]
+        )
+        writer.writerow(
+            [
+                mode,
+                stats.violation_time_s,
+                stats.integral_violation_pu_s,
+                stats.worst_vmin,
+                stats.worst_vmax,
+                pstats.mean_throughput_tps,
+                pstats.integrated_throughput_tokens,
+                pstats.itl_deadline_fraction,
+            ]
+        )
+    logger.info("Per-case CSV: %s", csv_path)
 
     if mode == "ofo" and log.dc_states:
         logger.info("=== Batch Schedule Summary ===")

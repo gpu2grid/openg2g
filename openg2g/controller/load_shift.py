@@ -140,6 +140,9 @@ class LoadShiftController(Controller[OfflineDatacenter, OpenDSSGrid]):
                     continue
 
                 replicas = max(1, self._config.gpus_per_shift // self._gpus_per_replica[model])
+                src_active = dc.state.active_replicas_by_model[model]
+                if src_active < replicas:
+                    continue
                 commands.append(ShiftReplicas(model_label=model, replica_delta=-replicas, target=dc))
                 commands.append(ShiftReplicas(model_label=model, replica_delta=+replicas, target=best_dest))
                 logger.info(
@@ -180,6 +183,9 @@ class LoadShiftController(Controller[OfflineDatacenter, OpenDSSGrid]):
                     continue
 
                 replicas = max(1, self._config.gpus_per_shift // self._gpus_per_replica[model])
+                src_active = best_src.state.active_replicas_by_model[model]
+                if src_active < replicas:
+                    continue
                 commands.append(ShiftReplicas(model_label=model, replica_delta=-replicas, target=best_src))
                 commands.append(ShiftReplicas(model_label=model, replica_delta=+replicas, target=dc))
                 logger.info(
