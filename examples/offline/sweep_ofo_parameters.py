@@ -27,7 +27,6 @@ import json
 import logging
 import math
 import time
-from collections.abc import Callable
 from dataclasses import dataclass
 from fractions import Fraction
 from pathlib import Path
@@ -845,63 +844,6 @@ SETUPS = {
 # Simulation and sweep runners
 
 
-def _build_datacenters_and_grid(
-    *,
-    sys: dict,
-    dc_sites: dict[str, _DCSiteConfig],
-    inference_data: InferenceData,
-    training: TrainingRun | None,
-    pv_systems: list,
-    time_varying_loads: list,
-    dt_dc: Fraction,
-    dt_grid: Fraction,
-) -> tuple[dict[str, OfflineDatacenter], OpenDSSGrid]:
-    """Build fresh datacenter and grid objects for one sweep iteration.
-
-    Called once per sim to guarantee no DSS or RNG state leaks between
-    iterations (see MEMORY: "Fresh objects per case").
-    """
-    datacenters: dict[str, OfflineDatacenter] = {}
-    for site_id, site in dc_sites.items():
-        site_specs = tuple(md.spec for md, _ in site.models)
-        site_inference = inference_data.filter_models(site_specs)
-
-        dc_config = DatacenterConfig(gpus_per_server=8, base_kw_per_phase=site.base_kw_per_phase)
-        rs = site.replica_schedules or {md.spec.model_label: s for md, s in site.models}
-        workload_kwargs: dict = {"inference_data": site_inference, "replica_schedules": rs}
-        if training is not None:
-            workload_kwargs["training"] = training
-        workload = OfflineWorkload(**workload_kwargs)
-
-        datacenters[site_id] = OfflineDatacenter(
-            dc_config,
-            workload,
-            name=site_id,
-            dt_s=dt_dc,
-            seed=site.seed,
-            power_augmentation=POWER_AUG,
-            total_gpu_capacity=site.total_gpu_capacity,
-        )
-
-    grid = OpenDSSGrid(
-        dss_case_dir=sys["dss_case_dir"],
-        dss_master_file=sys["dss_master_file"],
-        source_pu=sys["source_pu"],
-        dt_s=dt_grid,
-        initial_tap_position=sys["initial_taps"],
-        exclude_buses=tuple(sys["exclude_buses"]),
-    )
-    pf = DatacenterConfig(base_kw_per_phase=0).power_factor
-    for site_id, site in dc_sites.items():
-        grid.attach_dc(datacenters[site_id], bus=site.bus, connection_type=site.connection_type, power_factor=pf)
-    for bus, gen in pv_systems:
-        grid.attach_generator(gen, bus=bus)
-    for bus, ld in time_varying_loads:
-        grid.attach_load(ld, bus=bus)
-
-    return datacenters, grid
-
-
 def _run_single_sim(
     *,
     site_ids: list[str],
@@ -909,7 +851,8 @@ def _run_single_sim(
     logistic_models,
     site_models_map,
     site_bus_map,
-    build_fn: Callable[[], tuple[dict[str, OfflineDatacenter], OpenDSSGrid]],
+    datacenters: dict[str, OfflineDatacenter],
+    grid: OpenDSSGrid,
     exclude_buses,
     dt_ctrl,
     all_models,
@@ -919,8 +862,6 @@ def _run_single_sim(
     v_max: float = V_MAX,
 ):
     """Run one simulation with per-site OFO configs. Returns (log, wall_time_s)."""
-    datacenters, grid = build_fn()
-
     controllers = []
     for site_id in site_ids:
         site_models = site_models_map[site_id]
@@ -967,7 +908,8 @@ def _run_sweep_shared(
     site_ids: list[str],
     site_models_map: dict[str, tuple[InferenceModelSpec, ...]],
     site_bus_map: dict[str, str],
-    build_fn: Callable[[], tuple[dict[str, OfflineDatacenter], OpenDSSGrid]],
+    datacenters: dict[str, OfflineDatacenter],
+    grid: OpenDSSGrid,
     exclude_buses: tuple[str, ...],
     save_dir: Path,
     dt_ctrl: Fraction,
@@ -993,7 +935,8 @@ def _run_sweep_shared(
                 logistic_models=logistic_models,
                 site_models_map=site_models_map,
                 site_bus_map=site_bus_map,
-                build_fn=build_fn,
+                datacenters=datacenters,
+                grid=grid,
                 exclude_buses=exclude_buses,
                 dt_ctrl=dt_ctrl,
                 all_models=all_models,
@@ -1044,7 +987,8 @@ def _run_sweep_per_site(
     site_ids: list[str],
     site_models_map: dict[str, tuple[InferenceModelSpec, ...]],
     site_bus_map: dict[str, str],
-    build_fn: Callable[[], tuple[dict[str, OfflineDatacenter], OpenDSSGrid]],
+    datacenters: dict[str, OfflineDatacenter],
+    grid: OpenDSSGrid,
     exclude_buses: tuple[str, ...],
     save_dir: Path,
     dt_ctrl: Fraction,
@@ -1076,7 +1020,8 @@ def _run_sweep_per_site(
                 logistic_models=logistic_models,
                 site_models_map=site_models_map,
                 site_bus_map=site_bus_map,
-                build_fn=build_fn,
+                datacenters=datacenters,
+                grid=grid,
                 exclude_buses=exclude_buses,
                 dt_ctrl=dt_ctrl,
                 all_models=all_models,
@@ -1194,27 +1139,52 @@ def main(
 
     logger.info("Baseline OFO config: %s", baseline_ofo)
 
-    # Build shared datacenters and grid
+    # Build shared datacenters and grid ONCE. Coordinator.run() resets both
+    # between sweep iterations, so reuse is safe and much faster.
 
     site_ids = list(dc_sites.keys())
-    site_models_map: dict[str, tuple[InferenceModelSpec, ...]] = {
-        site_id: tuple(md.spec for md, _ in site.models) for site_id, site in dc_sites.items()
-    }
+    site_models_map: dict[str, tuple[InferenceModelSpec, ...]] = {}
+    datacenters: dict[str, OfflineDatacenter] = {}
+    for site_id, site in dc_sites.items():
+        site_specs = tuple(md.spec for md, _ in site.models)
+        site_models_map[site_id] = site_specs
+        site_inference = inference_data.filter_models(site_specs)
+
+        dc_config = DatacenterConfig(gpus_per_server=8, base_kw_per_phase=site.base_kw_per_phase)
+        rs = site.replica_schedules or {md.spec.model_label: s for md, s in site.models}
+        workload_kwargs: dict = {"inference_data": site_inference, "replica_schedules": rs}
+        if training is not None:
+            workload_kwargs["training"] = training
+        workload = OfflineWorkload(**workload_kwargs)
+
+        datacenters[site_id] = OfflineDatacenter(
+            dc_config,
+            workload,
+            name=site_id,
+            dt_s=dt_dc,
+            seed=site.seed,
+            power_augmentation=POWER_AUG,
+            total_gpu_capacity=site.total_gpu_capacity,
+        )
+
     site_bus_map = {sid: dc_sites[sid].bus for sid in dc_sites}
     exclude_buses = tuple(sys["exclude_buses"])
 
-    # Factory: produces fresh DCs + grid per sweep iteration (avoids DSS / RNG state leak).
-    def build_fn() -> tuple[dict[str, OfflineDatacenter], OpenDSSGrid]:
-        return _build_datacenters_and_grid(
-            sys=sys,
-            dc_sites=dc_sites,
-            inference_data=inference_data,
-            training=training,
-            pv_systems=pv_systems,
-            time_varying_loads=time_varying_loads,
-            dt_dc=dt_dc,
-            dt_grid=dt_grid,
-        )
+    grid = OpenDSSGrid(
+        dss_case_dir=sys["dss_case_dir"],
+        dss_master_file=sys["dss_master_file"],
+        source_pu=sys["source_pu"],
+        dt_s=dt_grid,
+        initial_tap_position=sys["initial_taps"],
+        exclude_buses=exclude_buses,
+    )
+    pf = DatacenterConfig(base_kw_per_phase=0).power_factor
+    for site_id, site in dc_sites.items():
+        grid.attach_dc(datacenters[site_id], bus=site.bus, connection_type=site.connection_type, power_factor=pf)
+    for bus, gen in pv_systems:
+        grid.attach_generator(gen, bus=bus)
+    for bus, ld in time_varying_loads:
+        grid.attach_load(ld, bus=bus)
 
     # Select sweep mode
 
@@ -1243,7 +1213,8 @@ def main(
         site_ids=site_ids,
         site_models_map=site_models_map,
         site_bus_map=site_bus_map,
-        build_fn=build_fn,
+        datacenters=datacenters,
+        grid=grid,
         exclude_buses=exclude_buses,
         save_dir=save_dir,
         dt_ctrl=dt_ctrl,

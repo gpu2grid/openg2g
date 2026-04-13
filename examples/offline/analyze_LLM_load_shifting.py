@@ -506,8 +506,10 @@ def plot_load_shift_comparison(
 
 def _run_case(
     *,
-    inference_data: InferenceData,
-    training_trace: TrainingTrace,
+    datacenters: list[OfflineDatacenter],
+    dc_specs: dict[OfflineDatacenter, tuple[InferenceModelSpec, ...]],
+    grid: OpenDSSGrid,
+    exclude_buses: tuple[str, ...],
     logistic_models: LogisticModelStore,
     ofo_config: OFOConfig,
     load_shift_enabled: bool,
@@ -515,12 +517,8 @@ def _run_case(
     save_dir: Path,
     case_name: str,
 ) -> tuple[VoltageStats, PerformanceStats, Any]:
-    """Build setup, construct controllers, run simulation, return stats + log."""
-    exp = _build_setup(inference_data, training_trace, logistic_models)
-    datacenters: list[OfflineDatacenter] = exp["datacenters"]
-    dc_specs: dict[OfflineDatacenter, tuple[InferenceModelSpec, ...]] = exp["dc_specs"]
-    grid: OpenDSSGrid = exp["grid"]
-    exclude_buses: tuple[str, ...] = exp["exclude_buses"]
+    """Build controllers, run simulation, return stats + log. Relies on
+    coord.run() to reset the shared datacenters and grid."""
 
     # Build controllers
     controllers: list = []
@@ -734,9 +732,13 @@ def main(*, system: str = "ieee123") -> None:
         sensitivity_perturbation_kw=10.0,
     )
 
+    # Build DCs + grid once. Coordinator.run() resets both between runs.
+    exp = _build_setup(inference_data, training_trace, logistic_models)
     shared = dict(
-        inference_data=inference_data,
-        training_trace=training_trace,
+        datacenters=exp["datacenters"],
+        dc_specs=exp["dc_specs"],
+        grid=exp["grid"],
+        exclude_buses=exp["exclude_buses"],
         logistic_models=logistic_models,
         ofo_config=ofo_config,
         save_dir=save_dir,

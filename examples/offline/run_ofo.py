@@ -712,18 +712,19 @@ def main(*, system: str, mode: str = "baseline-no-tap") -> None:
 
     logger.info("Running %d cases for %s: %s", len(cases), system, [c[1] for c in cases])
 
+    # Build DCs + grid once. Coordinator.run() resets both between cases.
+    config = setup_fn(inference_data, training_trace, logistic_models)
+    datacenters: list[OfflineDatacenter] = config["datacenters"]
+    dc_info: dict[OfflineDatacenter, _DCInfo] = config["dc_info"]
+    grid: OpenDSSGrid = config["grid"]
+    ofo_config: OFOConfig = config["ofo_config"]
+    generators: list[tuple[str, Generator]] = config.get("generators", [])
+    time_varying_loads: list[tuple[str, ExternalLoad]] = config.get("time_varying_loads", [])
+    zones: dict[str, list[str]] | None = config.get("zones")
+
     results: dict[str, VoltageStats] = {}
     perf_results: dict[str, PerformanceStats] = {}
     for ctrl_mode, case_name, sched in cases:
-        # Fresh DCs and grid per case (no state leakage between runs)
-        config = setup_fn(inference_data, training_trace, logistic_models)
-        datacenters: list[OfflineDatacenter] = config["datacenters"]
-        dc_info: dict[OfflineDatacenter, _DCInfo] = config["dc_info"]
-        grid: OpenDSSGrid = config["grid"]
-        ofo_config: OFOConfig = config["ofo_config"]
-        generators: list[tuple[str, Generator]] = config.get("generators", [])
-        time_varying_loads: list[tuple[str, ExternalLoad]] = config.get("time_varying_loads", [])
-        zones: dict[str, list[str]] | None = config.get("zones")
         run_dir = save_dir / case_name
         run_dir.mkdir(parents=True, exist_ok=True)
 

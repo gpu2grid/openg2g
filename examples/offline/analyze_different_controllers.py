@@ -645,15 +645,16 @@ def main(
     all_perf: dict[str, PerformanceStats] = {}
     all_logs: dict[str, object] = {}
 
+    # Build DCs + grid once. Coordinator.run() resets both between modes.
+    setup = setup_fn(inference_data, training_trace, logistic_models)
+    datacenters: list[OfflineDatacenter] = setup["datacenters"]
+    dc_specs: dict[OfflineDatacenter, tuple[InferenceModelSpec, ...]] = setup["dc_specs"]
+    grid: OpenDSSGrid = setup["grid"]
+    ofo_config: OFOConfig = setup["ofo_config"]
+    tap_schedule: TapSchedule = setup["tap_schedule"]
+    exclude_buses: tuple[str, ...] = setup["exclude_buses"]
+
     for mode in modes:
-        # Fresh DCs and grid per mode (no state leakage between runs)
-        setup = setup_fn(inference_data, training_trace, logistic_models)
-        datacenters: list[OfflineDatacenter] = setup["datacenters"]
-        dc_specs: dict[OfflineDatacenter, tuple[InferenceModelSpec, ...]] = setup["dc_specs"]
-        grid: OpenDSSGrid = setup["grid"]
-        ofo_config: OFOConfig = setup["ofo_config"]
-        tap_schedule: TapSchedule = setup["tap_schedule"]
-        exclude_buses: tuple[str, ...] = setup["exclude_buses"]
         logger.info("")
         logger.info("=" * 60)
         logger.info("MODE: %s", mode.upper())
