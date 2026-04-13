@@ -21,7 +21,7 @@ from zeus.monitor.power_streaming import PowerReadings, PowerStreamingClient
 from openg2g.clock import SimulationClock
 from openg2g.coordinator import SimulationLog
 from openg2g.datacenter.config import DatacenterConfig, InferenceModelSpec, PowerAugmentationConfig
-from openg2g.datacenter.layout import ServerLayout
+from openg2g.datacenter.layout import ServerPool
 from openg2g.datacenter.online import (
     GPUEndpointMapping,
     LiveServerConfig,
@@ -45,6 +45,7 @@ def _make_deployment(
     gpu_indices: tuple[int, ...] = (0,),
 ) -> VLLMDeployment:
     spec = InferenceModelSpec(
+        model_id="test/Model",
         model_label=label,
         gpus_per_replica=gpus_per_replica,
         itl_deadline_s=0.1,
@@ -108,6 +109,7 @@ def _online_dc(
         dc = OnlineDatacenter(
             DatacenterConfig(gpus_per_server=8, base_kw_per_phase=0.0),
             deployments,
+            name="test",
             dt_s=Fraction(1, 10),
             seed=42,
             power_augmentation=PowerAugmentationConfig(
@@ -181,9 +183,12 @@ class TestRollingPowerBuffer:
 
 
 class TestOnlineAugmentationPipeline:
-    """Test the shared InferencePowerAugmenter with ServerLayout built for online mode."""
+    """Test the shared InferencePowerAugmenter with ServerPool built for online mode."""
 
-    def _build_layout_and_augmenter(
+    _NUM_REPLICAS = 100
+    _GPUS_PER_REPLICA = 1
+
+    def _build_pool_and_augmenter(
         self,
         num_replicas: int = 100,
         gpus_per_replica: int = 1,
@@ -191,11 +196,9 @@ class TestOnlineAugmentationPipeline:
         noise_fraction: float = 0.0,
         amplitude_scale_range: tuple[float, float] = (1.0, 1.0),
         seed: int = 42,
-    ) -> tuple[ServerLayout, InferencePowerAugmenter]:
+    ) -> tuple[ServerPool, InferencePowerAugmenter]:
         import math
 
-        from openg2g.datacenter.config import InferenceRampSchedule
-        from openg2g.datacenter.layout import RampActivationPolicy
         from openg2g.utils import split_integer_evenly
 
         total_gpus = num_replicas * gpus_per_replica
@@ -206,14 +209,6 @@ class TestOnlineAugmentationPipeline:
         phase_list = np.asarray(([0] * sA) + ([1] * sB) + ([2] * sC), dtype=int)
         rng.shuffle(phase_list)
 
-        policy = RampActivationPolicy(
-            InferenceRampSchedule(initial_count=num_replicas),
-            num_servers,
-            rng,
-            gpus_per_replica=gpus_per_replica,
-            gpus_per_server=gpus_per_server,
-        )
-
         stagger_offsets = rng.uniform(0.0, 10.0, size=num_servers)
         amplitude_scales = rng.uniform(
             amplitude_scale_range[0],
@@ -221,72 +216,71 @@ class TestOnlineAugmentationPipeline:
             size=num_servers,
         )
 
-        gpus_per_server_list = np.full(num_servers, gpus_per_server, dtype=int)
-        tail = total_gpus - (num_servers - 1) * gpus_per_server
-        gpus_per_server_list[-1] = int(tail) if tail > 0 else gpus_per_server
+        model_priorities = {"test-model": rng.permutation(num_servers).astype(int)}
 
-        layout = ServerLayout(
+        pool = ServerPool(
             num_servers=num_servers,
-            total_gpus=total_gpus,
-            gpus_per_replica=gpus_per_replica,
-            gpus_per_server_list=gpus_per_server_list,
+            gpus_per_server=gpus_per_server,
             phase_list=phase_list,
             stagger_offsets=stagger_offsets,
             amplitude_scales=amplitude_scales,
             noise_fraction=noise_fraction,
+            model_priorities=model_priorities,
         )
         augmenter = InferencePowerAugmenter(
-            layouts={"test-model": layout},
-            policies={"test-model": policy},
+            pool=pool,
+            gpus_per_replica_by_model={"test-model": gpus_per_replica},
             seed=seed + 12345,
         )
-        return layout, augmenter
+        return pool, augmenter
 
     def test_stagger_offsets_are_float(self) -> None:
-        layout, _ = self._build_layout_and_augmenter()
-        assert layout.stagger_offsets.dtype == np.float64
+        pool, _ = self._build_pool_and_augmenter()
+        assert pool.stagger_offsets.dtype == np.float64
 
     def test_uniform_power_scaling(self) -> None:
-        layout, augmenter = self._build_layout_and_augmenter(
+        pool, augmenter = self._build_pool_and_augmenter(
             num_replicas=100,
             gpus_per_replica=1,
             gpus_per_server=8,
             noise_fraction=0.0,
             amplitude_scale_range=(1.0, 1.0),
         )
-        per_gpu = np.full(layout.num_servers, 300.0)
-        aug = augmenter.augment({"test-model": per_gpu}, t=0.0)
+        per_gpu = np.full(pool.num_servers, 300.0)
+        aug = augmenter.augment({"test-model": per_gpu}, {"test-model": 100})
         total = aug.power_w.a + aug.power_w.b + aug.power_w.c
-        expected = 300.0 * 100
+        # 100 replicas * 1 GPU = 100 GPUs -> ceil(100/8) = 13 servers * 8 GPUs = 104 GPUs
+        expected = 300.0 * 13 * 8
         assert total == pytest.approx(expected, rel=1e-3)
 
     def test_noise_adds_variance(self) -> None:
-        layout, augmenter = self._build_layout_and_augmenter(noise_fraction=0.1)
-        per_gpu = np.full(layout.num_servers, 300.0)
+        pool, augmenter = self._build_pool_and_augmenter(noise_fraction=0.1)
+        per_gpu = np.full(pool.num_servers, 300.0)
         values = []
-        for t in range(50):
-            aug = augmenter.augment({"test-model": per_gpu}, t=float(t))
+        for _ in range(50):
+            aug = augmenter.augment({"test-model": per_gpu}, {"test-model": 100})
             values.append(aug.power_w.a + aug.power_w.b + aug.power_w.c)
         assert np.std(values) > 0
 
-    def test_phase_shares_from_layout(self) -> None:
-        layout, _ = self._build_layout_and_augmenter()
-        counts = np.bincount(layout.phase_list, minlength=3)
-        assert counts.sum() == layout.num_servers
+    def test_phase_shares_from_pool(self) -> None:
+        pool, _ = self._build_pool_and_augmenter()
+        counts = np.bincount(pool.phase_list, minlength=3)
+        assert counts.sum() == pool.num_servers
         for c in counts:
             assert c > 0
 
     def test_active_replicas_reported(self) -> None:
-        layout, augmenter = self._build_layout_and_augmenter(num_replicas=100, gpus_per_replica=1, gpus_per_server=8)
-        per_gpu = np.full(layout.num_servers, 100.0)
-        aug = augmenter.augment({"test-model": per_gpu}, t=0.0)
-        assert aug.active_replicas_by_model["test-model"] == 100
+        pool, augmenter = self._build_pool_and_augmenter(num_replicas=100, gpus_per_replica=1, gpus_per_server=8)
+        per_gpu = np.full(pool.num_servers, 100.0)
+        aug = augmenter.augment({"test-model": per_gpu}, {"test-model": 100})
+        # ceil(100/8) = 13 servers * 8 GPUs / 1 GPU per replica = 104
+        assert aug.active_replicas_by_model["test-model"] == 104
 
     def test_power_nonnegative(self) -> None:
-        layout, augmenter = self._build_layout_and_augmenter(noise_fraction=0.5)
-        per_gpu = np.full(layout.num_servers, 1.0)
-        for t in range(100):
-            aug = augmenter.augment({"test-model": per_gpu}, t=float(t))
+        pool, augmenter = self._build_pool_and_augmenter(noise_fraction=0.5)
+        per_gpu = np.full(pool.num_servers, 1.0)
+        for _ in range(100):
+            aug = augmenter.augment({"test-model": per_gpu}, {"test-model": 100})
             assert aug.power_w.a >= 0.0
             assert aug.power_w.b >= 0.0
             assert aug.power_w.c >= 0.0
@@ -400,11 +394,15 @@ class TestOnlineDatacenterStep:
                 powers.append(state.power_w.a + state.power_w.b + state.power_w.c)
 
         assert powers[1] > powers[0]
-        assert powers[1] / powers[0] == pytest.approx(200.0 / 50.0, rel=0.1)
+        # Ratio is approximate due to whole-server allocation (ceil effects)
+        assert powers[1] / powers[0] == pytest.approx(200.0 / 50.0, rel=0.15)
 
     def test_phase_shares_from_layout(self) -> None:
         dep = _make_deployment(num_replicas=100, gpu_indices=(0,))
         with _online_dc([dep]) as (dc, _):
+            dc._started = True
+            clock = SimulationClock(tick_s=Fraction(1, 10))
+            dc.step(clock, _EVENTS)
             shares = dc.phase_share_by_model
             assert dep.model_label in shares
             assert shares[dep.model_label].shape == (3,)

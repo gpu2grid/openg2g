@@ -31,10 +31,13 @@ python examples/offline/analyze_LLM_load_shifting.py --system ieee123
 
 Outputs (in `outputs/ieee123/load_shift_comparison/`):
 
-- `voltage_comparison.png` — Side-by-side voltage envelopes (OFO vs OFO+shift)
-- `net_replica_shift.png` — Per-site net replica changes over time
-- `power_comparison.png` — Per-site DC power traces
-- `summary_bar_chart.png` — Violation time and integral comparison
+- `voltage_comparison.png`: side-by-side voltage envelopes (OFO vs OFO+shift)
+- `net_replica_shift.png`: per-site net replica changes over time
+- `power_comparison.png`: per-site DC power traces
+- `summary_bar_chart.png`: violation time and integral comparison
+- Per-case `result_ofo_no_shift.csv` / `result_ofo_with_shift.csv`: voltage metrics plus `mean_throughput_tps`, `integrated_throughput_tokens`, and `itl_deadline_fraction`
+
+The terminal summary prints a two-column comparison (OFO vs OFO + load shift) for violation time, integral violation, worst Vmin/Vmax, **mean throughput**, and **ITL-over-deadline fraction**, so you can see the shift controller's effect on both grid and DC quality simultaneously.
 
 ### Load Shifting Rules
 
@@ -48,20 +51,15 @@ The `LoadShiftController` follows five rules:
 
 ## Configuration
 
-```json
-"load_shift": {
-    "enabled": true,
-    "gpus_per_shift": 8,
-    "headroom": 0.3
-}
+Load shifting is configured via `LoadShiftConfig`:
+
+```python
+LoadShiftConfig(enabled=True, gpus_per_shift=8)
 ```
 
-Key config fields:
+- `enabled`: Enable/disable the load shifting controller
+- `gpus_per_shift`: GPUs moved per control step (default 8)
+- `total_gpu_capacity` on `OfflineDatacenter`: Maximum GPUs per site (enforced during shifting)
+- Each site must have at least 3 models for warm-start shifting
 
-- `load_shift.enabled`: Enable/disable the load shifting controller
-- `load_shift.gpus_per_shift`: GPUs moved per control step (default 8)
-- `load_shift.headroom`: Fraction of extra server capacity to pre-allocate (default 0.3)
-- `dc_sites[].total_gpu_capacity`: Maximum GPUs per site (enforced during shifting)
-- `dc_sites[].models`: Each site must have at least 3 models for warm-start shifting
-
-See [Building Simulators](../guide/building-simulators.md) and `examples/offline/systems.py` for configuration details.
+See [Building Simulators](../guide/building-simulators.md) for the full component API.

@@ -42,14 +42,10 @@ from openg2g.datacenter.command import DatacenterCommand, SetBatchSize
 from openg2g.datacenter.config import (
     DatacenterConfig,
     InferenceModelSpec,
-    InferenceRampSchedule,
     PowerAugmentationConfig,
+    ReplicaSchedule,
 )
-from openg2g.datacenter.layout import (
-    ActivationPolicy,
-    RampActivationPolicy,
-    ServerLayout,
-)
+from openg2g.datacenter.layout import ServerPool
 from openg2g.datacenter.workloads.inference import (
     InferencePowerAugmenter,
     RequestStore,
@@ -121,9 +117,9 @@ class VLLMDeployment(BaseModel):
 
     Pairs a reusable
     [`InferenceModelSpec`][openg2g.datacenter.config.InferenceModelSpec]
-    with physical deployment details. ``simulated_num_replicas`` is the
+    with physical deployment details. `simulated_num_replicas` is the
     augmented replica count for grid simulation. The real replica
-    count is derived from ``gpu_endpoints`` and ``spec.gpus_per_replica``.
+    count is derived from `gpu_endpoints` and `spec.gpus_per_replica`.
 
     Tracks the current batch size (`max_num_seqs`) and provides
     `set_batch_size()` to update it on the vLLM server.
@@ -136,10 +132,10 @@ class VLLMDeployment(BaseModel):
         gpu_endpoints: GPU endpoint mappings for power monitoring.
         request_extra_body: Extra fields merged into every request dict
             for this model (e.g. `chat_template_kwargs`).
-        initial_batch_size: Starting batch size. The ``batch_size`` field
+        initial_batch_size: Starting batch size. The `batch_size` field
             is initialized from this value.
         batch_size: Current batch size (`max_num_seqs`). Initialized from
-            ``initial_batch_size`` if not set explicitly.
+            `initial_batch_size` if not set explicitly.
     """
 
     spec: InferenceModelSpec
@@ -237,7 +233,7 @@ STAGGER_BUFFER_S: float = 10.0
 """Seconds of power history for temporal staggering.
 
 Also used as the stagger range when building
-[`ServerLayout`][openg2g.datacenter.layout.ServerLayout]
+[`ServerPool`][openg2g.datacenter.layout.ServerPool]
 (float offsets drawn from `[0, STAGGER_BUFFER_S)`).
 
 Not user-configurable. Patchable for testing via
@@ -696,8 +692,8 @@ class OnlineDatacenter(LLMBatchSizeControlledDatacenter[OnlineDatacenterState]):
         seed: Random seed for layout generation and noise.
         power_augmentation: Per-server amplitude scaling and noise
             settings.
-        inference_ramps: Inference server ramp event(s). `None` keeps
-            all servers active.
+        replica_schedules: Per-model replica schedules. If `None`,
+            all servers are active at their initial replica counts.
         live_server: Configuration for interacting with live vLLM
             servers. Request data is loaded from
             `LiveServerConfig.requests_dir`.
@@ -708,13 +704,14 @@ class OnlineDatacenter(LLMBatchSizeControlledDatacenter[OnlineDatacenterState]):
         datacenter: DatacenterConfig,
         deployments: Sequence[VLLMDeployment],
         *,
+        name: str,
         dt_s: Fraction = Fraction(1, 10),
         seed: int = 0,
         power_augmentation: PowerAugmentationConfig | None = None,
-        inference_ramps: InferenceRampSchedule | None = None,
+        replica_schedules: dict[str, ReplicaSchedule] | None = None,
         live_server: LiveServerConfig | None = None,
     ) -> None:
-        super().__init__()
+        super().__init__(name=name)
         if power_augmentation is None:
             power_augmentation = PowerAugmentationConfig()
         if live_server is None:
@@ -728,7 +725,7 @@ class OnlineDatacenter(LLMBatchSizeControlledDatacenter[OnlineDatacenterState]):
         self._live_server_config = live_server
 
         self._base_W_per_phase = float(datacenter.base_kw_per_phase) * 1e3
-        self._inference_ramp_schedule = inference_ramps if inference_ramps is not None else InferenceRampSchedule()
+        self._replica_schedules = replica_schedules or {}
 
         servers_by_key: dict[str, ZeusdConfig] = {}
         gpu_indices_by_key: dict[str, list[int]] = {}
@@ -767,18 +764,18 @@ class OnlineDatacenter(LLMBatchSizeControlledDatacenter[OnlineDatacenterState]):
         )
 
         self._layout_rng = np.random.default_rng(self._seed)
-        self._layouts: dict[str, ServerLayout] = {}
-        self._policies: dict[str, ActivationPolicy] = {}
-        self._build_all_layouts()
+        self._model_schedules: dict[str, ReplicaSchedule] = {}
+        self._pool: ServerPool = self._build_server_pool()
         self._inference_augmenter = InferencePowerAugmenter(
-            layouts=self._layouts,
-            policies=self._policies,
+            pool=self._pool,
+            gpus_per_replica_by_model={d.spec.model_label: d.spec.gpus_per_replica for d in deployments},
             seed=self._seed + 12345,
         )
         self._rolling_buffer = _RollingPowerBuffer(
             [d.model_label for d in deployments],
             max_samples=max(int(STAGGER_BUFFER_S * 100), 1000),
         )
+        self._last_allocation: dict[str, np.ndarray] = {}
 
         self._started = False
 
@@ -788,77 +785,58 @@ class OnlineDatacenter(LLMBatchSizeControlledDatacenter[OnlineDatacenterState]):
             dt_s,
         )
         for d in deployments:
-            layout = self._layouts.get(d.model_label)
-            n_servers = layout.num_servers if layout else 0
             logger.info(
-                "  %s: %d real GPUs, %d simulated replicas (%.0fx augmentation), %d virtual servers, vllm=%s",
+                "  %s: %d real GPUs, %d simulated replicas (%.0fx augmentation), vllm=%s",
                 d.model_label,
                 d.num_real_gpus,
                 d.simulated_num_replicas,
                 d.augmentation_factor,
-                n_servers,
                 d.vllm_base_url,
             )
 
-    def _build_all_layouts(self) -> None:
-        """Build ServerLayout and activation policies for each deployed model.
-
-        The RNG invocation order per model must be: phase shuffle,
-        priority shuffle, stagger offsets, amplitude scales. We
-        interleave policy construction between the phase shuffle
-        and stagger/amplitude draws to preserve this ordering.
-        """
-        schedule = self._inference_ramp_schedule
+    def _build_server_pool(self) -> ServerPool:
+        """Build shared server pool for the datacenter."""
+        schedules = self._replica_schedules
         gpus_per_server = self._datacenter_config.gpus_per_server
         rng = self._layout_rng
         amp_lo, amp_hi = self._power_augmentation.amplitude_scale_range
         noise_fraction = self._power_augmentation.noise_fraction
         stagger_s = float(STAGGER_BUFFER_S)
 
+        # Total servers from total simulated GPU count
+        total_gpus = sum(d.simulated_num_replicas * d.spec.gpus_per_replica for d in self._deployments)
+        num_servers = math.ceil(total_gpus / gpus_per_server) if total_gpus > 0 else 1
+
+        # Store per-model schedules
         for d in self._deployments:
-            spec = d.spec
-            n_replicas = d.simulated_num_replicas
-            if n_replicas > 0:
-                total_gpus = n_replicas * spec.gpus_per_replica
-                num_servers = math.ceil(total_gpus / gpus_per_server)
+            if d.simulated_num_replicas > 0:
+                model_schedule = schedules.get(d.spec.model_label, ReplicaSchedule(initial=d.simulated_num_replicas))
+                self._model_schedules[d.model_label] = model_schedule
 
-                # Per-model schedule with absolute counts
-                model_schedule = schedule.for_model(spec.model_label, initial_count=n_replicas)
+        # Server properties (model-independent)
+        sA, sB, sC = split_integer_evenly(num_servers, 3)
+        phase_list = np.asarray(([0] * sA) + ([1] * sB) + ([2] * sC), dtype=int)
+        rng.shuffle(phase_list)
 
-                # Phase shuffle (consumes RNG)
-                sA, sB, sC = split_integer_evenly(num_servers, 3)
-                phase_list = np.asarray(([0] * sA) + ([1] * sB) + ([2] * sC), dtype=int)
-                rng.shuffle(phase_list)
+        stagger_offsets = rng.uniform(0.0, max(stagger_s, 1e-9), size=num_servers)
+        amplitude_scales = rng.uniform(amp_lo, amp_hi, size=num_servers)
 
-                # Priority shuffle (consumes RNG) — must happen here
-                self._policies[d.model_label] = RampActivationPolicy(
-                    model_schedule,
-                    num_servers,
-                    rng,
-                    gpus_per_replica=spec.gpus_per_replica,
-                    gpus_per_server=gpus_per_server,
-                )
+        # Per-model priority orderings
+        model_priorities: dict[str, np.ndarray] = {}
+        for d in self._deployments:
+            priority = np.arange(num_servers, dtype=int)
+            rng.shuffle(priority)
+            model_priorities[d.model_label] = priority
 
-                # Stagger offsets (consumes RNG) — float for online
-                stagger_offsets = rng.uniform(0.0, max(stagger_s, 1e-9), size=num_servers)
-
-                # Amplitude scales (consumes RNG)
-                amplitude_scales = rng.uniform(amp_lo, amp_hi, size=num_servers)
-
-                gpus_per_server_list = np.full(num_servers, gpus_per_server, dtype=int)
-                tail = total_gpus - (num_servers - 1) * gpus_per_server
-                gpus_per_server_list[-1] = int(tail) if tail > 0 else gpus_per_server
-
-                self._layouts[d.model_label] = ServerLayout(
-                    num_servers=num_servers,
-                    total_gpus=total_gpus,
-                    gpus_per_replica=spec.gpus_per_replica,
-                    gpus_per_server_list=gpus_per_server_list,
-                    phase_list=phase_list,
-                    stagger_offsets=stagger_offsets,
-                    amplitude_scales=amplitude_scales,
-                    noise_fraction=noise_fraction,
-                )
+        return ServerPool(
+            num_servers=num_servers,
+            gpus_per_server=gpus_per_server,
+            phase_list=phase_list,
+            stagger_offsets=stagger_offsets,
+            amplitude_scales=amplitude_scales,
+            noise_fraction=noise_fraction,
+            model_priorities=model_priorities,
+        )
 
     @property
     def dt_s(self) -> Fraction:
@@ -866,15 +844,14 @@ class OnlineDatacenter(LLMBatchSizeControlledDatacenter[OnlineDatacenterState]):
 
     @property
     def phase_share_by_model(self) -> dict[str, np.ndarray]:
-        """Per-model phase share vectors derived from server layout."""
+        """Per-model phase share vectors from the last pool allocation."""
         shares: dict[str, np.ndarray] = {}
-        for label, layout in self._layouts.items():
-            counts = np.bincount(layout.phase_list, minlength=3).astype(float)
+        for label, server_indices in self._last_allocation.items():
+            if len(server_indices) == 0:
+                continue
+            counts = np.bincount(self._pool.phase_list[server_indices], minlength=3).astype(float)
             total = counts.sum()
-            if total > 0:
-                shares[label] = counts / total
-            else:
-                shares[label] = np.array([1 / 3, 1 / 3, 1 / 3], dtype=float)
+            shares[label] = counts / total if total > 0 else np.array([1 / 3, 1 / 3, 1 / 3], dtype=float)
         return shares
 
     def reset(self) -> None:
@@ -888,15 +865,15 @@ class OnlineDatacenter(LLMBatchSizeControlledDatacenter[OnlineDatacenterState]):
             prometheus_poller=self._prometheus,
         )
         self._layout_rng = np.random.default_rng(self._seed)
-        self._layouts = {}
-        self._policies = {}
-        self._build_all_layouts()
+        self._model_schedules = {}
+        self._pool = self._build_server_pool()
         self._inference_augmenter = InferencePowerAugmenter(
-            layouts=self._layouts,
-            policies=self._policies,
+            pool=self._pool,
+            gpus_per_replica_by_model={d.spec.model_label: d.spec.gpus_per_replica for d in self._deployments},
             seed=self._seed + 12345,
         )
         self._rolling_buffer.clear()
+        self._last_allocation = {}
         for d in self._deployments:
             d.batch_size = d.initial_batch_size
         self._started = False
@@ -1143,14 +1120,18 @@ class OnlineDatacenter(LLMBatchSizeControlledDatacenter[OnlineDatacenterState]):
             augmentation_factor_by_model[label] = d.augmentation_factor
 
         per_gpu_by_model: dict[str, np.ndarray] = {}
+        replica_counts: dict[str, int] = {}
+        pool = self._pool
         for d in self._deployments:
             label = d.model_label
-            if label not in self._layouts:
+            if label not in self._model_schedules:
                 continue
-            layout = self._layouts[label]
-            per_gpu_by_model[label] = self._rolling_buffer.sample_servers(label, now, layout.stagger_offsets)
+            per_gpu_by_model[label] = self._rolling_buffer.sample_servers(label, now, pool.stagger_offsets)
+            schedule = self._model_schedules[label]
+            replica_counts[label] = int(round(schedule.count_at(clock.time_s)))
 
-        inference_aug = self._inference_augmenter.augment(per_gpu_by_model, clock.time_s)
+        inference_aug = self._inference_augmenter.augment(per_gpu_by_model, replica_counts)
+        self._last_allocation = inference_aug.allocation
 
         measured_total = sum(measured_power_by_model.values())
         measured_per_phase = measured_total / 3.0
@@ -1198,9 +1179,11 @@ class OnlineDatacenter(LLMBatchSizeControlledDatacenter[OnlineDatacenterState]):
             b_int = int(b)
             if b_int <= 0:
                 raise ValueError(f"Batch size must be positive for model {label!r}, got {b_int}.")
-            dep = self._deployment_map.get(label)
-            if dep is not None:
-                dep.set_batch_size(b_int, ramp_up_rate=command.ramp_up_rate_by_model.get(label, 0.0))
+            if label not in self._deployment_map:
+                raise ValueError(f"Unknown model label {label!r}. Known: {sorted(self._deployment_map)}")
+            self._deployment_map[label].set_batch_size(
+                b_int, ramp_up_rate=command.ramp_up_rate_by_model.get(label, 0.0)
+            )
 
         events.emit(
             "datacenter.batch_size.updated",

@@ -16,3 +16,12 @@ def split_integer_evenly(n: int, k: int) -> list[int]:
     """
     q, r = divmod(int(n), int(k))
     return [q + (1 if i < r else 0) for i in range(k)]
+
+
+def smooth_bump(t: float, t_center: float, half_width: float) -> float:
+    """Smooth bump function: 1 at center, 0 outside half_width."""
+    dt = abs(t - t_center)
+    if dt >= half_width:
+        return 0.0
+    x = dt / half_width
+    return (1 - x * x) ** 2

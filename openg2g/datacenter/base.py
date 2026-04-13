@@ -60,10 +60,16 @@ class DatacenterBackend(Generic[DCStateT], ABC):
 
     _INIT_SENTINEL = object()
 
-    def __init__(self) -> None:
+    def __init__(self, *, name: str) -> None:
+        self._name = name
         self._state: DCStateT | None = None
         self._history: list[DCStateT] = []
         self._dc_base_init = DatacenterBackend._INIT_SENTINEL
+
+    @property
+    def name(self) -> str:
+        """Human-readable name for logging and display."""
+        return self._name
 
     def _check_base_init(self) -> None:
         if getattr(self, "_dc_base_init", None) is not DatacenterBackend._INIT_SENTINEL:

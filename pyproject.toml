@@ -70,7 +70,7 @@ ignore = [
 
 [tool.ruff.lint.isort]
 known-first-party = ["openg2g"]
-known-local-folder = ["plotting"]
+known-local-folder = ["plotting", "systems"]
 
 [tool.ty.environment]
 python-version = "3.10"

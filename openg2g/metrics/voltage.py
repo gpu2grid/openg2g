@@ -33,7 +33,7 @@ def compute_allbus_voltage_stats(
     *,
     v_min: float = 0.95,
     v_max: float = 1.05,
-    exclude_buses: tuple[str, ...] = ("rg60",),
+    exclude_buses: tuple[str, ...] = (),
 ) -> VoltageStats:
     """Compute voltage violation statistics across all buses and phases.
 

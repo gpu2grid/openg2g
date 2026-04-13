@@ -30,12 +30,12 @@ The core abstractions provided by OpenG2G are the multi-rate simulation loop ([`
 └───────────────┘                                    └───────────────────┘
 ```
 
-The coordinator supports **multiple datacenter sites**, each connected to a different bus on the grid. Controllers are bound to a specific site via their `site_id` property. A single-DC setup works the same as before (the datacenter is assigned site ID `"default"`).
+The coordinator supports **multiple datacenter sites**, each connected to a different bus on the grid. Controllers hold references to their datacenter(s) and grid from construction time, and set `command.target` explicitly on every datacenter command they emit.
 
 Controllers return a list of [`GridCommand`][openg2g.grid.command.GridCommand] (e.g., [`SetTaps`][openg2g.grid.command.SetTaps]) and/or [`DatacenterCommand`][openg2g.datacenter.command.DatacenterCommand] (e.g., [`SetBatchSize`][openg2g.datacenter.command.SetBatchSize], [`ShiftReplicas`][openg2g.datacenter.command.ShiftReplicas]) that the coordinator dispatches to the appropriate backend before the next tick.
 Multiple controllers run in sequence each control step, so their actions compose naturally.
 
-Commands with a `target_site_id` attribute are routed to the specified datacenter site, enabling cross-site controllers (like [`LoadShiftController`][openg2g.controller.load_shift.LoadShiftController]) to send commands to multiple datacenters in a single step.
+Each [`DatacenterCommand`][openg2g.datacenter.command.DatacenterCommand] carries a `target` reference to the datacenter it should be applied to. The coordinator dispatches via `command.target.apply_control()`. This enables cross-site controllers (like [`LoadShiftController`][openg2g.controller.load_shift.LoadShiftController]) to send commands to multiple datacenters in a single step.
 
 ## Simulation Loop
 
@@ -47,7 +47,7 @@ for each tick:
   1. if datacenter is due:    dc_state = datacenter.do_step(clock, events)
   2. if grid is due:          grid_state = grid.do_step(clock, power_samples, events)
   3. for each controller:
-       if controller is due:  action = controller.step(clock, datacenter, grid, events)
+       if controller is due:  action = controller.step(clock, events)
                               apply action to datacenter and/or grid
 ```
 
@@ -132,7 +132,7 @@ Built-in implementation: [`OpenDSSGrid`][openg2g.grid.opendss.OpenDSSGrid].
 [`openg2g.controller.base.Controller`][openg2g.controller.base.Controller]. Key methods:
 
 - [`dt_s`][openg2g.controller.base.Controller.dt_s]: The control interval
-- [`step(clock, datacenter, grid, events)`][openg2g.controller.base.Controller.step]: Read [`datacenter.state`][openg2g.datacenter.base.DatacenterBackend.state] and [`grid.state`][openg2g.grid.base.GridBackend.state], and return a list of commands to be applied to the datacenter and/or grid this tick
+- [`step(clock, events)`][openg2g.controller.base.Controller.step]: Compute and return a list of commands to be applied to the datacenter and/or grid this tick. Controllers hold references to their datacenter(s) and grid from construction time and read state via those references.
 
 Built-in implementations: [`OFOBatchSizeController`][openg2g.controller.ofo.OFOBatchSizeController], [`RuleBasedBatchSizeController`][openg2g.controller.rule_based.RuleBasedBatchSizeController], [`TapScheduleController`][openg2g.controller.tap_schedule.TapScheduleController], [`LoadShiftController`][openg2g.controller.load_shift.LoadShiftController], [`BatchSizeScheduleController`][openg2g.controller.batch_size_schedule.BatchSizeScheduleController], [`NoopController`][openg2g.controller.noop.NoopController].
 
@@ -157,10 +157,11 @@ This is mainly to allow reuse component objects across multiple [`Coordinator.ru
 
 ```python
 grid = OpenDSSGrid(...)                    # stores config only
-ctrl = OFOBatchSizeController(...)         # stores fits + tuning
 for workload in workloads:
-    dc = OfflineDatacenter(dc_config, workload, dt_s=dt)  # builds power templates
-    coord = Coordinator(dc, grid, [ctrl], total_duration_s=3600, dc_bus="671")
+    dc = OfflineDatacenter(dc_config, workload, name="dc", dt_s=dt)
+    grid.attach_dc(dc, bus="671")
+    ctrl = OFOBatchSizeController(specs, datacenter=dc, ...)
+    coord = Coordinator(datacenters=[dc], grid=grid, controllers=[ctrl], total_duration_s=3600)
     log = coord.run()                      # reset -> start -> loop -> stop
 ```
 
@@ -210,5 +211,5 @@ class OFOBatchSizeController(Controller[LLMBatchSizeControlledDatacenter, OpenDS
 
 [`Coordinator.run()`][openg2g.coordinator.Coordinator.run] returns a [`SimulationLog`][openg2g.coordinator.SimulationLog] that collects all state history.
 Essentially, this object is a bill of materials for everything that happened during the simulation, and is the basis for all post-run analysis and plotting.
-You can use `log.dc_states`, `log.grid_states`, and time-series arrays like `log.time_s`, `log.voltage_a_pu` for analysis. Per-phase power is available from `dc_states[i].power_w`.
-See [Building Simulators: Analyzing Results](building-simulators.md#analyzing-results) for usage examples.
+It records a list of datacenter and grid state snapshots, one per step (`log.dc_states`, `log.grid_states`), plus convenience time-series arrays for plotting.
+See [`SimulationLog`][openg2g.coordinator.SimulationLog] for available fields and [Building Simulators: Analyzing Results](building-simulators.md#analyzing-results) for usage examples.

@@ -2,7 +2,7 @@
 
 A proportional controller that adjusts LLM batch sizes based on observed
 voltage violations.  Unlike the OFO controller, it requires no sensitivity
-matrix, no logistic curve fits, and no dual variables — making it a natural
+matrix, no logistic curve fits, and no dual variables -- making it a natural
 "simple baseline" for comparison.
 
 Algorithm (each control step):
@@ -72,15 +72,17 @@ class RuleBasedBatchSizeController(
         self,
         inference_models: tuple[InferenceModelSpec, ...] | list[InferenceModelSpec],
         *,
+        datacenter: LLMBatchSizeControlledDatacenter[LLMDatacenterState],
+        grid: OpenDSSGrid,
         config: RuleBasedConfig,
         dt_s: Fraction = Fraction(1),
-        site_id: str | None = None,
         exclude_buses: tuple[str, ...] = (),
         initial_batch_sizes: dict[str, int] | None = None,
     ) -> None:
         model_specs = list(inference_models)
         self._dt_s = dt_s
-        self._site_id = site_id
+        self._datacenter = datacenter
+        self._grid = grid
         self._config = config
         self._models = model_specs
         self._exclude_lower = {b.lower() for b in exclude_buses}
@@ -110,10 +112,6 @@ class RuleBasedBatchSizeController(
         )
 
     @property
-    def site_id(self) -> str | None:
-        return self._site_id
-
-    @property
     def dt_s(self) -> Fraction:
         return self._dt_s
 
@@ -126,17 +124,14 @@ class RuleBasedBatchSizeController(
     def step(
         self,
         clock: SimulationClock,
-        datacenter: LLMBatchSizeControlledDatacenter[LLMDatacenterState],
-        grid: OpenDSSGrid,
         events: EventEmitter,
     ) -> list[DatacenterCommand | GridCommand]:
-        if grid.state is None:
-            return []
-
+        datacenter = self._datacenter
+        grid = self._grid
         cfg = self._config
         voltages = grid.state.voltages
 
-        # ── 1. Find worst voltage violation ──
+        # 1. Find worst voltage violation
         worst_under = 0.0  # magnitude of worst undervoltage (positive)
         worst_over = 0.0  # magnitude of worst overvoltage (positive)
 
@@ -152,7 +147,7 @@ class RuleBasedBatchSizeController(
                 elif v > cfg.v_max:
                     worst_over = max(worst_over, v - cfg.v_max)
 
-        # ── 2. Compute pressure signal ──
+        # 2. Compute pressure signal
         # Positive pressure → reduce batch (undervoltage: DC draws too much power)
         # Negative pressure → increase batch (overvoltage: DC draws too little)
         if worst_under > cfg.deadband:
@@ -165,11 +160,11 @@ class RuleBasedBatchSizeController(
         if pressure == 0.0:
             return []
 
-        # ── 3. Read latency state for guard ──
+        # 3. Read latency state for guard
         dc_state = datacenter.state
-        itl_by_model = dc_state.observed_itl_s_by_model if dc_state else {}
+        itl_by_model = dc_state.observed_itl_s_by_model
 
-        # ── 4. Adjust batch sizes ──
+        # 4. Adjust batch sizes
         new_batches: dict[str, int] = {}
         changed = False
 
@@ -188,7 +183,7 @@ class RuleBasedBatchSizeController(
 
             # Latency guard: don't increase batch if ITL already exceeds deadline
             if cfg.latency_guard and delta > 0:
-                itl = itl_by_model.get(label, 0.0)
+                itl = itl_by_model[label]
                 if not math.isnan(itl) and itl > self._itl_deadline[label]:
                     new_log2 = log2_b  # revert
 
@@ -213,4 +208,4 @@ class RuleBasedBatchSizeController(
             {"time_s": clock.time_s, "pressure": pressure, "batch": dict(new_batches)},
         )
 
-        return [SetBatchSize(batch_size_by_model=new_batches)]
+        return [SetBatchSize(batch_size_by_model=new_batches, target=self._datacenter)]

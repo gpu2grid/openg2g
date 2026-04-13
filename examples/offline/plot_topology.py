@@ -1,8 +1,8 @@
 """Plot distribution system topology from DSS files.
 
 Automatically parses bus coordinates, line/transformer connections, regulators,
-capacitors, switches, and source bus from OpenDSS files.  Overlays DC sites,
-PV systems, and zone coloring from experiment definitions in run_ofo.py.
+capacitors, switches, and source bus from OpenDSS files. Overlays DC sites,
+PV systems, and zone coloring from inline topology data.
 
 Usage:
     python plot_topology.py --system ieee13
@@ -23,7 +23,26 @@ matplotlib.use("Agg")
 import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
 
-# ── Parsing helpers ──────────────────────────────────────────────────────────
+from systems import SYSTEMS
+
+# Topology data: DC buses and PV buses per system
+
+_TOPOLOGY_DATA = {
+    "ieee13": {
+        "dc_buses": {"default": "671"},
+        "pv_buses": {"675": "10 kW/ph"},
+    },
+    "ieee34": {
+        "dc_buses": {"upstream": "850", "downstream": "834"},
+        "pv_buses": {"848": "130 kW/ph", "830": "65 kW/ph"},
+    },
+    "ieee123": {
+        "dc_buses": {"z1_sw": "8", "z2_nw": "23", "z3_se": "60", "z4_ne": "105"},
+        "pv_buses": {"1": "333 kW/ph", "48": "333 kW/ph", "99": "333 kW/ph"},
+    },
+}
+
+# Parsing helpers
 
 
 def parse_bus_coords(path: Path) -> dict[str, tuple[float, float]]:
@@ -54,7 +73,7 @@ _SETBUSXY_RE = re.compile(r"setbusxy\s+bus\s*=\s*([^,\s!]+)[,\s]+x\s*=\s*([^,\s!
 
 
 def parse_dss_bus_coords(dss_dir: Path, master_file: str) -> dict[str, tuple[float, float]]:
-    """Parse inline ``SetBusXY`` commands from DSS files (following redirects).
+    """Parse inline `SetBusXY` commands from DSS files (following redirects).
 
     Used when bus coordinates are embedded in the master DSS file instead of a
     separate CSV/DAT file.
@@ -369,8 +388,8 @@ class SwitchInfo:
 def parse_dss_switches(dss_dir: Path, master_file: str) -> list[SwitchInfo]:
     """Parse switch definitions from DSS files.
 
-    Detects lines with ``Switch=y`` or ``Switch=yes`` property, and also lines
-    whose name starts with ``sw`` with near-zero impedance (common IEEE 123
+    Detects lines with `Switch=y` or `Switch=yes` property, and also lines
+    whose name starts with `sw` with near-zero impedance (common IEEE 123
     convention).
     """
     switches: list[SwitchInfo] = []
@@ -424,7 +443,7 @@ def parse_dss_switches(dss_dir: Path, master_file: str) -> list[SwitchInfo]:
 
 
 def parse_dss_source_bus(dss_dir: Path, master_file: str) -> str | None:
-    """Return the source bus name from the ``New Circuit`` definition."""
+    """Return the source bus name from the `New Circuit` definition."""
     visited: set[str] = set()
 
     def _parse_file(fpath: Path) -> str | None:
@@ -465,7 +484,7 @@ def parse_dss_source_bus(dss_dir: Path, master_file: str) -> str | None:
     return _parse_file(dss_dir / master_file)
 
 
-# ── Zone color palette ───────────────────────────────────────────────────────
+# Zone color palette
 
 ZONE_PALETTE = [
     "#2196F3",
@@ -479,7 +498,7 @@ ZONE_PALETTE = [
 ]
 
 
-# ── Main plotting function ───────────────────────────────────────────────────
+# Main plotting function
 
 
 def plot_topology(
@@ -489,17 +508,15 @@ def plot_topology(
     large_font: bool = False,
 ) -> Path:
     """Plot system topology and return the output file path."""
-    from run_ofo import _EXPERIMENTS
-    from systems import SYSTEMS
+    if system not in _TOPOLOGY_DATA:
+        raise ValueError(f"No topology data for system '{system}'. Available: {list(_TOPOLOGY_DATA.keys())}")
 
+    topo = _TOPOLOGY_DATA[system]
     sys = SYSTEMS[system]()
     dss_dir = sys["dss_case_dir"]
     master_file = sys["dss_master_file"]
 
-    # Build experiment to get DC sites, PV, zones
-    # We don't need real data — just the experiment structure
-    experiment_fn = _EXPERIMENTS[system]
-    experiment = experiment_fn(sys, None, None, None)
+    topo = _TOPOLOGY_DATA[system]
 
     # Try inline SetBusXY commands in the DSS files first; fall back to a
     # separate CSV/DAT coordinate file if none were found.
@@ -525,15 +542,11 @@ def plot_topology(
     switches = parse_dss_switches(dss_dir, master_file)
     source_bus = parse_dss_source_bus(dss_dir, master_file)
 
-    # Overlays from experiment
-    zones_cfg = experiment.get("zones") or sys.get("zones") or {}
-    dc_sites_obj = experiment.get("dc_sites", {})
-    pv_systems_list = experiment.get("pv_systems") or []
-
-    # Convert DCSite objects to dicts for plotting
-    dc_sites = {sid: {"bus": site.bus} for sid, site in dc_sites_obj.items()}
-    dc_buses = {site.bus.lower(): sid for sid, site in dc_sites_obj.items()}
-    pv_buses = {pv.bus.lower(): f"{pv.peak_kw:.0f} kW/ph" for pv in pv_systems_list}
+    # Overlays from inline topology data
+    zones_cfg = sys.get("regulator_zones") or sys.get("zones") or {}
+    dc_sites = {sid: {"bus": bus} for sid, bus in topo["dc_buses"].items()}
+    dc_buses = {bus.lower(): sid for sid, bus in topo["dc_buses"].items()}
+    pv_buses = {bus.lower(): label for bus, label in topo["pv_buses"].items()}
     cap_buses = {cap.bus: cap for cap in capacitors}
     switch_edges = {(sw.bus1, sw.bus2) for sw in switches} | {(sw.bus2, sw.bus1) for sw in switches}
 
@@ -546,10 +559,10 @@ def plot_topology(
         for b in buses:
             bus_zone[b.lower()] = zid
 
-    # ── Font scale ──
+    # Font scale
     fs = 2.5 if large_font else 1.0  # font scale factor
 
-    # ── Plot ──
+    # Plot
     # fig, ax = plt.subplots(figsize=(20, 15))
     fig, ax = plt.subplots(figsize=(30, 10))
 
@@ -644,7 +657,7 @@ def plot_topology(
             handles.append(
                 mpatches.Patch(
                     color=zone_colors[zid],
-                    label=f"Zone {zid} — DC@{dc_bus}",
+                    label=f"Zone {zid} -- DC@{dc_bus}",
                 )
             )
     elif dc_sites:
@@ -745,25 +758,30 @@ def plot_topology(
     save_dir = output_dir or (Path(__file__).resolve().parent / "outputs" / system)
     save_dir.mkdir(parents=True, exist_ok=True)
     out_path = save_dir / f"{system}_topology.png"
-    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    fig.savefig(out_path, dpi=150, bbox_inches="tight", metadata={"Creation Time": None})
     plt.close(fig)
     print(f"Saved: {out_path}")
     return out_path
 
 
 if __name__ == "__main__":
-    from dataclasses import dataclass as dc_cls
+    from dataclasses import dataclass
 
     import tyro
 
-    @dc_cls
+    @dataclass
     class Args:
+        """Command-line arguments.
+
+        Attributes:
+            system: System name (e.g., ieee13, ieee34, ieee123).
+            output_dir: Override output directory.
+            large_font: Use very large fonts for all text on the plot.
+        """
+
         system: str = "ieee13"
-        """System name (e.g., ieee13, ieee34, ieee123)."""
         output_dir: str | None = None
-        """Override output directory."""
         large_font: bool = False
-        """Use very large fonts for all text on the plot."""
 
     args = tyro.cli(Args)
     out_dir = Path(args.output_dir) if args.output_dir else None

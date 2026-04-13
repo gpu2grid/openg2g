@@ -4,32 +4,16 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from dataclasses import dataclass, field
-from typing import Literal
 
 _PHASE_KEYS = ("a", "b", "c")
-
-
-@dataclass(frozen=True)
-class DCLoadSpec:
-    """Specification for a datacenter load connection point on the grid.
-
-    Args:
-        bus: Bus name where the datacenter is connected.
-        bus_kv: Line-to-line voltage (kV) at the datacenter bus.
-        connection_type: Connection type for DC loads (default ``"wye"``).
-    """
-
-    bus: str
-    bus_kv: float
-    connection_type: Literal["wye", "delta"] = "wye"
 
 
 @dataclass(frozen=True)
 class TapPosition:
     """Regulator tap position as a mapping of regulator names to tap ratios.
 
-    All regulators are stored in a single ``regulators`` dict.  For
-    convenience, per-phase keyword arguments ``a``, ``b``, ``c`` are
+    All regulators are stored in a single `regulators` dict.  For
+    convenience, per-phase keyword arguments `a`, `b`, `c` are
     accepted and stored under those keys:
 
     ```python
@@ -68,17 +52,17 @@ class TapPosition:
 
     @property
     def a(self) -> float | None:
-        """Phase A tap ratio, or ``None`` if not set."""
+        """Phase A tap ratio, or `None` if not set."""
         return self.regulators.get("a")
 
     @property
     def b(self) -> float | None:
-        """Phase B tap ratio, or ``None`` if not set."""
+        """Phase B tap ratio, or `None` if not set."""
         return self.regulators.get("b")
 
     @property
     def c(self) -> float | None:
-        """Phase C tap ratio, or ``None`` if not set."""
+        """Phase C tap ratio, or `None` if not set."""
         return self.regulators.get("c")
 
     def at(self, t: float) -> TapSchedule:
@@ -89,7 +73,7 @@ class TapPosition:
 class TapSchedule:
     """Ordered sequence of scheduled tap positions.
 
-    Build using [`TapPosition.at`][..TapPosition.at] and the ``|`` operator:
+    Build using [`TapPosition.at`][..TapPosition.at] and the `|` operator:
 
     ```python
     TAP_STEP = 0.00625  # standard 5/8% tap step

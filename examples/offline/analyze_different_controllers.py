@@ -12,8 +12,11 @@ Usage:
 from __future__ import annotations
 
 import csv
+import hashlib
+import json
 import logging
 import math
+from fractions import Fraction
 from pathlib import Path
 
 import matplotlib
@@ -21,25 +24,10 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
-from sweep_dc_locations import ScenarioOpenDSSGrid
-from systems import (
-    DT_CTRL,
-    DT_DC,
-    DT_GRID,
-    POWER_AUG,
-    SYSTEMS,
-    V_MAX,
-    V_MIN,
-    DCSite,
-    PVSystemSpec,
-    TimeVaryingLoadSpec,
-    deploy,
-    load_data_sources,
-    tap,
-)
 
 from openg2g.controller.ofo import (
     LogisticModelStore,
+    OFOBatchSizeController,
     OFOConfig,
 )
 from openg2g.controller.rule_based import RuleBasedBatchSizeController, RuleBasedConfig
@@ -48,448 +36,405 @@ from openg2g.coordinator import Coordinator
 from openg2g.datacenter.config import (
     DatacenterConfig,
     InferenceModelSpec,
-    InferenceRamp,
     ModelDeployment,
+    PowerAugmentationConfig,
+    ReplicaSchedule,
 )
 from openg2g.datacenter.offline import OfflineDatacenter, OfflineWorkload
-from openg2g.datacenter.workloads.inference import InferenceData
+from openg2g.datacenter.workloads.inference import InferenceData, MLEnergySource
 from openg2g.datacenter.workloads.training import TrainingTrace
-from openg2g.grid.config import DCLoadSpec, TapPosition, TapSchedule
+from openg2g.grid.config import TapPosition, TapSchedule
+from openg2g.grid.generator import SyntheticPV
+from openg2g.grid.load import SyntheticLoad
+from openg2g.grid.opendss import OpenDSSGrid
+from openg2g.metrics.performance import PerformanceStats, compute_performance_stats
 from openg2g.metrics.voltage import VoltageStats, compute_allbus_voltage_stats
 
-logger = logging.getLogger("controller_comparison")
+from systems import SYSTEMS, tap
 
+logger = logging.getLogger("analyze_different_controllers")
+
+# Simulation defaults
+
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+
+DT_DC = Fraction(1, 10)
+DT_GRID = Fraction(1, 10)
+DT_CTRL = Fraction(1)
+V_MIN, V_MAX = 0.95, 1.05
 TOTAL_DURATION_S = 3600
+POWER_AUG = PowerAugmentationConfig(amplitude_scale_range=(0.98, 1.02), noise_fraction=0.005)
+
+# Model specifications
+
+LLAMA_8B = InferenceModelSpec(
+    model_label="Llama-3.1-8B",
+    model_id="meta-llama/Llama-3.1-8B-Instruct",
+    gpus_per_replica=1,
+    itl_deadline_s=0.08,
+    feasible_batch_sizes=[8, 16, 32, 64, 128, 256, 512],
+)
+LLAMA_70B = InferenceModelSpec(
+    model_label="Llama-3.1-70B",
+    model_id="meta-llama/Llama-3.1-70B-Instruct",
+    gpus_per_replica=4,
+    itl_deadline_s=0.10,
+    feasible_batch_sizes=[8, 16, 32, 64, 128, 256, 512],
+)
+LLAMA_405B = InferenceModelSpec(
+    model_label="Llama-3.1-405B",
+    model_id="meta-llama/Llama-3.1-405B-Instruct-FP8",
+    gpus_per_replica=8,
+    itl_deadline_s=0.12,
+    feasible_batch_sizes=[8, 16, 32, 64, 128, 256, 512],
+)
+QWEN_30B = InferenceModelSpec(
+    model_label="Qwen3-30B-A3B",
+    model_id="Qwen/Qwen3-30B-A3B-Thinking-2507",
+    gpus_per_replica=2,
+    itl_deadline_s=0.06,
+    feasible_batch_sizes=[8, 16, 32, 64, 128, 256, 512],
+)
+QWEN_235B = InferenceModelSpec(
+    model_label="Qwen3-235B-A22B",
+    model_id="Qwen/Qwen3-235B-A22B-Thinking-2507",
+    gpus_per_replica=8,
+    itl_deadline_s=0.14,
+    feasible_batch_sizes=[8, 16, 32, 64, 128, 256, 512],
+)
+ALL_MODEL_SPECS = (LLAMA_8B, LLAMA_70B, LLAMA_405B, QWEN_30B, QWEN_235B)
+MODEL_SPECS = {s.model_label: s for s in ALL_MODEL_SPECS}
 
 
-# ── Per-system experiment definitions ────────────────────────────────────────
+def deploy(label, num_replicas, initial_batch_size=128):
+    """Shorthand: `deploy("Llama-3.1-8B", 720, 128)` -> `(ModelDeployment, ReplicaSchedule)`."""
+    return (
+        ModelDeployment(spec=MODEL_SPECS[label], initial_batch_size=initial_batch_size),
+        ReplicaSchedule(initial=num_replicas),
+    )
 
 
-def experiment_ieee13() -> dict:
-    """IEEE 13-bus experiment: single DC at bus 671."""
+def unpack_deployments(*deployments):
+    """Split `deploy()` output pairs into a models tuple and schedules dict."""
+    models = tuple(m for m, _ in deployments)
+    schedules = {m.spec.model_label: s for m, s in deployments}
+    return models, schedules
+
+
+def load_data_sources(config_path=None):
+    if config_path is None:
+        config_path = Path(__file__).resolve().parent / "data_sources.json"
+    with open(config_path) as f:
+        cfg = json.load(f)
+    sources_raw = cfg["data_sources"]
+    data_sources = {s["model_label"]: MLEnergySource(**s) for s in sources_raw}
+    blob = json.dumps(
+        sorted(sources_raw, key=lambda s: s["model_label"]),
+        sort_keys=True,
+    ).encode()
+    data_dir = _PROJECT_ROOT / "data" / "offline" / hashlib.sha256(blob).hexdigest()[:16]
+    return data_sources, data_dir
+
+
+# Per-system setup functions
+
+
+def _setup_ieee13(inference_data, training_trace, logistic_models):
+    """IEEE 13-bus: single DC at bus 671."""
     sys = SYSTEMS["ieee13"]()
-    return dict(
-        sys=sys,
-        dc_sites={
-            "default": DCSite(
-                bus="671",
-                bus_kv=sys["bus_kv"],
-                base_kw_per_phase=500.0,
-                total_gpu_capacity=7200,
-                models=(
-                    deploy("Llama-3.1-8B", 720),
-                    deploy("Llama-3.1-70B", 180),
-                    deploy("Llama-3.1-405B", 90),
-                    deploy("Qwen3-30B-A3B", 480),
-                    deploy("Qwen3-235B-A22B", 210),
-                ),
-                seed=0,
-                inference_ramps=(
-                    InferenceRamp(target=144, model="Llama-3.1-8B").at(t_start=2500, t_end=3000)
-                    | InferenceRamp(target=36, model="Llama-3.1-70B").at(t_start=2500, t_end=3000)
-                    | InferenceRamp(target=18, model="Llama-3.1-405B").at(t_start=2500, t_end=3000)
-                    | InferenceRamp(target=96, model="Qwen3-30B-A3B").at(t_start=2500, t_end=3000)
-                    | InferenceRamp(target=42, model="Qwen3-235B-A22B").at(t_start=2500, t_end=3000)
-                ),
-            ),
-        },
-        ofo_config=OFOConfig(
-            primal_step_size=0.1,
-            w_throughput=0.001,
-            w_switch=1.0,
-            voltage_gradient_scale=1e6,
-            v_min=V_MIN,
-            v_max=V_MAX,
-            voltage_dual_step_size=1.0,
-            latency_dual_step_size=1.0,
-            sensitivity_update_interval=3600,
-            sensitivity_perturbation_kw=100.0,
-        ),
-        pv_systems=[PVSystemSpec(bus="675", bus_kv=4.16, peak_kw=10.0)],
-        time_varying_loads=[TimeVaryingLoadSpec(bus="680", bus_kv=4.16, peak_kw=10.0)],
-        tap_schedule=TapSchedule(
-            (
-                (1500, TapPosition(regulators={"creg1a": tap(16), "creg1b": tap(6), "creg1c": tap(17)})),
-                (3300, TapPosition(regulators={"creg1a": tap(10), "creg1b": tap(6), "creg1c": tap(10)})),
-            )
-        ),
-    )
-
-
-def experiment_ieee34() -> dict:
-    """IEEE 34-bus experiment: two DC sites (upstream/downstream)."""
-    sys = SYSTEMS["ieee34"]()
-    return dict(
-        sys=sys,
-        dc_sites={
-            "upstream": DCSite(
-                bus="850",
-                bus_kv=24.9,
-                base_kw_per_phase=120.0,
-                models=(deploy("Llama-3.1-8B", 720), deploy("Llama-3.1-70B", 180), deploy("Llama-3.1-405B", 90)),
-                seed=0,
-                total_gpu_capacity=2400,
-            ),
-            "downstream": DCSite(
-                bus="834",
-                bus_kv=24.9,
-                base_kw_per_phase=80.0,
-                models=(deploy("Qwen3-30B-A3B", 480), deploy("Qwen3-235B-A22B", 210)),
-                seed=42,
-                total_gpu_capacity=2880,
-            ),
-        },
-        ofo_config=OFOConfig(
-            primal_step_size=0.05,
-            w_throughput=0.001,
-            w_switch=1.0,
-            voltage_gradient_scale=1e6,
-            voltage_dual_step_size=20.0,
-            latency_dual_step_size=1.0,
-            sensitivity_update_interval=3600,
-            sensitivity_perturbation_kw=10.0,
-            v_min=V_MIN,
-            v_max=V_MAX,
-        ),
-        pv_systems=[
-            PVSystemSpec(bus="848", bus_kv=24.9, peak_kw=130.0),
-            PVSystemSpec(bus="830", bus_kv=24.9, peak_kw=65.0),
-        ],
-        time_varying_loads=[
-            TimeVaryingLoadSpec(bus="860", bus_kv=24.9, peak_kw=80.0),
-            TimeVaryingLoadSpec(bus="844", bus_kv=24.9, peak_kw=120.0),
-            TimeVaryingLoadSpec(bus="840", bus_kv=24.9, peak_kw=60.0),
-            TimeVaryingLoadSpec(bus="858", bus_kv=24.9, peak_kw=50.0),
-            TimeVaryingLoadSpec(bus="854", bus_kv=24.9, peak_kw=40.0),
-        ],
-        tap_schedule=TapSchedule(
-            (
-                (
-                    1800,
-                    TapPosition(
-                        regulators={
-                            "creg2a": tap(10),
-                            "creg2b": tap(10),
-                            "creg2c": tap(10),
-                        }
-                    ),
-                ),
-            )
-        ),
-    )
-
-
-def experiment_ieee123() -> dict:
-    """IEEE 123-bus experiment: four DC sites across zones."""
-    sys = SYSTEMS["ieee123"]()
-    return dict(
-        sys=sys,
-        dc_sites={
-            "z1_sw": DCSite(
-                bus="8",
-                bus_kv=4.16,
-                base_kw_per_phase=310.0,
-                models=(deploy("Llama-3.1-8B", 120),),
-                seed=0,
-                total_gpu_capacity=180,
-                inference_ramps=InferenceRamp(target=180, model="Llama-3.1-8B").at(t_start=500, t_end=1000),
-            ),
-            "z2_nw": DCSite(
-                bus="23",
-                bus_kv=4.16,
-                base_kw_per_phase=265.0,
-                models=(deploy("Qwen3-30B-A3B", 80),),
-                seed=17,
-                total_gpu_capacity=208,
-                inference_ramps=InferenceRamp(target=104, model="Qwen3-30B-A3B").at(t_start=1500, t_end=2500),
-            ),
-            "z3_se": DCSite(
-                bus="60",
-                bus_kv=4.16,
-                base_kw_per_phase=295.0,
-                models=(deploy("Llama-3.1-70B", 30), deploy("Llama-3.1-405B", 35)),
-                seed=34,
-                total_gpu_capacity=460,
-                inference_ramps=InferenceRamp(target=45, model="Llama-3.1-70B").at(t_start=700, t_end=1100),
-            ),
-            "z4_ne": DCSite(
-                bus="105",
-                bus_kv=4.16,
-                base_kw_per_phase=325.0,
-                models=(deploy("Qwen3-235B-A22B", 55),),
-                seed=51,
-                total_gpu_capacity=440,
-                inference_ramps=InferenceRamp(target=27, model="Qwen3-235B-A22B").at(t_start=2000, t_end=2500),
-            ),
-        },
-        ofo_config=OFOConfig(
-            primal_step_size=0.05,
-            w_throughput=0.001,
-            w_switch=1.0,
-            voltage_gradient_scale=1e6,
-            voltage_dual_step_size=0.3,
-            latency_dual_step_size=1.0,
-            sensitivity_update_interval=3600,
-            sensitivity_perturbation_kw=10.0,
-            v_min=V_MIN,
-            v_max=V_MAX,
-        ),
-        pv_systems=[
-            PVSystemSpec(bus="1", bus_kv=4.16, peak_kw=333.3),
-            PVSystemSpec(bus="48", bus_kv=4.16, peak_kw=333.3),
-            PVSystemSpec(bus="99", bus_kv=4.16, peak_kw=333.3),
-        ],
-        time_varying_loads=[],
-        tap_schedule=TapSchedule(((1800, TapPosition(regulators={"creg4a": tap(16)})),)),
-    )
-
-
-EXPERIMENTS = {"ieee13": experiment_ieee13, "ieee34": experiment_ieee34, "ieee123": experiment_ieee123}
-
-
-# ── Simulation runner ────────────────────────────────────────────────────────
-
-
-def run_simulation(
-    mode: str,
-    *,
-    sys: dict,
-    dc_sites: dict[str, DCSite],
-    ofo_config: OFOConfig,
-    inference_data: InferenceData,
-    training_trace: TrainingTrace,
-    logistic_models: LogisticModelStore,
-    pv_systems: list[PVSystemSpec] | None = None,
-    time_varying_loads: list[TimeVaryingLoadSpec] | None = None,
-    tap_schedule: TapSchedule | None = None,
-    rule_based_config: RuleBasedConfig | None = None,
-    ppo_model: str = "",
-    save_dir: Path,
-) -> tuple[VoltageStats, object]:
-    """Run a simulation with the specified controller mode.
-
-    Modes:
-        'baseline': NoopController (no batch control)
-        'rule_based': RuleBasedBatchSizeController
-        'ofo': OFOBatchSizeController
-
-    Returns (VoltageStats, SimulationLog).
-    """
-    pv_systems = pv_systems or []
-    time_varying_loads = time_varying_loads or []
     exclude_buses = tuple(sys["exclude_buses"])
-    site_ids = list(dc_sites.keys())
 
-    dc_loads: dict[str, DCLoadSpec] = {}
-    datacenters: dict[str, OfflineDatacenter] = {}
-    controllers: list = []
-    site_specs_map: dict[str, tuple[InferenceModelSpec, ...]] = {}
-    primary_bus = ""
+    models_default, _ = unpack_deployments(
+        deploy("Llama-3.1-8B", 720),
+        deploy("Llama-3.1-70B", 180),
+        deploy("Llama-3.1-405B", 90),
+        deploy("Qwen3-30B-A3B", 480),
+        deploy("Qwen3-235B-A22B", 210),
+    )
+    specs_default = tuple(md.spec for md in models_default)
+    site_inference = inference_data.filter_models(specs_default)
 
-    for site_id, site in dc_sites.items():
-        site_specs = tuple(md.spec for md in site.models)
-        site_specs_map[site_id] = site_specs
-        site_inference = inference_data.filter_models(site_specs)
-
-        replica_counts = {md.spec.model_label: md.num_replicas for md in site.models}
-
-        dc_config = DatacenterConfig(
-            gpus_per_server=8,
-            base_kw_per_phase=site.base_kw_per_phase,
-        )
-        workload_kwargs: dict = {
-            "inference_data": site_inference,
-            "replica_counts": replica_counts,
-        }
-        if site.inference_ramps is not None:
-            workload_kwargs["inference_ramps"] = site.inference_ramps
-        workload = OfflineWorkload(**workload_kwargs)
-
-        dc = OfflineDatacenter(
-            dc_config,
-            workload,
-            dt_s=DT_DC,
-            seed=site.seed,
-            power_augmentation=POWER_AUG,
-            total_gpu_capacity=site.total_gpu_capacity,
-        )
-        datacenters[site_id] = dc
-        dc_loads[site_id] = DCLoadSpec(
-            bus=site.bus,
-            bus_kv=site.bus_kv,
-            connection_type=site.connection_type,
-        )
-        if not primary_bus:
-            primary_bus = site.bus
-
-    # Grid
-    if len(site_ids) == 1:
-        sid = site_ids[0]
-        site = dc_sites[sid]
-        grid = ScenarioOpenDSSGrid(
-            pv_systems=pv_systems,
-            time_varying_loads=time_varying_loads,
-            source_pu=sys["source_pu"],
-            dss_case_dir=sys["dss_case_dir"],
-            dss_master_file=sys["dss_master_file"],
-            dc_bus=site.bus,
-            dc_bus_kv=site.bus_kv,
-            power_factor=DatacenterConfig(base_kw_per_phase=0).power_factor,
-            dt_s=DT_GRID,
-            connection_type=site.connection_type,
-            initial_tap_position=sys["initial_taps"],
-        )
-    else:
-        grid = ScenarioOpenDSSGrid(
-            pv_systems=pv_systems,
-            time_varying_loads=time_varying_loads,
-            source_pu=sys["source_pu"],
-            dss_case_dir=sys["dss_case_dir"],
-            dss_master_file=sys["dss_master_file"],
-            dc_loads=dc_loads,
-            power_factor=DatacenterConfig(base_kw_per_phase=0).power_factor,
-            dt_s=DT_GRID,
-            initial_tap_position=sys["initial_taps"],
-            exclude_buses=exclude_buses,
-        )
-
-    # Tap controller: only baseline gets tap schedule changes;
-    # OFO and rule-based use fixed initial taps (no tap schedule)
-    if mode == "baseline":
-        sched = tap_schedule if tap_schedule is not None else TapSchedule(())
-    else:
-        sched = TapSchedule(())
-    controllers.append(TapScheduleController(schedule=sched, dt_s=DT_CTRL))
-
-    # Batch-size controller
-    if mode == "ofo":
-        from openg2g.controller.ofo import OFOBatchSizeController
-
-        for site_id in site_ids:
-            ofo_ctrl = OFOBatchSizeController(
-                site_specs_map[site_id],
-                models=logistic_models,
-                config=ofo_config,
-                dt_s=DT_CTRL,
-                site_id=site_id if len(site_ids) > 1 else None,
-            )
-            controllers.append(ofo_ctrl)
-
-    elif mode == "rule_based":
-        rb_config = rule_based_config or RuleBasedConfig(v_min=V_MIN, v_max=V_MAX)
-        for site_id in site_ids:
-            rb_ctrl = RuleBasedBatchSizeController(
-                site_specs_map[site_id],
-                config=rb_config,
-                dt_s=DT_CTRL,
-                site_id=site_id if len(site_ids) > 1 else None,
-                exclude_buses=exclude_buses,
-            )
-            controllers.append(rb_ctrl)
-
-    elif mode == "ppo":
-        from openg2g.controller.ppo import PPOBatchSizeController, SharedPPOBatchSizeController
-        from openg2g.rl.env import ObservationConfig
-
-        ppo_path = Path(ppo_model).resolve()
-
-        # Check if a shared model exists
-        shared_model = ppo_path / "ppo_model_shared.zip" if ppo_path.is_dir() else None
-        if shared_model is not None and shared_model.exists():
-            # Shared multi-site PPO
-            from stable_baselines3 import PPO as SB3PPO
-
-            sb3 = SB3PPO.load(str(shared_model.with_suffix("")))
-            saved_obs_dim = sb3.observation_space.shape[0]
-            n_models_all = sum(len(dc_sites[sid].models) for sid in site_ids)
-            n_bus_phases = saved_obs_dim - 3 - 5 * n_models_all
-
-            site_model_mapping = {sid: [md.spec.model_label for md in dc_sites[sid].models] for sid in site_ids}
-            obs_config = ObservationConfig.from_multi_site(
-                site_specs_map,
-                {sid: {md.spec.model_label: md.num_replicas for md in dc_sites[sid].models} for sid in site_ids},
-                n_bus_phases=n_bus_phases,
-                v_min=V_MIN,
-                v_max=V_MAX,
-            )
-            ppo_ctrl = SharedPPOBatchSizeController(
-                model_path=str(shared_model),
-                obs_config=obs_config,
-                site_model_mapping=site_model_mapping,
-                dt_s=DT_CTRL,
-            )
-            controllers.append(ppo_ctrl)
-        else:
-            # Per-site PPO
-            # Get zone info for zone-local obs
-            zones = sys.get("zones")
-
-            for site_id in site_ids:
-                if ppo_path.is_dir():
-                    site_model = str(ppo_path / f"ppo_model_{site_id}.zip")
-                elif ppo_path.suffix == ".zip" and len(site_ids) == 1:
-                    site_model = str(ppo_path)
-                else:
-                    site_model = str(ppo_path.parent / f"ppo_model_{site_id}.zip")
-
-                from stable_baselines3 import PPO as SB3PPO
-
-                sb3 = SB3PPO.load(str(Path(site_model).with_suffix("")))
-                saved_obs_dim = sb3.observation_space.shape[0]
-                n_models_site = len(dc_sites[site_id].models)
-                n_bus_phases = saved_obs_dim - 3 - 5 * n_models_site
-
-                # Reconstruct zone_buses if zone-local
-                zone_buses = None
-                if zones is not None and site_id in zones:
-                    zone_buses = tuple(zones[site_id])
-
-                specs = site_specs_map[site_id]
-                replica_counts = {md.spec.model_label: md.num_replicas for md in dc_sites[site_id].models}
-                obs_config = ObservationConfig.from_model_specs(
-                    specs, replica_counts, n_bus_phases=n_bus_phases, zone_buses=zone_buses, v_min=V_MIN, v_max=V_MAX
-                )
-                ppo_ctrl = PPOBatchSizeController(
-                    specs,
-                    model_path=site_model,
-                    obs_config=obs_config,
-                    dt_s=DT_CTRL,
-                    site_id=site_id if len(site_ids) > 1 else None,
-                )
-                controllers.append(ppo_ctrl)
-
-    # baseline: no batch controller added
-
-    coord = Coordinator(
-        datacenters=datacenters,
-        grid=grid,
-        controllers=controllers,
-        total_duration_s=TOTAL_DURATION_S,
-        dc_bus=primary_bus,
+    workload = OfflineWorkload(
+        inference_data=site_inference,
+        replica_schedules={
+            "Llama-3.1-8B": ReplicaSchedule(initial=720).ramp_to(360, t_start=2500, t_end=3000),
+            "Llama-3.1-70B": ReplicaSchedule(initial=180).ramp_to(90, t_start=2500, t_end=3000),
+            "Llama-3.1-405B": ReplicaSchedule(initial=90).ramp_to(45, t_start=2500, t_end=3000),
+            "Qwen3-30B-A3B": ReplicaSchedule(initial=480).ramp_to(240, t_start=2500, t_end=3000),
+            "Qwen3-235B-A22B": ReplicaSchedule(initial=210).ramp_to(105, t_start=2500, t_end=3000),
+        },
+    )
+    dc_default = OfflineDatacenter(
+        DatacenterConfig(gpus_per_server=8, base_kw_per_phase=500.0),
+        workload,
+        name="default",
+        dt_s=DT_DC,
+        seed=0,
+        power_augmentation=POWER_AUG,
+        total_gpu_capacity=7200,
     )
 
-    logger.info("Running %s...", mode)
-    log = coord.run()
+    datacenters = [dc_default]
+    dc_specs = {dc_default: specs_default}
 
-    vstats = compute_allbus_voltage_stats(
-        log.grid_states,
-        v_min=V_MIN,
-        v_max=V_MAX,
+    grid = OpenDSSGrid(
+        dss_case_dir=sys["dss_case_dir"],
+        dss_master_file=sys["dss_master_file"],
+        source_pu=sys["source_pu"],
+        dt_s=DT_GRID,
+        initial_tap_position=sys["initial_taps"],
         exclude_buses=exclude_buses,
     )
-    logger.info(
-        "  %s: viol=%.1fs  integral=%.4f  vmin=%.4f  vmax=%.4f",
-        mode,
-        vstats.violation_time_s,
-        vstats.integral_violation_pu_s,
-        vstats.worst_vmin,
-        vstats.worst_vmax,
+    grid.attach_dc(dc_default, bus="671", connection_type="wye")
+    grid.attach_generator(SyntheticPV(peak_kw=10.0), bus="675")
+    grid.attach_load(SyntheticLoad(peak_kw=10.0), bus="680")
+
+    tap_schedule = TapSchedule(
+        (
+            (1500, TapPosition(regulators={"creg1a": tap(16), "creg1b": tap(6), "creg1c": tap(17)})),
+            (3300, TapPosition(regulators={"creg1a": tap(10), "creg1b": tap(6), "creg1c": tap(10)})),
+        )
+    )
+    ofo_config = OFOConfig(
+        primal_step_size=0.1,
+        w_throughput=0.001,
+        w_switch=1.0,
+        voltage_gradient_scale=1e6,
+        v_min=V_MIN,
+        v_max=V_MAX,
+        voltage_dual_step_size=1.0,
+        latency_dual_step_size=1.0,
+        sensitivity_update_interval=3600,
+        sensitivity_perturbation_kw=100.0,
     )
 
-    return vstats, log
+    return dict(
+        sys=sys,
+        datacenters=datacenters,
+        dc_specs=dc_specs,
+        grid=grid,
+        ofo_config=ofo_config,
+        tap_schedule=tap_schedule,
+        exclude_buses=exclude_buses,
+    )
 
 
-# ── Plotting ─────────────────────────────────────────────────────────────────
+def _setup_ieee34(inference_data, training_trace, logistic_models):
+    """IEEE 34-bus: two DC sites (upstream/downstream)."""
+    sys = SYSTEMS["ieee34"]()
+    exclude_buses = tuple(sys["exclude_buses"])
+
+    models_upstream, rs_upstream = unpack_deployments(
+        deploy("Llama-3.1-8B", 720), deploy("Llama-3.1-70B", 180), deploy("Llama-3.1-405B", 90)
+    )
+    models_downstream, rs_downstream = unpack_deployments(deploy("Qwen3-30B-A3B", 480), deploy("Qwen3-235B-A22B", 210))
+    specs_upstream = tuple(md.spec for md in models_upstream)
+    specs_downstream = tuple(md.spec for md in models_downstream)
+
+    dc_upstream = OfflineDatacenter(
+        DatacenterConfig(gpus_per_server=8, base_kw_per_phase=120.0),
+        OfflineWorkload(
+            inference_data=inference_data.filter_models(specs_upstream),
+            replica_schedules=rs_upstream,
+        ),
+        name="upstream",
+        dt_s=DT_DC,
+        seed=0,
+        power_augmentation=POWER_AUG,
+        total_gpu_capacity=2400,
+    )
+    dc_downstream = OfflineDatacenter(
+        DatacenterConfig(gpus_per_server=8, base_kw_per_phase=80.0),
+        OfflineWorkload(
+            inference_data=inference_data.filter_models(specs_downstream),
+            replica_schedules=rs_downstream,
+        ),
+        name="downstream",
+        dt_s=DT_DC,
+        seed=42,
+        power_augmentation=POWER_AUG,
+        total_gpu_capacity=2880,
+    )
+
+    datacenters = [dc_upstream, dc_downstream]
+    dc_specs = {dc_upstream: specs_upstream, dc_downstream: specs_downstream}
+
+    grid = OpenDSSGrid(
+        dss_case_dir=sys["dss_case_dir"],
+        dss_master_file=sys["dss_master_file"],
+        source_pu=sys["source_pu"],
+        dt_s=DT_GRID,
+        initial_tap_position=sys["initial_taps"],
+        exclude_buses=exclude_buses,
+    )
+    grid.attach_dc(dc_upstream, bus="850", connection_type="wye")
+    grid.attach_dc(dc_downstream, bus="834", connection_type="wye")
+    grid.attach_generator(SyntheticPV(peak_kw=130.0), bus="848")
+    grid.attach_generator(SyntheticPV(peak_kw=65.0, site_idx=1), bus="830")
+    grid.attach_load(SyntheticLoad(peak_kw=80.0), bus="860")
+    grid.attach_load(SyntheticLoad(peak_kw=120.0, site_idx=1), bus="844")
+    grid.attach_load(SyntheticLoad(peak_kw=60.0, site_idx=2), bus="840")
+    grid.attach_load(SyntheticLoad(peak_kw=50.0, site_idx=3), bus="858")
+    grid.attach_load(SyntheticLoad(peak_kw=40.0, site_idx=4), bus="854")
+
+    tap_schedule = TapSchedule(
+        (
+            (
+                1800,
+                TapPosition(
+                    regulators={
+                        "creg2a": tap(10),
+                        "creg2b": tap(10),
+                        "creg2c": tap(10),
+                    }
+                ),
+            ),
+        )
+    )
+    ofo_config = OFOConfig(
+        primal_step_size=0.05,
+        w_throughput=0.001,
+        w_switch=1.0,
+        voltage_gradient_scale=1e6,
+        voltage_dual_step_size=20.0,
+        latency_dual_step_size=1.0,
+        sensitivity_update_interval=3600,
+        sensitivity_perturbation_kw=10.0,
+        v_min=V_MIN,
+        v_max=V_MAX,
+    )
+
+    return dict(
+        sys=sys,
+        datacenters=datacenters,
+        dc_specs=dc_specs,
+        grid=grid,
+        ofo_config=ofo_config,
+        tap_schedule=tap_schedule,
+        exclude_buses=exclude_buses,
+    )
+
+
+def _setup_ieee123(inference_data, training_trace, logistic_models):
+    """IEEE 123-bus: four DC sites across zones."""
+    sys = SYSTEMS["ieee123"]()
+    exclude_buses = tuple(sys["exclude_buses"])
+
+    models_z1, _ = unpack_deployments(deploy("Llama-3.1-8B", 120))
+    models_z2, _ = unpack_deployments(deploy("Qwen3-30B-A3B", 80))
+    models_z3, _ = unpack_deployments(deploy("Llama-3.1-70B", 30), deploy("Llama-3.1-405B", 35))
+    models_z4, _ = unpack_deployments(deploy("Qwen3-235B-A22B", 55))
+    specs_z1 = tuple(md.spec for md in models_z1)
+    specs_z2 = tuple(md.spec for md in models_z2)
+    specs_z3 = tuple(md.spec for md in models_z3)
+    specs_z4 = tuple(md.spec for md in models_z4)
+
+    dc_z1 = OfflineDatacenter(
+        DatacenterConfig(gpus_per_server=8, base_kw_per_phase=310.0),
+        OfflineWorkload(
+            inference_data=inference_data.filter_models(specs_z1),
+            replica_schedules={
+                "Llama-3.1-8B": ReplicaSchedule(initial=120).ramp_to(180, t_start=500, t_end=1000),
+            },
+        ),
+        name="z1_sw",
+        dt_s=DT_DC,
+        seed=0,
+        power_augmentation=POWER_AUG,
+        total_gpu_capacity=180,
+    )
+    dc_z2 = OfflineDatacenter(
+        DatacenterConfig(gpus_per_server=8, base_kw_per_phase=265.0),
+        OfflineWorkload(
+            inference_data=inference_data.filter_models(specs_z2),
+            replica_schedules={
+                "Qwen3-30B-A3B": ReplicaSchedule(initial=80).ramp_to(104, t_start=1500, t_end=2500),
+            },
+        ),
+        name="z2_nw",
+        dt_s=DT_DC,
+        seed=17,
+        power_augmentation=POWER_AUG,
+        total_gpu_capacity=208,
+    )
+    dc_z3 = OfflineDatacenter(
+        DatacenterConfig(gpus_per_server=8, base_kw_per_phase=295.0),
+        OfflineWorkload(
+            inference_data=inference_data.filter_models(specs_z3),
+            replica_schedules={
+                "Llama-3.1-70B": ReplicaSchedule(initial=30).ramp_to(45, t_start=700, t_end=1100),
+                "Llama-3.1-405B": ReplicaSchedule(initial=35),
+            },
+        ),
+        name="z3_se",
+        dt_s=DT_DC,
+        seed=34,
+        power_augmentation=POWER_AUG,
+        total_gpu_capacity=460,
+    )
+    dc_z4 = OfflineDatacenter(
+        DatacenterConfig(gpus_per_server=8, base_kw_per_phase=325.0),
+        OfflineWorkload(
+            inference_data=inference_data.filter_models(specs_z4),
+            replica_schedules={
+                "Qwen3-235B-A22B": ReplicaSchedule(initial=55).ramp_to(27, t_start=2000, t_end=2500),
+            },
+        ),
+        name="z4_ne",
+        dt_s=DT_DC,
+        seed=51,
+        power_augmentation=POWER_AUG,
+        total_gpu_capacity=440,
+    )
+
+    datacenters = [dc_z1, dc_z2, dc_z3, dc_z4]
+    dc_specs = {dc_z1: specs_z1, dc_z2: specs_z2, dc_z3: specs_z3, dc_z4: specs_z4}
+
+    grid = OpenDSSGrid(
+        dss_case_dir=sys["dss_case_dir"],
+        dss_master_file=sys["dss_master_file"],
+        source_pu=sys["source_pu"],
+        dt_s=DT_GRID,
+        initial_tap_position=sys["initial_taps"],
+        exclude_buses=exclude_buses,
+    )
+    grid.attach_dc(dc_z1, bus="8", connection_type="wye")
+    grid.attach_dc(dc_z2, bus="23", connection_type="wye")
+    grid.attach_dc(dc_z3, bus="60", connection_type="wye")
+    grid.attach_dc(dc_z4, bus="105", connection_type="wye")
+    grid.attach_generator(SyntheticPV(peak_kw=333.3), bus="1")
+    grid.attach_generator(SyntheticPV(peak_kw=333.3, site_idx=1), bus="48")
+    grid.attach_generator(SyntheticPV(peak_kw=333.3, site_idx=2), bus="99")
+
+    tap_schedule = TapSchedule(((1800, TapPosition(regulators={"creg4a": tap(16)})),))
+    ofo_config = OFOConfig(
+        primal_step_size=0.05,
+        w_throughput=0.001,
+        w_switch=1.0,
+        voltage_gradient_scale=1e6,
+        voltage_dual_step_size=0.3,
+        latency_dual_step_size=1.0,
+        sensitivity_update_interval=3600,
+        sensitivity_perturbation_kw=10.0,
+        v_min=V_MIN,
+        v_max=V_MAX,
+    )
+
+    return dict(
+        sys=sys,
+        datacenters=datacenters,
+        dc_specs=dc_specs,
+        grid=grid,
+        ofo_config=ofo_config,
+        tap_schedule=tap_schedule,
+        exclude_buses=exclude_buses,
+    )
+
+
+SETUPS = {"ieee13": _setup_ieee13, "ieee34": _setup_ieee34, "ieee123": _setup_ieee123}
+
+
+# Plotting
 
 
 def plot_voltage_comparison(
@@ -539,7 +484,7 @@ def plot_voltage_comparison(
     axes[0].set_ylabel("Voltage (pu)")
     fig.suptitle("Voltage Envelope Comparison", fontsize=14, fontweight="bold")
     fig.tight_layout()
-    fig.savefig(save_dir / "voltage_comparison.png", dpi=150, bbox_inches="tight")
+    fig.savefig(save_dir / "voltage_comparison.png", dpi=150, bbox_inches="tight", metadata={"Creation Time": None})
     plt.close(fig)
     logger.info("Saved voltage_comparison.png")
 
@@ -593,7 +538,7 @@ def plot_batch_comparison(
     axes[-1][0].set_xlabel("Time (s)")
     fig.suptitle("Batch Size Comparison by Model", fontsize=14, fontweight="bold")
     fig.tight_layout()
-    fig.savefig(save_dir / "batch_size_comparison.png", dpi=150, bbox_inches="tight")
+    fig.savefig(save_dir / "batch_size_comparison.png", dpi=150, bbox_inches="tight", metadata={"Creation Time": None})
     plt.close(fig)
     logger.info("Saved batch_size_comparison.png")
 
@@ -636,12 +581,12 @@ def plot_summary_bar(
 
     fig.suptitle("Controller Comparison Summary", fontsize=14, fontweight="bold")
     fig.tight_layout()
-    fig.savefig(save_dir / "summary_bar_chart.png", dpi=150, bbox_inches="tight")
+    fig.savefig(save_dir / "summary_bar_chart.png", dpi=150, bbox_inches="tight", metadata={"Creation Time": None})
     plt.close(fig)
     logger.info("Saved summary_bar_chart.png")
 
 
-# ── Main ─────────────────────────────────────────────────────────────────────
+# Main
 
 
 def main(
@@ -649,35 +594,27 @@ def main(
     system: str,
     rule_step_size: float = 0.3,
     rule_deadband: float = 0.005,
-    ppo_model: str = "",
 ) -> None:
-    # Resolve ppo_model path early (before OpenDSS changes CWD)
-    if ppo_model:
-        ppo_model = str(Path(ppo_model).resolve())
-    if system not in EXPERIMENTS:
-        raise ValueError(f"Unknown system {system!r}; choose from {list(EXPERIMENTS)}")
-
-    exp = EXPERIMENTS[system]()
-    sys = exp["sys"]
-    dc_sites: dict[str, DCSite] = exp["dc_sites"]
-    ofo_config: OFOConfig = exp["ofo_config"]
-    pv_systems: list[PVSystemSpec] = exp["pv_systems"]
-    time_varying_loads: list[TimeVaryingLoadSpec] = exp["time_varying_loads"]
-    tap_schedule: TapSchedule | None = exp["tap_schedule"]
-    exclude_buses = tuple(sys["exclude_buses"])
-
-    # Collect all models across sites
-    all_models: list[ModelDeployment] = []
-    for site in dc_sites.values():
-        all_models.extend(site.models)
-    all_specs_tuple = tuple(m.spec for m in all_models)
+    if system not in SETUPS:
+        raise ValueError(f"Unknown system {system!r}; choose from {list(SETUPS)}")
 
     save_dir = Path(__file__).resolve().parent / "outputs" / system / "controller_comparison"
     save_dir.mkdir(parents=True, exist_ok=True)
 
     # Load data
     logger.info("Loading data...")
-    data_sources, training_trace_params, data_dir = load_data_sources()
+    data_sources, data_dir = load_data_sources()
+
+    # Collect all specs across all sites for data loading (need full set for InferenceData)
+    setup_fn = SETUPS[system]
+    # We need all model specs to load data before building the setup.
+    # Temporarily gather them from the deploy calls used per system.
+    all_specs_by_system = {
+        "ieee13": (LLAMA_8B, LLAMA_70B, LLAMA_405B, QWEN_30B, QWEN_235B),
+        "ieee34": (LLAMA_8B, LLAMA_70B, LLAMA_405B, QWEN_30B, QWEN_235B),
+        "ieee123": (LLAMA_8B, QWEN_30B, LLAMA_70B, LLAMA_405B, QWEN_235B),
+    }
+    all_specs_tuple = all_specs_by_system[system]
 
     inference_data = InferenceData.ensure(
         data_dir,
@@ -686,10 +623,7 @@ def main(
         plot=False,
         dt_s=float(DT_DC),
     )
-    training_trace = TrainingTrace.ensure(
-        data_dir / "training_trace.csv",
-        training_trace_params,
-    )
+    training_trace = TrainingTrace.ensure(data_dir / "training_trace.csv")
     logistic_models = LogisticModelStore.ensure(
         data_dir / "logistic_fits.csv",
         all_specs_tuple,
@@ -705,12 +639,20 @@ def main(
         v_max=V_MAX,
     )
 
-    # ── Run all modes ──
+    # Run all modes
     modes = ["baseline", "rule_based", "ofo"]
-    if ppo_model:
-        modes.append("ppo")
     all_stats: dict[str, VoltageStats] = {}
+    all_perf: dict[str, PerformanceStats] = {}
     all_logs: dict[str, object] = {}
+
+    # Build DCs + grid once. Coordinator.run() resets both between modes.
+    setup = setup_fn(inference_data, training_trace, logistic_models)
+    datacenters: list[OfflineDatacenter] = setup["datacenters"]
+    dc_specs: dict[OfflineDatacenter, tuple[InferenceModelSpec, ...]] = setup["dc_specs"]
+    grid: OpenDSSGrid = setup["grid"]
+    ofo_config: OFOConfig = setup["ofo_config"]
+    tap_schedule: TapSchedule = setup["tap_schedule"]
+    exclude_buses: tuple[str, ...] = setup["exclude_buses"]
 
     for mode in modes:
         logger.info("")
@@ -718,60 +660,140 @@ def main(
         logger.info("MODE: %s", mode.upper())
         logger.info("=" * 60)
 
-        vstats, log = run_simulation(
-            mode,
-            sys=sys,
-            dc_sites=dc_sites,
-            ofo_config=ofo_config,
-            inference_data=inference_data,
-            training_trace=training_trace,
-            logistic_models=logistic_models,
-            pv_systems=pv_systems,
-            time_varying_loads=time_varying_loads,
-            tap_schedule=tap_schedule,
-            rule_based_config=rb_config if mode == "rule_based" else None,
-            ppo_model=ppo_model,
-            save_dir=save_dir,
+        controllers: list = []
+
+        # Tap controller: only baseline gets tap schedule changes;
+        # OFO and rule-based use fixed initial taps (no tap schedule)
+        if mode == "baseline":
+            sched = tap_schedule
+        else:
+            sched = TapSchedule(())
+        controllers.append(TapScheduleController(schedule=sched, dt_s=DT_CTRL))
+
+        # Batch-size controller
+        if mode == "ofo":
+            for dc, specs in dc_specs.items():
+                ofo_ctrl = OFOBatchSizeController(
+                    specs,
+                    datacenter=dc,
+                    models=logistic_models,
+                    config=ofo_config,
+                    dt_s=DT_CTRL,
+                    grid=grid,
+                )
+                controllers.append(ofo_ctrl)
+
+        elif mode == "rule_based":
+            for dc, specs in dc_specs.items():
+                rb_ctrl = RuleBasedBatchSizeController(
+                    specs,
+                    datacenter=dc,
+                    config=rb_config,
+                    dt_s=DT_CTRL,
+                    exclude_buses=exclude_buses,
+                    grid=grid,
+                )
+                controllers.append(rb_ctrl)
+
+        # baseline: no batch controller added
+
+        coord = Coordinator(
+            datacenters=datacenters,
+            grid=grid,
+            controllers=controllers,
+            total_duration_s=TOTAL_DURATION_S,
         )
+
+        logger.info("Running %s...", mode)
+        log = coord.run()
+
+        vstats = compute_allbus_voltage_stats(
+            log.grid_states,
+            v_min=V_MIN,
+            v_max=V_MAX,
+            exclude_buses=exclude_buses,
+        )
+        itl_deadlines = {ms.model_label: ms.itl_deadline_s for ms in all_specs_tuple}
+        pstats = compute_performance_stats(log.dc_states, itl_deadline_s_by_model=itl_deadlines)
+        logger.info(
+            "  %s: viol=%.1fs  integral=%.4f  vmin=%.4f  vmax=%.4f  thpt=%.1f k tok/s  itl_over_deadline=%.2f%%",
+            mode,
+            vstats.violation_time_s,
+            vstats.integral_violation_pu_s,
+            vstats.worst_vmin,
+            vstats.worst_vmax,
+            pstats.mean_throughput_tps / 1e3,
+            pstats.itl_deadline_fraction * 100.0,
+        )
+
         all_stats[mode] = vstats
+        all_perf[mode] = pstats
         all_logs[mode] = log
 
-    # ── Summary table ──
+    # Summary table
     logger.info("")
     logger.info("=" * 80)
     logger.info("SUMMARY")
     logger.info("=" * 80)
     logger.info(
-        "%-15s %12s %12s %12s %12s",
+        "%-15s %10s %10s %10s %10s %14s %10s",
         "Mode",
         "Viol(s)",
         "Integral",
-        "Worst Vmin",
-        "Worst Vmax",
+        "Vmin",
+        "Vmax",
+        "Thpt(k tok/s)",
+        "ITL_miss%",
     )
-    logger.info("-" * 80)
+    logger.info("-" * 95)
     for mode in modes:
         s = all_stats[mode]
+        p = all_perf[mode]
         logger.info(
-            "%-15s %12.1f %12.4f %12.4f %12.4f",
+            "%-15s %10.1f %10.4f %10.4f %10.4f %14.1f %9.2f%%",
             mode,
             s.violation_time_s,
             s.integral_violation_pu_s,
             s.worst_vmin,
             s.worst_vmax,
+            p.mean_throughput_tps / 1e3,
+            p.itl_deadline_fraction * 100.0,
         )
 
-    # ── Save results CSV ──
+    # Save results CSV
     csv_path = save_dir / f"results_{system}.csv"
     with open(csv_path, "w", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(["mode", "violation_time_s", "integral_violation_pu_s", "worst_vmin", "worst_vmax"])
+        writer.writerow(
+            [
+                "mode",
+                "violation_time_s",
+                "integral_violation_pu_s",
+                "worst_vmin",
+                "worst_vmax",
+                "mean_throughput_tps",
+                "integrated_throughput_tokens",
+                "itl_deadline_fraction",
+            ]
+        )
         for mode in modes:
             s = all_stats[mode]
-            writer.writerow([mode, s.violation_time_s, s.integral_violation_pu_s, s.worst_vmin, s.worst_vmax])
+            p = all_perf[mode]
+            writer.writerow(
+                [
+                    mode,
+                    s.violation_time_s,
+                    s.integral_violation_pu_s,
+                    s.worst_vmin,
+                    s.worst_vmax,
+                    p.mean_throughput_tps,
+                    p.integrated_throughput_tokens,
+                    p.itl_deadline_fraction,
+                ]
+            )
     logger.info("Results CSV: %s", csv_path)
 
-    # ── Plots ──
+    # Plots
     plot_voltage_comparison(all_logs, save_dir, v_min=V_MIN, v_max=V_MAX, exclude_buses=exclude_buses)
     plot_batch_comparison(all_logs, save_dir)
     plot_summary_bar(all_stats, save_dir)
@@ -787,16 +809,20 @@ if __name__ == "__main__":
 
     @dataclass
     class Args:
+        """Command-line arguments.
+
+        Attributes:
+            system: System name: ieee13, ieee34, or ieee123.
+            rule_step_size: Proportional gain for the rule-based controller
+                (log2 units per pu violation).
+            rule_deadband: Deadband for the rule-based controller (pu).
+            log_level: Logging verbosity.
+        """
+
         system: str = "ieee123"
-        """System name: ieee13, ieee34, or ieee123."""
         rule_step_size: float = 0.3
-        """Proportional gain for the rule-based controller (log2 units per pu violation)."""
         rule_deadband: float = 0.005
-        """Deadband for the rule-based controller (pu)."""
-        ppo_model: str = ""
-        """Path to trained PPO model (.zip). If set, adds PPO to comparison."""
         log_level: str = "INFO"
-        """Logging verbosity."""
 
     args = tyro.cli(Args)
 
@@ -815,5 +841,4 @@ if __name__ == "__main__":
         system=args.system,
         rule_step_size=args.rule_step_size,
         rule_deadband=args.rule_deadband,
-        ppo_model=args.ppo_model,
     )

@@ -26,47 +26,43 @@ uv sync && source .venv/bin/activate  # or: pip install -e . --group dev
 
 A single command builds all data (power traces, latency fits, training trace) and runs the simulation. Data is cached on disk so subsequent runs skip generation.
 
-These three runs correspond to the evaluation cases in the [GPU-to-Grid paper](https://arxiv.org/abs/2602.05116):
-
-- **`run_baseline.py --mode no-tap`**: Fixed taps, no OFO control
-- **`run_baseline.py --mode tap-change`**: Scheduled tap changes at 1500s and 3300s, no OFO
-- **`run_ofo.py`**: OFO closed-loop batch size optimization
+Run all evaluation cases from the [GPU-to-Grid paper](https://arxiv.org/abs/2602.05116) (baseline and OFO, with and without tap changes):
 
 ```bash
-python examples/offline/run_baseline.py --system ieee13 --mode no-tap
-
-python examples/offline/run_baseline.py --system ieee13 --mode tap-change
-
-python examples/offline/run_ofo.py --system ieee13
+python examples/offline/run_ofo.py --system ieee13 --mode all
 ```
 
 The first run will download benchmark data and generate simulation artifacts (this takes a few minutes). Subsequent runs load from the cache directory (`data/offline/{hash}/`).
 
-Outputs (plots and logs) are saved to `outputs/baseline_no-tap/`, `outputs/baseline_tap-change/`, and `outputs/ofo/`.
+Outputs (plots and CSVs) are saved to `outputs/ieee13/` with one subdirectory per case. See [Voltage Regulation Strategies](../examples/voltage-regulation-strategies.md) for individual `--mode` options.
 
 ## Understanding the Output
 
-Both simulations log voltage violation statistics at the end of the run. Baseline (tap-change) example:
+Each case logs voltage **and** performance statistics as it completes, plus a comparison table at the end:
 
 ```
-21:00:09 run_baseline INFO === Voltage Statistics (all-bus) ===
-21:00:09 run_baseline INFO   voltage_violation_time = 1050.8 s
-21:00:09 run_baseline INFO   worst_vmin             = 0.935359
-21:00:09 run_baseline INFO   worst_vmax             = 1.063965
-21:00:09 run_baseline INFO   integral_violation     = 42.2543 pu·s
+INFO run_ofo   baseline_no-tap:    viol=993.8s  integral=31.2751  vmin=0.9353  vmax=1.0431  thpt=8080.0 k tok/s  itl_over_deadline=0.00%
+INFO run_ofo   baseline_tap-change: viol=999.3s  integral=21.6594  vmin=0.9353  vmax=1.0568  thpt=8080.0 k tok/s  itl_over_deadline=0.00%
+INFO run_ofo   ofo_no-tap:           viol=69.2s  integral=0.0989  vmin=0.9449  vmax=1.0444  thpt=8028.1 k tok/s  itl_over_deadline=1.11%
+...
+====================================================================================================
+IEEE13 Comparison
+====================================================================================================
+Mode                      Viol(s)       Vmin       Vmax       Integral  Thpt(k tok/s)  ITL_miss%
+----------------------------------------------------------------------------------------------------
+baseline_no-tap             993.8     0.9353     1.0431        31.2751         8080.0      0.00%
+baseline_tap-change         999.3     0.9353     1.0568        21.6594         8080.0      0.00%
+ofo_no-tap                   69.2     0.9449     1.0444         0.0989         8028.1      1.11%
+----------------------------------------------------------------------------------------------------
 ```
 
-The OFO simulation additionally prints a per-model batch schedule summary:
+**Voltage metrics** (how well the grid stays within bounds):
 
-```
-21:00:11 run_ofo INFO === Batch Schedule Summary ===
-21:00:11 run_ofo INFO   Llama-3.1-405B: avg_batch=60.7, changes=6
-21:00:11 run_ofo INFO   Llama-3.1-70B: avg_batch=110.9, changes=10
-21:00:11 run_ofo INFO   Llama-3.1-8B: avg_batch=371.3, changes=28
-21:00:11 run_ofo INFO   Qwen3-235B-A22B: avg_batch=80.9, changes=13
-21:00:11 run_ofo INFO   Qwen3-30B-A3B: avg_batch=187.0, changes=21
-```
+- **Viol(s)**: Total time (seconds) any bus-phase voltage is outside `[0.95, 1.05]` pu.
+- **Vmin / Vmax**: Worst observed voltage across all buses, phases, and time.
+- **Integral**: Time-integrated sum of voltage violations across all bus-phase pairs (pu·s).
 
-- **violation_time**: Total time any bus-phase voltage is outside [0.95, 1.05] pu
-- **worst_vmin / worst_vmax**: Min and max observed voltage across all buses, phases, and time
-- **integral_violation**: Time-integrated sum of voltage violations across all bus-phase pairs
+**Performance metrics** (how well the fleet serves tokens):
+
+- **Thpt(k tok/s)**: Mean total throughput across all active models (thousands of tokens per second), computed each step as `batch / observed_itl * active_replicas` summed across models.
+- **ITL_miss%**: Fraction of (timestep × model) samples where observed inter-token latency exceeded the model's deadline. The OFO controller trades a small ITL-miss rate for large throughput and voltage gains.

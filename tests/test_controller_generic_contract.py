@@ -20,7 +20,7 @@ from openg2g.grid.opendss import OpenDSSGrid
 
 class _DC(DatacenterBackend[DatacenterState]):
     def __init__(self) -> None:
-        super().__init__()
+        super().__init__(name="test")
 
     @property
     def dt_s(self) -> Fraction:
@@ -70,7 +70,10 @@ class _Grid(GridBackend[GridState]):
 
         return np.array([1.0], dtype=float)
 
-    def estimate_sensitivity(self, perturbation_kw: float = 100.0):
+    def dc_bus(self, dc):
+        return "671"
+
+    def estimate_sensitivity(self, perturbation_kw: float = 100.0, dc=None):
         import numpy as np
 
         return np.zeros((1, 3), dtype=float), np.array([1.0], dtype=float)
@@ -84,7 +87,7 @@ def test_controller_requires_explicit_generic_parameters():
             (controller_any,),
             {
                 "dt_s": property(lambda self: Fraction(1)),
-                "step": lambda self, clock, datacenter, grid, events: [],
+                "step": lambda self, clock, events: [],
             },
         )
 
@@ -98,7 +101,7 @@ def test_controller_rejects_reversed_generic_order():
             exec_body=lambda ns: ns.update(
                 {
                     "dt_s": property(lambda self: Fraction(1)),
-                    "step": lambda self, clock, datacenter, grid, events: [],
+                    "step": lambda self, clock, events: [],
                 }
             ),
         )
@@ -116,7 +119,7 @@ def test_controller_rejects_random_classes_in_generics():
             exec_body=lambda ns: ns.update(
                 {
                     "dt_s": property(lambda self: Fraction(1)),
-                    "step": lambda self, clock, datacenter, grid, events: [],
+                    "step": lambda self, clock, events: [],
                 }
             ),
         )
@@ -134,7 +137,7 @@ def test_controller_rejects_non_abc_subclass_for_grid_generic():
             exec_body=lambda ns: ns.update(
                 {
                     "dt_s": property(lambda self: Fraction(1)),
-                    "step": lambda self, clock, datacenter, grid, events: [],
+                    "step": lambda self, clock, events: [],
                 }
             ),
         )
@@ -152,8 +155,6 @@ def test_controller_inherits_compatibility_from_typed_parent():
         def step(
             self,
             clock: SimulationClock,
-            datacenter: _DC,
-            grid: _Grid,
             events: EventEmitter,
         ) -> list[DatacenterCommand | GridCommand]:
             return []
@@ -179,8 +180,6 @@ def test_controller_accepts_parameterized_backend_generics():
         def step(
             self,
             clock: SimulationClock,
-            datacenter: LLMBatchSizeControlledDatacenter[OfflineDatacenterState],
-            grid: GridBackend[GridState],
             events: EventEmitter,
         ) -> list[DatacenterCommand | GridCommand]:
             return []

@@ -41,7 +41,9 @@ In **online mode**, it reads live GPU power from live vLLM servers via [Zeus](ht
 ### Grid
 
 The grid backend runs AC power flow on standard IEEE test feeders using OpenDSS.
-It takes three-phase power injections from the datacenter and returns per-bus, per-phase voltages.
+The DSS case file defines the base network: lines, transformers, voltage regulators, and static loads.
+On top of this base network, dynamic components -- datacenters, generators (e.g., solar PV), and external loads -- are attached to specific buses before simulation starts.
+Each timestep, the grid updates the attached components' power injections and runs a power flow solve, returning per-bus, per-phase voltages.
 Voltage regulator tap positions can be scheduled statically or controlled dynamically.
 
 ### Controllers
@@ -56,10 +58,10 @@ OpenG2G ships with several built-in controllers including an [Online Feedback Op
 
 OpenG2G is designed for researchers studying questions like:
 
-- **[GPU flexibility for voltage regulation](../examples/gpu-flexibility.md)**: How effective can GPU workload flexibility contribute to mitigating voltage violations caused by different sources — internal load changes (e.g., training task overlay, inference task fluctuations) and external load changes (e.g., time-varying load, renewable generation)?
+- **[GPU flexibility for voltage regulation](../examples/gpu-flexibility.md)**: How effective can GPU workload flexibility contribute to mitigating voltage violations caused by different sources: internal load changes (e.g., training task overlay, inference task fluctuations) and external load changes (e.g., time-varying load, renewable generation)?
 - **[Voltage regulation strategies](../examples/voltage-regulation-strategies.md)**: How does datacenter-side batch-size control compare with grid-side regulator tap changes for voltage regulation? How do different batch-size control algorithms (e.g., OFO, rule-based) compare in maintaining grid stability metrics?
 - **[Controller parameter sensitivity](../examples/controller-parameter-sensitivity.md)**: How do OFO tuning parameters (step sizes, dual weights, throughput/switching costs) affect voltage regulation performance, and what are the optimal operating points?
-- **[Grid topology effects](../examples/grid-topology-effects.md)**: How does the choice of feeder (IEEE 13-bus, 34-bus, 123-bus, etc.), and the locations and capacities of loads and distributed energy resources (DERs), affect datacenter impact and controllability?
+- **[Grid topology effects](../examples/grid-topology-effects.md)**: How does the choice of feeder (IEEE 13-bus, 34-bus, or 123-bus) and the locations and capacities of loads and distributed energy resources (DERs) affect datacenter impact and controllability?
 - **[Datacenter sizing and hosting capacity](../examples/hosting-capacity.md)**: How large can an AI datacenter be on a given feeder before voltage violations become unmanageable? What is the maximum GPU count each bus can host?
 - **[Datacenter location planning](../examples/dc-location-planning.md)**: Which buses on a feeder are best suited for datacenter placement, how does location affect controllability, and how to find the best locations in a zonal system if multiple datacenters need to be built?
 - **[Multi-datacenter coordination](../examples/multi-dc-coordination.md)**: How do multiple datacenters at different grid locations interact, how should their controllers coordinate, and can shifting LLM replicas between sites further reduce voltage violations when batch-size control is exhausted?

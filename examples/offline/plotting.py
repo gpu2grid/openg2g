@@ -1,9 +1,9 @@
 """Plotting functions and data-loading helpers for openg2g simulation results.
 
 Reproduces the figures from the G2G paper, reading data from the library's
-``SimulationLog`` and ``LLMDatacenterState`` objects.
+`SimulationLog` and `LLMDatacenterState` objects.
 
-This module lives outside the ``openg2g`` library on purpose: the library
+This module lives outside the `openg2g` library on purpose: the library
 exports simulation state and metrics, while all matplotlib-dependent
 visualization code stays here.
 """
@@ -30,7 +30,7 @@ from openg2g.grid.base import GridState
 
 Figure = matplotlib.figure.Figure
 
-# ── Bus color map (IEEE 13-bus, tab20-based) ─────────────────────────
+# Bus color map (IEEE 13-bus, tab20-based)
 # Deterministic colors so all voltage plots use consistent bus coloring.
 
 BUS_COLOR_MAP: dict[str, Any] = {
@@ -53,12 +53,12 @@ BUS_COLOR_MAP: dict[str, Any] = {
 }
 
 
-# ── Per-model time-series extraction ─────────────────────────────────
+# Per-model time-series extraction
 
 
 @dataclass
 class PerModelTimeSeries:
-    """Per-model time series extracted from ``SimulationLog.dc_states``."""
+    """Per-model time series extracted from `SimulationLog.dc_states`."""
 
     time_s: np.ndarray
     power_w: dict[str, np.ndarray] = field(default_factory=dict)
@@ -67,13 +67,13 @@ class PerModelTimeSeries:
     active_replicas: dict[str, np.ndarray] = field(default_factory=dict)
 
 
-def extract_per_model_timeseries(
+def _extract_per_model_timeseries(
     dc_states: Sequence[LLMDatacenterState],
 ) -> PerModelTimeSeries:
-    """Build per-model arrays from a list of ``LLMDatacenterState`` objects.
+    """Build per-model arrays from a list of `LLMDatacenterState` objects.
 
-    ``power_w`` is populated only when states are ``OfflineDatacenterState``
-    (which carries ``power_by_model_w``).
+    `power_w` is populated only when states are `OfflineDatacenterState`
+    (which carries `power_by_model_w`).
     """
     if not dc_states:
         raise ValueError("dc_states is empty.")
@@ -106,7 +106,7 @@ def extract_per_model_timeseries(
     )
 
 
-# ── Helper: bus ordering ─────────────────────────────────────────────
+# Helper: bus ordering
 
 
 def _bus_sort_key(b: str) -> tuple[int, str]:
@@ -117,19 +117,12 @@ def _bus_sort_key(b: str) -> tuple[int, str]:
     return (999999, str(b))
 
 
-# ══════════════════════════════════════════════════════════════════════
 # Paper Fig. 5: 2-panel, 3-phase power (MW) + per-model average ITL
-# ══════════════════════════════════════════════════════════════════════
 
 
 def plot_power_and_itl_2panel(
-    time_s: np.ndarray,
-    kW_A: np.ndarray,
-    kW_B: np.ndarray,
-    kW_C: np.ndarray,
-    avg_itl_by_model: dict[str, np.ndarray],
+    dc_states: Sequence[LLMDatacenterState],
     *,
-    itl_time_s: np.ndarray | None = None,
     t_train_start_s: float = 1000.0,
     t_train_end_s: float = 2000.0,
     t_ramp_start_s: float = 2500.0,
@@ -143,18 +136,21 @@ def plot_power_and_itl_2panel(
     """2-panel figure: (a) 3-phase power in MW, (b) per-model average ITL.
 
     Args:
-        time_s: Time array (seconds) aligned with kW_A/B/C.
-        kW_A, kW_B, kW_C: Per-phase power in kW.
-        avg_itl_by_model: {model_label: itl_array_s}. Time base is
-            *itl_time_s* if provided, otherwise *time_s*.
-        itl_time_s: Separate time base for ITL data (e.g. DC step rate).
+        dc_states: Sequence of datacenter state snapshots.
         save_path: If given, save figure to this path.
 
     Returns:
         The matplotlib Figure object.
     """
+    per_model = _extract_per_model_timeseries(dc_states)
+    time_s = per_model.time_s
+    kW_A = np.array([s.power_w.a / 1e3 for s in dc_states])
+    kW_B = np.array([s.power_w.b / 1e3 for s in dc_states])
+    kW_C = np.array([s.power_w.c / 1e3 for s in dc_states])
+    avg_itl_by_model = per_model.itl_s
+
     t_min = np.asarray(time_s) / 60.0
-    t_itl_min = (np.asarray(itl_time_s) / 60.0) if itl_time_s is not None else t_min
+    t_itl_min = t_min
 
     t_train_start_min = t_train_start_s / 60.0
     t_train_end_min = t_train_end_s / 60.0
@@ -231,14 +227,12 @@ def plot_power_and_itl_2panel(
     ax.tick_params(labelsize=tick_fs)
 
     if save_path is not None:
-        fig.savefig(save_path, bbox_inches="tight")
+        fig.savefig(save_path, bbox_inches="tight", metadata={"Creation Time": None})
         plt.close(fig)
     return fig
 
 
-# ══════════════════════════════════════════════════════════════════════
 # Paper Fig. 6 / Fig. 7: Per-phase all-bus voltages with bus colormap
-# ══════════════════════════════════════════════════════════════════════
 
 
 def plot_allbus_voltages_per_phase(
@@ -267,13 +261,13 @@ def plot_allbus_voltages_per_phase(
     """Per-phase all-bus voltage plots with bus-specific colors and shared legend.
 
     Produces one PNG per phase (A, B, C).  Legend is placed on the
-    ``shared_legend_phase`` (default B).
+    `shared_legend_phase` (default B).
 
     Args:
-        grid_states: List of ``GridState`` from ``SimulationLog``.
+        grid_states: List of `GridState` from `SimulationLog`.
         time_s: Time array (seconds) aligned with *grid_states*.
         save_dir: Directory to write PNG files into.
-        bus_color_map: {bus_name: color}. Defaults to ``BUS_COLOR_MAP``.
+        bus_color_map: {bus_name: color}. Defaults to `BUS_COLOR_MAP`.
     """
     if bus_color_map is None:
         bus_color_map = dict(BUS_COLOR_MAP)
@@ -468,13 +462,12 @@ def plot_allbus_voltages_per_phase(
         fig.savefig(
             save_dir / filename_template.format(label=phase_letter),
             bbox_inches="tight",
+            metadata={"Creation Time": None},
         )
         plt.close(fig)
 
 
-# ══════════════════════════════════════════════════════════════════════
 # Zone-envelope voltage plot (min/max per zone per phase)
-# ══════════════════════════════════════════════════════════════════════
 
 
 ZONE_COLORS_DEFAULT = {
@@ -509,7 +502,7 @@ def plot_zone_voltage_envelope(
     voltage across all buses in the zone, with a shaded fill between them.
 
     Args:
-        grid_states: List of ``GridState`` from ``SimulationLog``.
+        grid_states: List of `GridState` from `SimulationLog`.
         time_s: Time array (seconds) aligned with *grid_states*.
         zones: Mapping of zone_id -> list of bus names.
         save_dir: Directory to write PNG files into.
@@ -634,18 +627,19 @@ def plot_zone_voltage_envelope(
         ax.tick_params(labelsize=11)
 
         fig.tight_layout()
-        fig.savefig(save_dir / filename_template.format(label=phase_letter), bbox_inches="tight")
+        fig.savefig(
+            save_dir / filename_template.format(label=phase_letter),
+            bbox_inches="tight",
+            metadata={"Creation Time": None},
+        )
         plt.close(fig)
 
 
-# ══════════════════════════════════════════════════════════════════════
 # Paper Fig. 8: 4-panel, batch, power/replica, ITL, throughput (OFO)
-# ══════════════════════════════════════════════════════════════════════
 
 
 def plot_model_timeseries_4panel(
-    time_s: np.ndarray,
-    per_model: PerModelTimeSeries,
+    dc_states: Sequence[LLMDatacenterState],
     model_labels: list[str],
     *,
     regime_shading: bool = True,
@@ -659,9 +653,7 @@ def plot_model_timeseries_4panel(
     """4-panel OFO time-series: batch, power/replica, ITL, throughput.
 
     Args:
-        time_s: DSS/DC time base (seconds) aligned with *per_model* arrays.
-        per_model: Extracted per-model time series (batch sizes read from
-            `per_model.batch_size`).
+        dc_states: Sequence of datacenter state snapshots.
         model_labels: Ordered model labels for consistent color assignment.
         regime_shading: If True, draw colored background spans.
         t_regime_edges_s: Edge times (seconds) for regime spans.
@@ -674,6 +666,7 @@ def plot_model_timeseries_4panel(
     Returns:
         The matplotlib Figure object.
     """
+    per_model = _extract_per_model_timeseries(dc_states)
     color_cycle = plt.rcParams["axes.prop_cycle"].by_key().get("color", [])
     if not color_cycle:
         cmap = plt.get_cmap("tab10")
@@ -828,14 +821,12 @@ def plot_model_timeseries_4panel(
         )
 
     if save_path is not None:
-        fig.savefig(save_path, bbox_inches="tight")
+        fig.savefig(save_path, bbox_inches="tight", metadata={"Creation Time": None})
         plt.close(fig)
     return fig
 
 
-# ══════════════════════════════════════════════════════════════════════
 # Standalone plots
-# ══════════════════════════════════════════════════════════════════════
 
 
 def plot_power_3ph(
@@ -878,7 +869,7 @@ def plot_power_3ph(
     ax.legend(ncol=3, fontsize=9)
     fig.tight_layout()
     if save_path is not None:
-        fig.savefig(save_path, bbox_inches="tight")
+        fig.savefig(save_path, bbox_inches="tight", metadata={"Creation Time": None})
         plt.close(fig)
     return fig
 
@@ -909,7 +900,7 @@ def plot_voltage_dc_bus(
     ax.legend(ncol=5, fontsize=9)
     fig.tight_layout()
     if save_path is not None:
-        fig.savefig(save_path, bbox_inches="tight")
+        fig.savefig(save_path, bbox_inches="tight", metadata={"Creation Time": None})
         plt.close(fig)
     return fig
 
@@ -938,7 +929,7 @@ def plot_batch_schedule(
     ax.legend(ncol=2, fontsize=8)
     fig.tight_layout()
     if save_path is not None:
-        fig.savefig(save_path, bbox_inches="tight")
+        fig.savefig(save_path, bbox_inches="tight", metadata={"Creation Time": None})
         plt.close(fig)
     return fig
 
@@ -966,7 +957,7 @@ def plot_latency_samples(
     ax.legend(ncol=2, fontsize=8)
     fig.tight_layout()
     if save_path is not None:
-        fig.savefig(save_path, bbox_inches="tight")
+        fig.savefig(save_path, bbox_inches="tight", metadata={"Creation Time": None})
         plt.close(fig)
     return fig
 
@@ -991,15 +982,13 @@ def plot_per_model_power(
     ax.legend(ncol=2, fontsize=8)
     fig.tight_layout()
     if save_path is not None:
-        fig.savefig(save_path, bbox_inches="tight")
+        fig.savefig(save_path, bbox_inches="tight", metadata={"Creation Time": None})
         plt.close(fig)
     return fig
 
 
-# ══════════════════════════════════════════════════════════════════════
 # Online multi-panel: GPU power, batch size, ITL, KV cache
 # (ported from g2g/analyze.py, adapted for SimulationLog)
-# ══════════════════════════════════════════════════════════════════════
 
 
 @dataclass
@@ -1164,6 +1153,6 @@ def plot_online_timeseries(
     _draw_schedule_lines(ax)
 
     if save_path is not None:
-        fig.savefig(save_path, bbox_inches="tight")
+        fig.savefig(save_path, bbox_inches="tight", metadata={"Creation Time": None})
         plt.close(fig)
     return fig

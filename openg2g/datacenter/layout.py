@@ -1,143 +1,107 @@
-"""Server layout and activation policy primitives.
+"""Server pool primitives.
 
-Provides the topology and activation-policy building blocks used by
-datacenter backends. Power augmentation (scaling per-GPU power to
-three-phase datacenter power) lives in
-`openg2g.datacenter.workloads.inference`.
+Provides the shared server pool used by datacenter backends.
+Power augmentation (scaling per-GPU power to three-phase datacenter
+power) lives in `openg2g.datacenter.workloads.inference`.
 """
 
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
+import math
 from dataclasses import dataclass
 
 import numpy as np
 
-from openg2g.datacenter.config import InferenceRampSchedule
-
-
-class ActivationPolicy(ABC):
-    """Per-model activation policy that answers "which servers are active?"
-
-    Subclass to implement custom activation logic. The datacenter creates
-    one policy per model and passes it to
-    [`InferencePowerAugmenter`][openg2g.datacenter.workloads.inference.InferencePowerAugmenter].
-    """
-
-    @abstractmethod
-    def active_mask(self, t: float) -> np.ndarray:
-        """Boolean mask of active servers at time *t*.
-
-        Returns:
-            Array of shape `(num_servers,)` with `True` for active servers.
-        """
-
-    def active_indices(self, t: float) -> np.ndarray:
-        """Indices of active servers at time *t*.
-
-        The default implementation returns indices in ascending order
-        via `np.where(`[`active_mask`][..active_mask]`(t))`. Subclasses
-        may override to return
-        indices in a specific order (e.g., priority order) to control
-        floating-point summation order in the datacenter.
-
-        Returns:
-            1-D int array of active server indices.
-        """
-        return np.where(self.active_mask(t))[0]
-
-
-class RampActivationPolicy(ActivationPolicy):
-    """Activate servers by fixed random priority, following an
-    [`InferenceRampSchedule`][openg2g.datacenter.config.InferenceRampSchedule].
-
-    At time *t*, the top-*k* servers (by random priority) are active,
-    where *k* is derived from the schedule's absolute replica count and
-    the model's GPU requirements.
-
-    This is the default policy used by
-    [`OfflineDatacenter`][openg2g.datacenter.offline.OfflineDatacenter].
-
-    Args:
-        schedule: Per-model ramp schedule (absolute replica counts).
-        num_servers: Total allocated servers (may exceed baseline when
-            ramp targets exceed the initial replica count).
-        rng: RNG for randomizing priority ordering. Consumed once at
-            construction time.
-        gpus_per_replica: GPUs required per model replica.
-        gpus_per_server: GPUs per physical server.
-    """
-
-    __slots__ = ("_gpus_per_replica", "_gpus_per_server", "_n", "_priority", "_replica_offset", "_schedule")
-
-    def __init__(
-        self,
-        schedule: InferenceRampSchedule,
-        num_servers: int,
-        rng: np.random.Generator,
-        *,
-        gpus_per_replica: int,
-        gpus_per_server: int,
-    ) -> None:
-        self._schedule = schedule
-        self._n = num_servers
-        self._gpus_per_replica = gpus_per_replica
-        self._gpus_per_server = gpus_per_server
-        self._replica_offset: int = 0
-        priority = np.arange(num_servers, dtype=int)
-        rng.shuffle(priority)
-        self._priority = priority
-
-    def _servers_for_count(self, replica_count: float) -> int:
-        """Convert a replica count to a server count."""
-        import math
-
-        gpus_needed = max(0.0, replica_count + self._replica_offset) * self._gpus_per_replica
-        return max(0, min(self._n, math.ceil(gpus_needed / self._gpus_per_server)))
-
-    def active_mask(self, t: float) -> np.ndarray:
-        count = self._schedule.count_at(t)
-        k = self._servers_for_count(float(count))
-        mask = np.zeros(self._n, dtype=bool)
-        mask[self._priority[:k]] = True
-        return mask
-
-    def active_indices(self, t: float) -> np.ndarray:
-        """Return active server indices in priority order."""
-        count = self._schedule.count_at(t)
-        k = self._servers_for_count(float(count))
-        return self._priority[:k].copy()
-
 
 @dataclass
-class ServerLayout:
-    """Per-model server layout describing how GPUs are organized.
+class ServerPool:
+    """Shared pool of physical servers for a datacenter.
 
-    This describes the physical topology only. Activation policies (which
-    servers are on/off at a given time) are managed separately by the
-    datacenter and passed to
-    [`InferencePowerAugmenter`][openg2g.datacenter.workloads.inference.InferencePowerAugmenter]
-    alongside layouts.
+    All models draw servers from this single pool based on their current
+    GPU demand. Each server has model-independent properties (phase
+    assignment, stagger offset, amplitude scale). The pool handles
+    server-to-model allocation at each timestep via per-model priority
+    orderings.
 
     Attributes:
-        num_servers: Number of physical servers for this model.
-        total_gpus: Total GPU count across all servers.
-        gpus_per_replica: GPUs per model replica.
-        gpus_per_server_list: GPU count per server (last may be partial).
+        num_servers: Total number of physical servers in the pool.
+        gpus_per_server: GPUs per physical server.
         phase_list: Phase assignment per server (0=A, 1=B, 2=C).
-        stagger_offsets: Per-server offsets for desynchronization. In offline
-            mode these are integer indices into a power template; in online
-            mode they can be float time offsets into a rolling buffer.
+        stagger_offsets: Per-server offsets for desynchronization.
         amplitude_scales: Per-server power multiplier for inter-server variation.
         noise_fraction: Gaussian noise standard deviation as a fraction of
             per-server power.
+        model_priorities: Per-model priority ordering over all servers.
+            Each model gets a deterministic permutation of `[0..num_servers)`.
     """
 
     num_servers: int
-    total_gpus: int
-    gpus_per_replica: int
-    gpus_per_server_list: np.ndarray
+    gpus_per_server: int
     phase_list: np.ndarray
     stagger_offsets: np.ndarray
     amplitude_scales: np.ndarray
     noise_fraction: float
+    model_priorities: dict[str, np.ndarray]
+
+    def allocate(self, gpu_demands: dict[str, int]) -> dict[str, np.ndarray]:
+        """Allocate servers to models with phase-balanced round-robin.
+
+        Each model gets k = ceil(gpu_demand / gpus_per_server) servers.
+        Servers are picked by cycling through phases (A, B, C, A, B, C, ...)
+        and within each phase, picking the highest-priority unclaimed server.
+        This ensures each model's allocation is as phase-balanced as possible.
+
+        Args:
+            gpu_demands: Mapping of model label to total GPUs needed.
+
+        Returns:
+            Mapping of model label to array of allocated server indices.
+        """
+        claimed = np.zeros(self.num_servers, dtype=bool)
+        result: dict[str, np.ndarray] = {}
+
+        # Pre-group servers by phase, sorted by priority per model
+        phase_groups: dict[str, list[list[int]]] = {}
+        for label in sorted(gpu_demands):
+            priority = self.model_priorities[label]
+            groups: list[list[int]] = [[], [], []]
+            for idx in priority:
+                groups[self.phase_list[idx]].append(idx)
+            phase_groups[label] = groups
+
+        for label in sorted(gpu_demands):
+            demand = gpu_demands[label]
+            if demand <= 0:
+                result[label] = np.array([], dtype=int)
+                continue
+            k = math.ceil(demand / self.gpus_per_server)
+            groups = phase_groups[label]
+            cursors = [0, 0, 0]
+            allocated: list[int] = []
+            phase = 0
+
+            while len(allocated) < k:
+                # Try each phase starting from current, wrapping around
+                found = False
+                for attempt in range(3):
+                    p = (phase + attempt) % 3
+                    while cursors[p] < len(groups[p]):
+                        idx = groups[p][cursors[p]]
+                        cursors[p] += 1
+                        if not claimed[idx]:
+                            allocated.append(idx)
+                            claimed[idx] = True
+                            phase = (p + 1) % 3
+                            found = True
+                            break
+                    if found:
+                        break
+                if not found:
+                    raise RuntimeError(
+                        f"ServerPool over-subscribed: model {label!r} requested "
+                        f"{k} servers but pool has no more unclaimed servers."
+                    )
+
+            result[label] = np.array(allocated, dtype=int)
+
+        return result

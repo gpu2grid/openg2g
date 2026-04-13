@@ -104,9 +104,11 @@ class BatchSizeScheduleController(Controller[DatacenterBackend, GridBackend]):
     def __init__(
         self,
         *,
+        datacenter: DatacenterBackend,
         schedules: dict[str, BatchSizeSchedule],
         dt_s: Fraction = Fraction(1),
     ) -> None:
+        self._datacenter = datacenter
         self._dt_s = dt_s
         self._schedules = dict(schedules)
         self._indices: dict[str, int] = {label: 0 for label in schedules}
@@ -121,8 +123,6 @@ class BatchSizeScheduleController(Controller[DatacenterBackend, GridBackend]):
     def step(
         self,
         clock: SimulationClock,
-        datacenter: DatacenterBackend,
-        grid: GridBackend,
         events: EventEmitter,
     ) -> list[DatacenterCommand | GridCommand]:
         t_now = clock.time_s
@@ -154,6 +154,7 @@ class BatchSizeScheduleController(Controller[DatacenterBackend, GridBackend]):
                 SetBatchSize(
                     batch_size_by_model=batch_changes,
                     ramp_up_rate_by_model=ramp_rates,
+                    target=self._datacenter,
                 )
             ]
         return []

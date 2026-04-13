@@ -146,8 +146,6 @@ class Controller(Generic[DCBackendT, GridBackendT], ABC):
     def step(
         self,
         clock: SimulationClock,
-        datacenter: DCBackendT,
-        grid: GridBackendT,
         events: EventEmitter,
     ) -> list[DatacenterCommand | GridCommand]:
         """Compute control commands for this step. Return an empty list for no-op."""

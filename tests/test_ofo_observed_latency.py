@@ -37,7 +37,7 @@ class _GridStub(OpenDSSGrid):
     def voltages_vector(self) -> np.ndarray:
         return np.array([0.94, 0.96, 1.01], dtype=float)
 
-    def estimate_sensitivity(self, perturbation_kw: float = 100.0) -> tuple[np.ndarray, np.ndarray]:
+    def estimate_sensitivity(self, perturbation_kw: float = 100.0, dc=None) -> tuple[np.ndarray, np.ndarray]:
         H = np.eye(3, dtype=float)
         v0 = np.array([1.0, 1.0, 1.0], dtype=float)
         return H, v0
@@ -62,7 +62,7 @@ class _GridStub(OpenDSSGrid):
 
 class _DCStub(LLMBatchSizeControlledDatacenter):
     def __init__(self):
-        super().__init__()
+        super().__init__(name="test")
 
     def reset(self) -> None:
         pass
@@ -97,8 +97,9 @@ def _make_model_store() -> LogisticModelStore:
     return LogisticModelStore(power, latency, throughput)
 
 
-def _build_controller() -> OFOBatchSizeController:
+def _build_controller(datacenter: LLMBatchSizeControlledDatacenter, grid=None) -> OFOBatchSizeController:
     model = InferenceModelSpec(
+        model_id="test/Model",
         model_label="M1",
         gpus_per_replica=1,
         itl_deadline_s=0.1,
@@ -106,6 +107,8 @@ def _build_controller() -> OFOBatchSizeController:
     )
     return OFOBatchSizeController(
         (model,),
+        datacenter=datacenter,
+        grid=grid,
         models=_make_model_store(),
         config=OFOConfig(
             primal_step_size=0.05,
@@ -122,9 +125,9 @@ def _build_controller() -> OFOBatchSizeController:
 
 
 def test_ofo_uses_observed_latency_for_dual_update():
-    ctrl = _build_controller()
-    grid = _GridStub()
     dc = _DCStub()
+    grid = _GridStub()
+    ctrl = _build_controller(dc, grid=grid)
 
     dc_state = LLMDatacenterState(
         time_s=0.0,
@@ -142,15 +145,15 @@ def test_ofo_uses_observed_latency_for_dual_update():
     log = SimulationLog()
     events = EventEmitter(SimulationClock(Fraction(1)), log, "controller")
 
-    action = ctrl.step(SimulationClock(Fraction(1)), dc, grid, events)
+    action = ctrl.step(SimulationClock(Fraction(1)), events)
     assert len(action) == 1
     assert ctrl._latency_dual_by_model["M1"] > 0.0
 
 
 def test_ofo_requires_observed_latency_map():
-    ctrl = _build_controller()
-    grid = _GridStub()
     dc = _DCStub()
+    grid = _GridStub()
+    ctrl = _build_controller(dc, grid=grid)
 
     dc_state = LLMDatacenterState(
         time_s=0.0,
@@ -164,7 +167,7 @@ def test_ofo_requires_observed_latency_map():
     events = EventEmitter(SimulationClock(Fraction(1)), log, "controller")
 
     try:
-        ctrl.step(SimulationClock(Fraction(1)), dc, grid, events)
+        ctrl.step(SimulationClock(Fraction(1)), events)
     except RuntimeError as exc:
         assert "observed_itl_s_by_model" in str(exc)
     else:
