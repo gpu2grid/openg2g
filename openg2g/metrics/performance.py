@@ -123,12 +123,16 @@ def compute_performance_stats(
         total_tps_sum += step_tps
         total_tps_count += 1
 
-    mean_total_tps = total_tps_sum / total_tps_count if total_tps_count > 0 else 0.0
-    integrated_tokens = total_tps_sum * (duration_s / total_tps_count) if total_tps_count > 0 else 0.0
+    # Throughput metrics are fleet-totals (summed across sites), averaged over time.
+    # `total_tps_count` and `per_model_tps_count` are counts of (site, timestep) samples,
+    # so normalise by the number of unique timesteps to avoid reporting per-site averages.
+    n_timesteps = len({float(s.time_s) for s in dc_states})
+    mean_total_tps = total_tps_sum / n_timesteps if n_timesteps > 0 else 0.0
+    integrated_tokens = mean_total_tps * duration_s
 
-    throughput_by_model = {
-        label: per_model_tps_sum[label] / per_model_tps_count[label] for label in per_model_tps_count
-    }
+    throughput_by_model = {label: per_model_tps_sum[label] / n_timesteps for label in per_model_tps_count}
+    # `mean_batch_by_model`, `mean_replicas_by_model`, and `mean_itl_s_by_model` stay per
+    # (site, timestep) sample; those quantities aren't summable across sites in a meaningful way.
     mean_batch = {label: per_model_batch_sum[label] / per_model_tps_count[label] for label in per_model_tps_count}
     mean_reps = {label: per_model_reps_sum[label] / per_model_tps_count[label] for label in per_model_tps_count}
     mean_itl = {label: per_model_itl_sum[label] / per_model_itl_count[label] for label in per_model_itl_count}

@@ -5,6 +5,7 @@ from __future__ import annotations
 import functools
 import logging
 import math
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from fractions import Fraction
@@ -40,6 +41,8 @@ _PHASES = (1, 2, 3)
 _PHASE_NAME = {1: "A", 2: "B", 3: "C"}
 _PHASE_TO_ATTR = {1: "a", 2: "b", 3: "c"}
 _ATTR_TO_PHASE = {v: k for k, v in _PHASE_TO_ATTR.items()}
+
+_DSS_SAFE_NAME = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
 @dataclass
@@ -153,6 +156,11 @@ class OpenDSSGrid(GridBackend[GridState]):
             raise RuntimeError("Cannot attach after start().")
         if dc in self._dc_attachments:
             raise ValueError(f"Datacenter {dc.name!r} already attached.")
+        if not _DSS_SAFE_NAME.match(dc.name):
+            raise ValueError(
+                f"Datacenter name {dc.name!r} contains characters unsafe for DSS commands. "
+                "Use only letters, digits, underscores, and hyphens."
+            )
         pf = max(min(float(power_factor), 0.999999), 1e-6)
         self._dc_attachments[dc] = _DCAttachment(
             bus=bus,
