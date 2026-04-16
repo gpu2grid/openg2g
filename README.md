@@ -1,5 +1,8 @@
 <div align="center">
-<h1>OpenG2G</h1>
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/logo_dark.png">
+  <img alt="OpenG2G" src="docs/assets/logo_light.png" width="500">
+</picture>
 </div>
 
 <div align="center">
