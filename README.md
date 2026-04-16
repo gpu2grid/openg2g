@@ -1,7 +1,7 @@
 <div align="center">
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/logo_dark.png">
-  <img alt="OpenG2G" src="docs/assets/logo_light.png" width="500">
+  <img alt="OpenG2G" src="docs/assets/logo_light.png" width="400">
 </picture>
 </div>
 
