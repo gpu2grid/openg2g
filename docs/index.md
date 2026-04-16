@@ -6,8 +6,8 @@ hide:
 
 <div class="hero" markdown>
 
-<div align="center">
-<h1>OpenG2G</h1>
+<div align="center" markdown>
+# ![OpenG2G](assets/logo_light.png#only-light){ style="max-width: 500px; width: 90%;" }![OpenG2G](assets/logo_dark.png#only-dark){ style="max-width: 500px; width: 90%;" }
 </div>
 
 <span class="subtitle">GPU-to-Grid Simulation under LLM Workloads</span>
