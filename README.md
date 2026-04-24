@@ -82,7 +82,7 @@ models = (
     ),
 )
 data_dir = Path("data/specs")
-inference_data = InferenceData.load(data_dir, models, duration_s=3600, dt_s=0.1)
+inference_data = InferenceData.ensure(data_dir, models, duration_s=3600, dt_s=0.1)
 dc_config = DatacenterConfig()
 dc = OfflineDatacenter(
     dc_config,

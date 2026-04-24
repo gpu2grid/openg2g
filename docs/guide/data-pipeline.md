@@ -107,7 +107,7 @@ ML.ENERGY Benchmark Dataset                 mlenergy-data
   │                     │────────>│  1. Extract power timelines       │
   │ batch_sizes, task,  │         │  2. Resample to median-duration   │
   │ gpu_model, etc.     │         │  3. Fit ITLMixtureModel           │
-  │                     │         │  3. Fit ITLMixtureModel           │
+  │                     │         │                                   │
   └─────────────────────┘         └───────────┬───────────────────────┘
                                               │
                                               v

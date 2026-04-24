@@ -629,10 +629,18 @@ class OFOBatchSizeController(Controller[LLMBatchSizeControlledDatacenter[LLMData
 
     Args:
         inference_models: Model specifications served in the datacenter.
+        datacenter: The datacenter whose batch sizes this controller
+            regulates. Used for sensitivity-matrix perturbations.
+        grid: The grid attached to the datacenter. Used for
+            sensitivity-matrix perturbations and voltage-dual updates.
         models: Per-model logistic models for power, latency, and
             throughput used in gradient computation.
-        config: Unified OFO tuning parameters.
+        config: Unified OFO tuning parameters. Defaults to an
+            `OFOConfig()` with default tunings.
         dt_s: Control interval (seconds).
+        initial_batch_sizes: Optional per-model initial batch size used
+            to seed the primal optimizer. Any model omitted from the
+            mapping starts at its `feasible_batch_sizes[0]`.
     """
 
     def __init__(

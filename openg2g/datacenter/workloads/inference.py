@@ -658,9 +658,11 @@ class InferenceData:
     ) -> InferenceData:
         """Load per-spec caches under `base_dir`, generating missing ones.
 
-        Any spec whose `base_dir/<hash>/trace.csv` is missing triggers a
+        Any spec whose `base_dir/<hash>/_manifest.json` is missing triggers a
         targeted regeneration (v3 lookup + fit) for just that spec — the
-        already-cached specs are untouched.
+        already-cached specs are untouched. The manifest is the last file
+        `save()` writes, so its presence is the completion marker; checking
+        it avoids loading partially-written caches from an interrupted run.
 
         Args:
             base_dir: Root of the per-spec cache (typically `data/specs/`).
@@ -674,7 +676,7 @@ class InferenceData:
         base_dir = Path(base_dir)
         base_dir.mkdir(parents=True, exist_ok=True)
 
-        missing = tuple(ms for ms in models if not (base_dir / ms.cache_hash() / "trace.csv").exists())
+        missing = tuple(ms for ms in models if not (base_dir / ms.cache_hash() / "_manifest.json").exists())
         if missing:
             missing_labels = [ms.model_label for ms in missing]
             logger.info(
