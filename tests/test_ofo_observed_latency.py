@@ -18,6 +18,20 @@ from openg2g.grid.command import GridCommand
 from openg2g.grid.opendss import OpenDSSGrid
 
 
+def _make_spec(**overrides) -> InferenceModelSpec:
+    return InferenceModelSpec(
+        model_id="test/Model",
+        model_label="M1",
+        gpu_model="H100",
+        task="lm-arena-chat",
+        gpus_per_replica=1,
+        itl_deadline_s=0.1,
+        batch_sizes=(8, 16, 32, 64, 128),
+        feasible_batch_sizes=(8, 16, 32, 64, 128),
+        **overrides,
+    )
+
+
 class _GridStub(OpenDSSGrid):
     def __init__(self):
         GridBackend.__init__(self)
@@ -98,13 +112,7 @@ def _make_model_store() -> LogisticModelStore:
 
 
 def _build_controller(datacenter: LLMBatchSizeControlledDatacenter, grid=None) -> OFOBatchSizeController:
-    model = InferenceModelSpec(
-        model_id="test/Model",
-        model_label="M1",
-        gpus_per_replica=1,
-        itl_deadline_s=0.1,
-        feasible_batch_sizes=(8, 16, 32, 64, 128),
-    )
+    model = _make_spec()
     return OFOBatchSizeController(
         (model,),
         datacenter=datacenter,

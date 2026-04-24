@@ -12,8 +12,6 @@ Usage:
 from __future__ import annotations
 
 import csv
-import hashlib
-import json
 import logging
 import math
 from fractions import Fraction
@@ -41,7 +39,7 @@ from openg2g.datacenter.config import (
     ReplicaSchedule,
 )
 from openg2g.datacenter.offline import OfflineDatacenter, OfflineWorkload
-from openg2g.datacenter.workloads.inference import InferenceData, MLEnergySource
+from openg2g.datacenter.workloads.inference import InferenceData
 from openg2g.datacenter.workloads.training import TrainingTrace
 from openg2g.grid.config import TapPosition, TapSchedule
 from openg2g.grid.generator import SyntheticPV
@@ -70,40 +68,68 @@ POWER_AUG = PowerAugmentationConfig(amplitude_scale_range=(0.98, 1.02), noise_fr
 LLAMA_8B = InferenceModelSpec(
     model_label="Llama-3.1-8B",
     model_id="meta-llama/Llama-3.1-8B-Instruct",
+    gpu_model="H100",
+    task="lm-arena-chat",
+    precision="bfloat16",
     gpus_per_replica=1,
+    tensor_parallel=1,
     itl_deadline_s=0.08,
-    feasible_batch_sizes=[8, 16, 32, 64, 128, 256, 512],
+    batch_sizes=(8, 16, 32, 64, 96, 128, 192, 256, 384, 512, 768, 1024),
+    feasible_batch_sizes=(8, 16, 32, 64, 128, 256, 512),
 )
 LLAMA_70B = InferenceModelSpec(
     model_label="Llama-3.1-70B",
     model_id="meta-llama/Llama-3.1-70B-Instruct",
+    gpu_model="H100",
+    task="lm-arena-chat",
+    precision="bfloat16",
     gpus_per_replica=4,
+    tensor_parallel=4,
     itl_deadline_s=0.10,
-    feasible_batch_sizes=[8, 16, 32, 64, 128, 256, 512],
+    batch_sizes=(8, 16, 32, 64, 96, 128, 192, 256, 384, 512, 768, 1024, 1536, 2048),
+    feasible_batch_sizes=(8, 16, 32, 64, 128, 256, 512),
 )
 LLAMA_405B = InferenceModelSpec(
     model_label="Llama-3.1-405B",
     model_id="meta-llama/Llama-3.1-405B-Instruct-FP8",
+    gpu_model="H100",
+    task="lm-arena-chat",
+    precision="fp8",
     gpus_per_replica=8,
+    tensor_parallel=8,
     itl_deadline_s=0.12,
-    feasible_batch_sizes=[8, 16, 32, 64, 128, 256, 512],
+    batch_sizes=(8, 16, 32, 64, 96, 128, 192, 256, 384, 512),
+    feasible_batch_sizes=(8, 16, 32, 64, 128, 256, 512),
 )
 QWEN_30B = InferenceModelSpec(
     model_label="Qwen3-30B-A3B",
     model_id="Qwen/Qwen3-30B-A3B-Thinking-2507",
+    gpu_model="H100",
+    task="gpqa",
+    precision="bfloat16",
     gpus_per_replica=2,
+    tensor_parallel=2,
     itl_deadline_s=0.06,
-    feasible_batch_sizes=[8, 16, 32, 64, 128, 256, 512],
+    batch_sizes=(8, 16, 32, 64, 96, 128, 192, 256, 384, 512),
+    feasible_batch_sizes=(8, 16, 32, 64, 128, 256, 512),
 )
 QWEN_235B = InferenceModelSpec(
     model_label="Qwen3-235B-A22B",
     model_id="Qwen/Qwen3-235B-A22B-Thinking-2507",
+    gpu_model="H100",
+    task="gpqa",
+    precision="bfloat16",
     gpus_per_replica=8,
+    tensor_parallel=8,
     itl_deadline_s=0.14,
-    feasible_batch_sizes=[8, 16, 32, 64, 128, 256, 512],
+    batch_sizes=(8, 16, 32, 64, 96, 128, 192, 256, 384, 512),
+    feasible_batch_sizes=(8, 16, 32, 64, 128, 256, 512),
 )
 ALL_MODEL_SPECS = (LLAMA_8B, LLAMA_70B, LLAMA_405B, QWEN_30B, QWEN_235B)
 MODEL_SPECS = {s.model_label: s for s in ALL_MODEL_SPECS}
+
+SPECS_CACHE_DIR = _PROJECT_ROOT / "data" / "specs"
+TRAINING_TRACE_PATH = _PROJECT_ROOT / "data" / "training_trace.csv"
 
 
 def deploy(label, num_replicas, initial_batch_size=128):
@@ -119,21 +145,6 @@ def unpack_deployments(*deployments):
     models = tuple(m for m, _ in deployments)
     schedules = {m.spec.model_label: s for m, s in deployments}
     return models, schedules
-
-
-def load_data_sources(config_path=None):
-    if config_path is None:
-        config_path = Path(__file__).resolve().parent / "data_sources.json"
-    with open(config_path) as f:
-        cfg = json.load(f)
-    sources_raw = cfg["data_sources"]
-    data_sources = {s["model_label"]: MLEnergySource(**s) for s in sources_raw}
-    blob = json.dumps(
-        sorted(sources_raw, key=lambda s: s["model_label"]),
-        sort_keys=True,
-    ).encode()
-    data_dir = _PROJECT_ROOT / "data" / "offline" / hashlib.sha256(blob).hexdigest()[:16]
-    return data_sources, data_dir
 
 
 # Per-system setup functions
@@ -603,7 +614,6 @@ def main(
 
     # Load data
     logger.info("Loading data...")
-    data_sources, data_dir = load_data_sources()
 
     # Collect all specs across all sites for data loading (need full set for InferenceData)
     setup_fn = SETUPS[system]
@@ -617,17 +627,15 @@ def main(
     all_specs_tuple = all_specs_by_system[system]
 
     inference_data = InferenceData.ensure(
-        data_dir,
+        SPECS_CACHE_DIR,
         all_specs_tuple,
-        data_sources,
         plot=False,
         dt_s=float(DT_DC),
     )
-    training_trace = TrainingTrace.ensure(data_dir / "training_trace.csv")
+    training_trace = TrainingTrace.ensure(TRAINING_TRACE_PATH)
     logistic_models = LogisticModelStore.ensure(
-        data_dir / "logistic_fits.csv",
+        SPECS_CACHE_DIR,
         all_specs_tuple,
-        data_sources,
         plot=False,
     )
 

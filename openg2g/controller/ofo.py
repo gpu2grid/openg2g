@@ -14,7 +14,6 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-import pandas as pd
 from mlenergy_data.modeling import LogisticModel
 from mlenergy_data.records import LLMRuns
 from pydantic import BaseModel, ConfigDict
@@ -29,6 +28,66 @@ from openg2g.grid.command import GridCommand
 from openg2g.grid.opendss import OpenDSSGrid
 
 logger = logging.getLogger(__name__)
+
+
+def _warn_if_fit_suspicious(
+    model_label: str,
+    metric: str,
+    fit: LogisticModel,
+    batches: list[int],
+    y: np.ndarray,
+) -> None:
+    """Emit `logger.warning` when the fit has suspicious parameters or shape.
+
+    Fits are not rejected — the caller can inspect the emitted warnings
+    and decide whether to exclude batches via `fit_exclude_batch_sizes`
+    or drop the spec.
+    """
+    if fit.k < 0.3:
+        logger.warning(
+            "[%s/%s] logistic k=%.3g < 0.3 (shallow slope); gradient information will be weak.",
+            model_label,
+            metric,
+            fit.k,
+        )
+    if fit.k > 3.0:
+        logger.warning(
+            "[%s/%s] logistic k=%.3g > 3.0 (near-step shape); gradient ≈ 0 outside a narrow region around x0=%.2f.",
+            model_label,
+            metric,
+            fit.k,
+            fit.x0,
+        )
+    if fit.L < 0:
+        logger.warning(
+            "[%s/%s] logistic L=%.3g < 0 (negative plateau increment); fit may be unphysical.",
+            model_label,
+            metric,
+            fit.L,
+        )
+    if fit.b0 < 0:
+        logger.warning(
+            "[%s/%s] logistic b0=%.3g < 0 (negative baseline); fit may be unphysical.",
+            model_label,
+            metric,
+            fit.b0,
+        )
+    if len(batches) >= 2:
+        y_fit_lo = float(fit.eval(batches[0]))
+        y_fit_hi = float(fit.eval(batches[-1]))
+        if y_fit_hi < y_fit_lo and (float(y[-1]) - float(y[0])) > 0:
+            logger.warning(
+                "[%s/%s] logistic fit is non-monotone vs. measured points: "
+                "fit(batch=%d)=%.3g, fit(batch=%d)=%.3g, but measured y spans %.3g → %.3g.",
+                model_label,
+                metric,
+                int(batches[0]),
+                y_fit_lo,
+                int(batches[-1]),
+                y_fit_hi,
+                float(y[0]),
+                float(y[-1]),
+            )
 
 
 class OFOConfig(BaseModel):
@@ -123,7 +182,6 @@ class LogisticModelStore:
     def generate(
         cls,
         models: tuple[InferenceModelSpec, ...],
-        data_sources: dict[str, Any],
         *,
         runs: Any = None,
         mlenergy_data_dir: Path | None = None,
@@ -131,9 +189,10 @@ class LogisticModelStore:
         """Generate logistic fits from ML.ENERGY benchmark data.
 
         Args:
-            models: Model specifications.
-            data_sources: Per-model `MLEnergySource` instances, keyed by
-                `model_label`.
+            models: Model specifications; every field (`task`,
+                `gpu_model`, `gpus_per_replica`, `batch_sizes`,
+                `fit_exclude_batch_sizes`) is used for the benchmark query
+                and fit selection.
             runs: Pre-loaded `LLMRuns` object. If `None`, loads from
                 `mlenergy_data_dir` or the HuggingFace Hub.
             mlenergy_data_dir: Path to compiled mlenergy-data directory.
@@ -143,7 +202,7 @@ class LogisticModelStore:
             A new `LogisticModelStore` with fitted logistic models.
         """
         if runs is None:
-            unique_tasks = {src.task for src in data_sources.values()}
+            unique_tasks = {ms.task for ms in models}
             if mlenergy_data_dir:
                 runs = LLMRuns.from_directory(str(mlenergy_data_dir), stable_only=False).task(*unique_tasks)
             else:
@@ -152,31 +211,32 @@ class LogisticModelStore:
             raise ValueError("No runs found for the specified tasks")
 
         subsets_by_label: dict[str, Any] = {}
+        exclude_by_label: dict[str, set[int]] = {}
         for ms in models:
-            src = data_sources.get(ms.model_label)
-            if src is None:
-                raise ValueError(f"No data source for model {ms.model_label!r}")
-            model_id = ms.model_id
-            if not model_id:
+            if not ms.model_id:
                 raise ValueError(f"model_id is required for data generation (model={ms.model_label!r})")
 
             subset = (
-                runs.model_id(model_id).gpu_model(src.gpu).num_gpus(ms.gpus_per_replica).max_num_seqs(*src.batch_sizes)
+                runs.model_id(ms.model_id)
+                .gpu_model(ms.gpu_model)
+                .num_gpus(ms.gpus_per_replica)
+                .max_num_seqs(*ms.batch_sizes)
             )
             if not subset:
                 raise ValueError(
-                    f"Config matched zero runs for logistic fits: model_id={model_id!r}, "
-                    f"gpu={src.gpu!r}, num_gpus={ms.gpus_per_replica}, "
-                    f"batch_sizes={src.batch_sizes}"
+                    f"Config matched zero runs for logistic fits: model_id={ms.model_id!r}, "
+                    f"gpu_model={ms.gpu_model!r}, num_gpus={ms.gpus_per_replica}, "
+                    f"batch_sizes={ms.batch_sizes}"
                 )
             subsets_by_label[ms.model_label] = subset
+            exclude_by_label[ms.model_label] = set(ms.fit_exclude_batch_sizes)
 
         all_by_batch: dict[str, dict[int, list[tuple[float, float, float]]]] = {}
         power: dict[str, LogisticModel] = {}
         latency: dict[str, LogisticModel] = {}
         throughput: dict[str, LogisticModel] = {}
         for model_label, group in subsets_by_label.items():
-            exclude = set(data_sources[model_label].fit_exclude_batch_sizes)
+            exclude = exclude_by_label[model_label]
             by_batch: dict[int, list[tuple[float, float, float]]] = {}
             for r in group:
                 if r.max_num_seqs in exclude:
@@ -199,6 +259,7 @@ class LogisticModelStore:
                 y = np.array([float(np.median([t[idx] for t in by_batch[b]])) for b in batches])
                 fit = LogisticModel.fit(x, y)
                 target[model_label] = fit
+                _warn_if_fit_suspicious(model_label, _metric_name, fit, batches, y)
 
         if not power and not latency and not throughput:
             raise ValueError("No logistic fit rows produced")
@@ -206,105 +267,129 @@ class LogisticModelStore:
         store._by_batch = all_by_batch
         return store
 
-    def save(self, csv_path: Path, *, plot: bool = False) -> None:
-        """Save logistic fits to a CSV.
+    def save(
+        self,
+        base_dir: Path,
+        specs: tuple[InferenceModelSpec, ...],
+        *,
+        plot: bool = False,
+    ) -> None:
+        """Save per-spec logistic fits to `base_dir/<spec.cache_hash()>/logistic_fit.json`.
 
         Args:
-            csv_path: Output CSV path.
-            plot: If `True`, also write a logistic fits plot to the
-                same directory.
+            base_dir: Root of the per-spec cache (typically `data/specs/`).
+            specs: Specs whose fits to save.
+            plot: If `True`, write a diagnostic fits plot per spec's
+                directory when `_by_batch` observations are available.
         """
-        csv_path = Path(csv_path)
-        csv_path.parent.mkdir(parents=True, exist_ok=True)
-        rows: list[dict[str, Any]] = []
-        for metric_name, fits in [("power", self._power), ("latency", self._latency), ("throughput", self._throughput)]:
-            for label in sorted(fits):
-                model = fits[label]
-                rows.append(
-                    {
-                        self.COL_MODEL_LABEL: label,
-                        self.COL_METRIC: metric_name,
-                        "L": model.L,
-                        "x0": model.x0,
-                        "k": model.k,
-                        "b0": model.b0,
-                    }
-                )
-        pd.DataFrame(rows).to_csv(csv_path, index=False)
+        import json as _json
 
+        base_dir = Path(base_dir)
         by_batch = getattr(self, "_by_batch", None)
-        if plot and by_batch is not None:
-            model_labels = sorted(self._power.keys())
-            _plot_logistic_fits(
-                by_batch,
-                self._power,
-                self._latency,
-                self._throughput,
-                model_labels,
-                csv_path.parent,
-            )
+        for spec in specs:
+            label = spec.model_label
+            if label not in self._power and label not in self._latency and label not in self._throughput:
+                continue
+            spec_dir = base_dir / spec.cache_hash()
+            spec_dir.mkdir(parents=True, exist_ok=True)
+            payload: dict[str, Any] = {
+                "schema": "logistic_v1",
+                "model_label": label,
+            }
+            for metric_name, store in (
+                ("power", self._power),
+                ("latency", self._latency),
+                ("throughput", self._throughput),
+            ):
+                model = store.get(label)
+                if model is not None:
+                    payload[metric_name] = {"L": model.L, "x0": model.x0, "k": model.k, "b0": model.b0}
+            (spec_dir / "logistic_fit.json").write_text(_json.dumps(payload, indent=2, sort_keys=True))
+
+            if plot and by_batch is not None and label in by_batch:
+                _plot_logistic_fits(
+                    {label: by_batch[label]},
+                    self._power,
+                    self._latency,
+                    self._throughput,
+                    [label],
+                    spec_dir,
+                )
 
     @classmethod
-    def load(cls, csv_path: Path | str) -> LogisticModelStore:
-        """Load power, latency, and throughput fits from a merged CSV.
-
-        Expected columns: `model_label`, `metric`, plus the logistic
-        model parameter columns (`L`, `x0`, `k`, `b0`).
-
-        The `metric` column must contain `power`, `latency`, or
-        `throughput` (case-insensitive).
+    def load(
+        cls,
+        base_dir: Path | str,
+        specs: tuple[InferenceModelSpec, ...],
+    ) -> LogisticModelStore:
+        """Load per-spec logistic fits from `base_dir/<spec.cache_hash()>/logistic_fit.json`.
 
         Args:
-            csv_path: Path to the logistic fits CSV.
+            base_dir: Root of the per-spec cache.
+            specs: Specs whose fits to load.
         """
-        csv_path = Path(csv_path)
-        df = pd.read_csv(csv_path)
+        import json as _json
 
-        required_cols = [cls.COL_MODEL_LABEL, cls.COL_METRIC]
-        missing = [c for c in required_cols if c not in df.columns]
-        if missing:
-            raise ValueError(f"{csv_path} missing columns: {missing}. Got: {list(df.columns)}")
-
+        base_dir = Path(base_dir)
         power: dict[str, LogisticModel] = {}
         latency: dict[str, LogisticModel] = {}
         throughput: dict[str, LogisticModel] = {}
-        targets = {"power": power, "latency": latency, "throughput": throughput}
-        for row in df.to_dict(orient="records"):
-            metric = str(row[cls.COL_METRIC]).strip().lower()
-            if metric in targets:
-                targets[metric][str(row[cls.COL_MODEL_LABEL])] = LogisticModel.from_dict(row)
-
+        for spec in specs:
+            spec_dir = base_dir / spec.cache_hash()
+            path = spec_dir / "logistic_fit.json"
+            if not path.exists():
+                raise FileNotFoundError(f"Logistic fit not found at {path} (spec={spec.model_label!r})")
+            payload = _json.loads(path.read_text())
+            label = spec.model_label
+            for metric_name, target in (
+                ("power", power),
+                ("latency", latency),
+                ("throughput", throughput),
+            ):
+                params = payload.get(metric_name)
+                if params is not None:
+                    target[label] = LogisticModel.from_dict(params)
         if not power and not latency and not throughput:
-            raise ValueError(f"No logistic model rows loaded from {csv_path}")
+            raise ValueError(f"No logistic model entries loaded from {base_dir}")
         return cls(power=power, latency=latency, throughput=throughput)
 
     @classmethod
     def ensure(
         cls,
-        csv_path: Path,
-        models: tuple[InferenceModelSpec, ...] | None = None,
-        data_sources: dict[str, Any] | None = None,
+        base_dir: Path,
+        models: tuple[InferenceModelSpec, ...],
         *,
         mlenergy_data_dir: Path | None = None,
         plot: bool = False,
     ) -> LogisticModelStore:
-        """Load from `csv_path`, generating first if needed.
+        """Load per-spec logistic fits under `base_dir`, generating missing ones.
+
+        Any spec whose `base_dir/<hash>/logistic_fit.json` is absent
+        triggers a targeted regeneration for just that spec; the cached
+        ones are read as-is.
 
         Args:
-            csv_path: Path to the logistic fits CSV.
-            models: Model specifications. Required when no cached file exists.
-            data_sources: Per-model `MLEnergySource` instances, keyed by
-                `model_label`. Required when no cached file exists.
+            base_dir: Root of the per-spec cache.
+            models: Model specifications.
             mlenergy_data_dir: Path to compiled mlenergy-data directory.
-            plot: If `True`, generate a logistic fits plot on generation.
+            plot: If `True`, generate a logistic fits plot per newly
+                generated spec directory.
         """
-        csv_path = Path(csv_path)
-        if not csv_path.exists():
-            if models is None or data_sources is None:
-                raise ValueError("models and data_sources required for LogisticModelStore generation (no cached data)")
-            logger.info("Generating logistic fits to %s ...", csv_path)
-            cls.generate(models, data_sources, mlenergy_data_dir=mlenergy_data_dir).save(csv_path, plot=plot)
-        return cls.load(csv_path)
+        base_dir = Path(base_dir)
+        base_dir.mkdir(parents=True, exist_ok=True)
+
+        missing = tuple(ms for ms in models if not (base_dir / ms.cache_hash() / "logistic_fit.json").exists())
+        if missing:
+            missing_labels = [ms.model_label for ms in missing]
+            logger.info(
+                "Generating logistic fits for %d/%d specs (missing=%s) under %s ...",
+                len(missing),
+                len(models),
+                missing_labels,
+                base_dir,
+            )
+            cls.generate(missing, mlenergy_data_dir=mlenergy_data_dir).save(base_dir, missing, plot=plot)
+        return cls.load(base_dir, models)
 
 
 class VoltageDualVariables:
@@ -544,10 +629,18 @@ class OFOBatchSizeController(Controller[LLMBatchSizeControlledDatacenter[LLMData
 
     Args:
         inference_models: Model specifications served in the datacenter.
+        datacenter: The datacenter whose batch sizes this controller
+            regulates. Used for sensitivity-matrix perturbations.
+        grid: The grid attached to the datacenter. Used for
+            sensitivity-matrix perturbations and voltage-dual updates.
         models: Per-model logistic models for power, latency, and
             throughput used in gradient computation.
-        config: Unified OFO tuning parameters.
+        config: Unified OFO tuning parameters. Defaults to an
+            `OFOConfig()` with default tunings.
         dt_s: Control interval (seconds).
+        initial_batch_sizes: Optional per-model initial batch size used
+            to seed the primal optimizer. Any model omitted from the
+            mapping starts at its `feasible_batch_sizes[0]`.
     """
 
     def __init__(

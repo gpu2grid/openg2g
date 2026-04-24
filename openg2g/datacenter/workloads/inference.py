@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import datetime
+import importlib.metadata
 import json
 import logging
 from collections.abc import Sequence
@@ -23,26 +25,7 @@ from openg2g.datacenter.layout import ServerPool
 
 logger = logging.getLogger(__name__)
 
-
-class MLEnergySource(BaseModel):
-    """Per-model ML.ENERGY benchmark data extraction settings.
-
-    Attributes:
-        model_label: Simulation label for the model.
-        task: Benchmark task name (e.g. `"lm-arena-chat"`, `"gpqa"`).
-        gpu: GPU model name (e.g. `"H100"`).
-        batch_sizes: Batch sizes to extract from the benchmark data.
-        fit_exclude_batch_sizes: Batch sizes to exclude from logistic
-            curve fitting (but still included in trace extraction).
-    """
-
-    model_config = ConfigDict(frozen=True)
-
-    model_label: str
-    task: str
-    gpu: str
-    batch_sizes: tuple[int, ...]
-    fit_exclude_batch_sizes: tuple[int, ...] = ()
+_MANIFEST_SCHEMA_VERSION = 3
 
 
 @dataclass(frozen=True)
@@ -186,58 +169,57 @@ class ITLFitStore:
         )
 
     @classmethod
-    def load(cls, csv_path: Path | str, approx_sampling_thresh: int = 30) -> ITLFitStore:
-        """Load ITL mixture fits from a CSV.
-
-        Expected columns: `model_label`, `max_num_seqs`, plus the
-        `itl_mix_*` parameter columns produced by
-        `ITLMixtureModel.to_dict()`.
+    def load(
+        cls,
+        base_dir: Path | str,
+        specs: tuple[InferenceModelSpec, ...],
+        approx_sampling_thresh: int = 30,
+    ) -> ITLFitStore:
+        """Load per-spec ITL mixture fits from `base_dir/<spec.cache_hash()>/itl_fit.json`.
 
         Args:
-            csv_path: Path to the latency fits CSV.
+            base_dir: Root directory containing per-spec subdirs
+                (typically `data/specs/`).
+            specs: Specs whose fits to load.
             approx_sampling_thresh: Replica count above which sampling
-                uses a CLT normal approximation instead of drawing
-                individual samples.
+                uses a CLT normal approximation.
         """
-        csv_path = Path(csv_path)
-        df = pd.read_csv(csv_path)
-
-        required_cols = [cls.COL_MODEL_LABEL, cls.COL_BATCH_SIZE]
-        missing = [c for c in required_cols if c not in df.columns]
-        if missing:
-            raise ValueError(f"{csv_path} missing columns: {missing}. Got: {list(df.columns)}")
-
+        base_dir = Path(base_dir)
         distributions: dict[str, dict[int, ITLMixtureModel]] = {}
-        for row in df.to_dict(orient="records"):
-            label = str(row[cls.COL_MODEL_LABEL]).strip()
-            batch = int(row[cls.COL_BATCH_SIZE])
-            distributions.setdefault(label, {})[batch] = ITLMixtureModel.from_dict(row)
-
+        for spec in specs:
+            spec_dir = base_dir / spec.cache_hash()
+            path = spec_dir / "itl_fit.json"
+            if not path.exists():
+                raise FileNotFoundError(f"ITL fit not found at {path} (spec={spec.model_label!r})")
+            data = json.loads(path.read_text())
+            per_batch: dict[int, ITLMixtureModel] = {}
+            for batch_key, params in data["per_batch"].items():
+                per_batch[int(batch_key)] = ITLMixtureModel.from_dict(params)
+            distributions[spec.model_label] = per_batch
         if not distributions:
-            raise ValueError(f"No ITL mixture rows loaded from {csv_path}")
+            raise ValueError(f"No ITL mixture rows loaded from {base_dir}")
         return cls(distributions, approx_sampling_thresh=approx_sampling_thresh)
 
-    def save(self, csv_path: Path) -> None:
-        """Save ITL mixture fits to a CSV.
+    def save(self, base_dir: Path, specs: tuple[InferenceModelSpec, ...]) -> None:
+        """Save per-spec ITL mixture fits to `base_dir/<spec.cache_hash()>/itl_fit.json`.
 
         Args:
-            csv_path: Output CSV path.
+            base_dir: Root directory (typically `data/specs/`).
+            specs: Specs matching the in-memory distributions (by label).
         """
-        csv_path = Path(csv_path)
-        csv_path.parent.mkdir(parents=True, exist_ok=True)
-        rows: list[dict[str, Any]] = []
-        for label in sorted(self._distributions):
-            for batch in sorted(self._distributions[label]):
-                model = self._distributions[label][batch]
-                rows.append(
-                    {
-                        self.COL_MODEL_LABEL: label,
-                        self.COL_BATCH_SIZE: batch,
-                        "itl_dist": "lognormal_mixture_2",
-                        **{f"itl_mix_{k}": v for k, v in model.to_dict().items()},
-                    }
-                )
-        pd.DataFrame(rows).to_csv(csv_path, index=False)
+        base_dir = Path(base_dir)
+        for spec in specs:
+            per_batch = self._distributions.get(spec.model_label)
+            if per_batch is None:
+                continue
+            spec_dir = base_dir / spec.cache_hash()
+            spec_dir.mkdir(parents=True, exist_ok=True)
+            payload = {
+                "schema": "itl_fit.lognormal_mixture_2",
+                "model_label": spec.model_label,
+                "per_batch": {str(batch): per_batch[batch].to_dict() for batch in sorted(per_batch)},
+            }
+            (spec_dir / "itl_fit.json").write_text(json.dumps(payload, indent=2, sort_keys=True))
 
 
 class InferenceTemplateStore:
@@ -271,20 +253,17 @@ class InferenceTemplateStore:
 
 
 class InferenceTraceStore:
-    """Manages raw power traces loaded from CSV files.
+    """Manages raw power traces loaded from per-spec CSV files.
 
     Indexed by `(model_label, batch_size)`. Provides:
 
-    - [`load`][.load]: load traces discovered via a manifest CSV
+    - [`load`][.load]: load per-spec `trace.csv` files from `data/specs/<hash>/`.
     - [`build_templates`][.build_templates]: build per-GPU power
       templates for a specific simulation config, returning a
       [`InferenceTemplateStore`][..InferenceTemplateStore]
     """
 
-    MANIFEST_COL_MODEL_LABEL = "model_label"
-    MANIFEST_COL_NUM_GPUS = "num_gpus"
-    MANIFEST_COL_BATCH_SIZE = "max_num_seqs"
-    MANIFEST_COL_TRACE_FILE = "trace_file"
+    TRACE_COL_BATCH = "batch_size"
     TRACE_COL_TIME = "relative_time_s"
     TRACE_COL_POWER = "power_total_W"
 
@@ -292,59 +271,44 @@ class InferenceTraceStore:
         self._traces = {str(label): {int(b): tr for b, tr in per_batch.items()} for label, per_batch in traces.items()}
 
     @classmethod
-    def load(cls, manifest: Path) -> InferenceTraceStore:
-        """Load traces discovered via a manifest CSV.
+    def load(
+        cls,
+        base_dir: Path | str,
+        specs: tuple[InferenceModelSpec, ...],
+    ) -> InferenceTraceStore:
+        """Load per-spec trace CSVs from `base_dir/<spec.cache_hash()>/trace.csv`.
 
-        Trace file paths in the manifest are resolved relative to the
-        manifest file's parent directory.
-
-        Args:
-            manifest: Path to the manifest CSV (e.g. `traces_summary.csv`).
-                Expected columns: `model_label`, `num_gpus`, `max_num_seqs`,
-                `trace_file`.
+        Each trace CSV has columns (`batch_size`, `relative_time_s`,
+        `power_total_W`); `measured_gpus` is taken from
+        `spec.gpus_per_replica` (the v3 query matched on `num_gpus` so
+        these are the same value by construction).
         """
-        manifest = Path(manifest)
-        base_dir = manifest.parent
-        df = pd.read_csv(manifest)
-
-        required_cols = [
-            cls.MANIFEST_COL_MODEL_LABEL,
-            cls.MANIFEST_COL_NUM_GPUS,
-            cls.MANIFEST_COL_BATCH_SIZE,
-            cls.MANIFEST_COL_TRACE_FILE,
-        ]
-        missing = [c for c in required_cols if c not in df.columns]
-        if missing:
-            raise ValueError(f"Manifest {manifest} missing columns: {missing}. Got: {list(df.columns)}")
-
+        base_dir = Path(base_dir)
         traces: dict[str, dict[int, InferenceTrace]] = {}
-        for row in df.to_dict(orient="records"):
-            label = str(row[cls.MANIFEST_COL_MODEL_LABEL])
-            num_gpus = int(row[cls.MANIFEST_COL_NUM_GPUS])
-            batch = int(row[cls.MANIFEST_COL_BATCH_SIZE])
-            trace_path = base_dir / str(row[cls.MANIFEST_COL_TRACE_FILE])
-
+        for spec in specs:
+            spec_dir = base_dir / spec.cache_hash()
+            trace_path = spec_dir / "trace.csv"
             if not trace_path.exists():
-                raise FileNotFoundError(f"Trace file not found: {trace_path} (model={label}, batch={batch})")
+                raise FileNotFoundError(f"Trace file not found: {trace_path} (spec={spec.model_label!r})")
 
             tdf = pd.read_csv(trace_path)
-            if cls.TRACE_COL_TIME not in tdf.columns or cls.TRACE_COL_POWER not in tdf.columns:
-                raise ValueError(
-                    f"{trace_path} must contain {cls.TRACE_COL_TIME!r} and "
-                    f"{cls.TRACE_COL_POWER!r}. Got: {list(tdf.columns)}"
+            required = {cls.TRACE_COL_BATCH, cls.TRACE_COL_TIME, cls.TRACE_COL_POWER}
+            if not required.issubset(tdf.columns):
+                raise ValueError(f"{trace_path} must contain columns {required}. Got: {list(tdf.columns)}")
+
+            per_batch: dict[int, InferenceTrace] = {}
+            for batch, group in tdf.groupby(cls.TRACE_COL_BATCH, sort=True):
+                t = group[cls.TRACE_COL_TIME].to_numpy(float)
+                p = group[cls.TRACE_COL_POWER].to_numpy(float)
+                if np.any(np.diff(t) < 0):
+                    idx = np.argsort(t)
+                    t, p = t[idx], p[idx]
+                per_batch[int(batch)] = InferenceTrace(
+                    t_s=t,
+                    power_w=p,
+                    measured_gpus=spec.gpus_per_replica,
                 )
-
-            t = tdf[cls.TRACE_COL_TIME].to_numpy(float)
-            p = tdf[cls.TRACE_COL_POWER].to_numpy(float)
-            if np.any(np.diff(t) < 0):
-                idx = np.argsort(t)
-                t, p = t[idx], p[idx]
-
-            traces.setdefault(label, {})[batch] = InferenceTrace(
-                t_s=t,
-                power_w=p,
-                measured_gpus=num_gpus,
-            )
+            traces[spec.model_label] = per_batch
 
         return cls(traces)
 
@@ -381,39 +345,34 @@ class InferenceTraceStore:
                 templates[(label, batch)] = tpl
         return InferenceTemplateStore(templates, batch_sizes_by_model)
 
-    def save(self, out_dir: Path) -> None:
-        """Save traces and manifest CSV to a directory.
+    def save(self, base_dir: Path, specs: tuple[InferenceModelSpec, ...]) -> None:
+        """Save per-spec traces to `base_dir/<spec.cache_hash()>/trace.csv`.
 
-        Writes individual trace CSVs to `out_dir/traces/` and a manifest
-        CSV at `out_dir/traces_summary.csv`.
-
-        Args:
-            out_dir: Output directory.
+        One trace CSV per spec, long format with `batch_size`,
+        `relative_time_s`, `power_total_W` columns.
         """
-        out_dir = Path(out_dir)
-        traces_dir = out_dir / "traces"
-        traces_dir.mkdir(parents=True, exist_ok=True)
+        base_dir = Path(base_dir)
+        for spec in specs:
+            per_batch = self._traces.get(spec.model_label)
+            if per_batch is None:
+                continue
+            spec_dir = base_dir / spec.cache_hash()
+            spec_dir.mkdir(parents=True, exist_ok=True)
 
-        summary_rows: list[dict[str, Any]] = []
-        for label in sorted(self._traces):
-            for batch in sorted(self._traces[label]):
-                tr = self._traces[label][batch]
-                trace_name = f"{label}_num_gpus_{tr.measured_gpus}_max_num_seqs_{batch}.csv"
-                pd.DataFrame(
-                    {
-                        self.TRACE_COL_TIME: tr.t_s,
-                        self.TRACE_COL_POWER: tr.power_w,
-                    }
-                ).to_csv(traces_dir / trace_name, index=False)
-                summary_rows.append(
-                    {
-                        self.MANIFEST_COL_MODEL_LABEL: label,
-                        self.MANIFEST_COL_NUM_GPUS: tr.measured_gpus,
-                        self.MANIFEST_COL_BATCH_SIZE: batch,
-                        self.MANIFEST_COL_TRACE_FILE: f"traces/{trace_name}",
-                    }
+            frames: list[pd.DataFrame] = []
+            for batch in sorted(per_batch):
+                tr = per_batch[batch]
+                frames.append(
+                    pd.DataFrame(
+                        {
+                            self.TRACE_COL_BATCH: batch,
+                            self.TRACE_COL_TIME: tr.t_s,
+                            self.TRACE_COL_POWER: tr.power_w,
+                        }
+                    )
                 )
-        pd.DataFrame(summary_rows).to_csv(out_dir / "traces_summary.csv", index=False)
+            if frames:
+                pd.concat(frames, ignore_index=True).to_csv(spec_dir / "trace.csv", index=False)
 
 
 class InferenceData:
@@ -498,7 +457,6 @@ class InferenceData:
     def generate(
         cls,
         models: tuple[InferenceModelSpec, ...],
-        data_sources: dict[str, MLEnergySource],
         *,
         runs: Any = None,
         mlenergy_data_dir: Path | None = None,
@@ -508,13 +466,13 @@ class InferenceData:
     ) -> InferenceData:
         """Generate inference data from ML.ENERGY benchmark data.
 
-        Produces power traces and ITL mixture fits for all models and
-        batch sizes specified in `data_sources`.
+        Each spec's `task`, `gpu_model`, `gpus_per_replica`, and
+        `batch_sizes` determine which ML.ENERGY runs are selected.
 
         Args:
-            models: Model specifications.
-            data_sources: Per-model benchmark data extraction settings,
-                keyed by `model_label`.
+            models: Model specifications. All fields (`model_id`,
+                `gpu_model`, `task`, `gpus_per_replica`, `batch_sizes`)
+                are used to match ML.ENERGY runs.
             runs: Pre-loaded `LLMRuns` object. If `None`, loads from
                 `mlenergy_data_dir` or the HuggingFace Hub.
             mlenergy_data_dir: Path to compiled mlenergy-data directory.
@@ -529,7 +487,7 @@ class InferenceData:
             saved/loaded store to get templates).
         """
         if runs is None:
-            unique_tasks = {src.task for src in data_sources.values()}
+            unique_tasks = {ms.task for ms in models}
             if mlenergy_data_dir:
                 logger.info("Loading runs from %s (tasks: %s)", mlenergy_data_dir, sorted(unique_tasks))
                 runs = LLMRuns.from_directory(str(mlenergy_data_dir), stable_only=False).task(*unique_tasks)
@@ -544,29 +502,28 @@ class InferenceData:
         itl_frames: list[pd.DataFrame] = []
 
         for ms in models:
-            src = data_sources.get(ms.model_label)
-            if src is None:
-                raise ValueError(f"No data source for model {ms.model_label!r}")
-            model_id = ms.model_id
-            if not model_id:
+            if not ms.model_id:
                 raise ValueError(f"model_id is required for data generation (model={ms.model_label!r})")
 
             subset = (
-                runs.model_id(model_id).gpu_model(src.gpu).num_gpus(ms.gpus_per_replica).max_num_seqs(*src.batch_sizes)
+                runs.model_id(ms.model_id)
+                .gpu_model(ms.gpu_model)
+                .num_gpus(ms.gpus_per_replica)
+                .max_num_seqs(*ms.batch_sizes)
             )
             if not subset:
                 raise ValueError(
-                    f"Config matched zero runs: model_id={model_id!r}, "
-                    f"gpu={src.gpu!r}, num_gpus={ms.gpus_per_replica}, "
-                    f"batch_sizes={src.batch_sizes}"
+                    f"Config matched zero runs: model_id={ms.model_id!r}, "
+                    f"gpu_model={ms.gpu_model!r}, num_gpus={ms.gpus_per_replica}, "
+                    f"batch_sizes={ms.batch_sizes}"
                 )
             subsets_by_label[ms.model_label] = subset
             logger.info(
                 "%s: %d runs (model_id=%s, gpu=%s, num_gpus=%d, batches=%s)",
                 ms.model_label,
                 len(subset),
-                model_id,
-                src.gpu,
+                ms.model_id,
+                ms.gpu_model,
                 ms.gpus_per_replica,
                 sorted({r.max_num_seqs for r in subset}),
             )
@@ -622,67 +579,76 @@ class InferenceData:
         instance._itl_samples_df = itl_samples_df
         return instance
 
-    def save(self, out_dir: Path, *, plot: bool = False) -> None:
-        """Save traces and ITL fits to a directory.
+    def save(
+        self,
+        base_dir: Path,
+        specs: tuple[InferenceModelSpec, ...] | None = None,
+        *,
+        plot: bool = False,
+    ) -> None:
+        """Save traces, ITL fits, and per-spec manifest under `base_dir`.
+
+        Each spec gets its own content-addressed sub-directory at
+        `base_dir/<spec.cache_hash()>/` containing `trace.csv`,
+        `itl_fit.json`, and `_manifest.json`.
 
         Args:
-            out_dir: Output directory.
-            plot: If `True`, also write characterization plots (power
-                trajectories, ITL distributions).
+            base_dir: Root of the per-spec cache (typically `data/specs/`).
+            specs: Specs to save. Defaults to all specs this instance was
+                constructed with.
+            plot: If `True`, also write characterization plots.
         """
-        out_dir = Path(out_dir)
-        out_dir.mkdir(parents=True, exist_ok=True)
-        if self._trace_store is not None:
-            self._trace_store.save(out_dir)
-        if self._itl_fits is not None:
-            self._itl_fits.save(out_dir / "latency_fits.csv")
+        base_dir = Path(base_dir)
+        base_dir.mkdir(parents=True, exist_ok=True)
+        specs = specs if specs is not None else self._models
 
-        (out_dir / "_manifest.json").write_text(
-            json.dumps({"openg2g_version": openg2g.__version__}, indent=2, sort_keys=True)
-        )
+        if self._trace_store is not None:
+            self._trace_store.save(base_dir, specs)
+        if self._itl_fits is not None:
+            self._itl_fits.save(base_dir, specs)
+
+        _write_inference_manifest(base_dir, specs)
 
         if plot and self._trace_store is not None:
-            _plot_power_trajectories(self._trace_store, self._models, out_dir)
+            _plot_power_trajectories(self._trace_store, specs, base_dir)
             itl_samples = self._itl_samples_df
             if self._itl_fit_store is not None and itl_samples is not None:
-                for ms in self._models:
-                    _plot_itl_distributions(self._itl_fit_store, itl_samples, ms.model_label, out_dir)
+                for ms in specs:
+                    _plot_itl_distributions(self._itl_fit_store, itl_samples, ms.model_label, base_dir)
 
     @classmethod
     def load(
         cls,
-        data_dir: Path,
+        base_dir: Path,
         models: tuple[InferenceModelSpec, ...],
         *,
         duration_s: float = 600.0,
         dt_s: float = 0.1,
         steady_skip_s: float = 0.0,
     ) -> InferenceData:
-        """Load from a generated data directory.
-
-        Loads traces from `traces_summary.csv`, builds templates, and
-        loads ITL fits from `latency_fits.csv`.
+        """Load per-spec traces and ITL fits from `base_dir/<hash>/`.
 
         Args:
-            data_dir: Directory containing generated data.
-            models: Model specifications.
+            base_dir: Root of the per-spec cache.
+            models: Model specifications; one sub-directory per spec is
+                read.
             duration_s: Simulation duration for template building.
             dt_s: Simulation timestep for template building.
             steady_skip_s: Skip seconds for template building.
         """
-        data_dir = Path(data_dir)
-        _check_version_stamp(data_dir, "InferenceData")
-        store = InferenceTraceStore.load(data_dir / "traces_summary.csv")
+        base_dir = Path(base_dir)
+        for ms in models:
+            _check_version_stamp(base_dir / ms.cache_hash(), f"InferenceData[{ms.model_label}]")
+        store = InferenceTraceStore.load(base_dir, models)
         templates = store.build_templates(duration_s=duration_s, dt_s=dt_s, steady_skip_s=steady_skip_s)
-        itl_fits = ITLFitStore.load(data_dir / "latency_fits.csv")
+        itl_fits = ITLFitStore.load(base_dir, models)
         return cls(models, power_templates=templates, itl_fits=itl_fits)
 
     @classmethod
     def ensure(
         cls,
-        data_dir: Path,
+        base_dir: Path,
         models: tuple[InferenceModelSpec, ...],
-        data_sources: dict[str, MLEnergySource] | None = None,
         *,
         mlenergy_data_dir: Path | None = None,
         plot: bool = False,
@@ -690,35 +656,42 @@ class InferenceData:
         dt_s: float = 0.1,
         steady_skip_s: float = 0.0,
     ) -> InferenceData:
-        """Load from `data_dir`, generating first if needed.
+        """Load per-spec caches under `base_dir`, generating missing ones.
 
-        If `data_dir/traces_summary.csv` does not exist, generates
-        inference data from ML.ENERGY benchmark data and saves it.
-        Then loads and returns.
+        Any spec whose `base_dir/<hash>/_manifest.json` is missing triggers a
+        targeted regeneration (v3 lookup + fit) for just that spec — the
+        already-cached specs are untouched. The manifest is the last file
+        `save()` writes, so its presence is the completion marker; checking
+        it avoids loading partially-written caches from an interrupted run.
 
         Args:
-            data_dir: Data directory (generated files go here).
+            base_dir: Root of the per-spec cache (typically `data/specs/`).
             models: Model specifications.
-            data_sources: Per-model benchmark data extraction settings,
-                keyed by `model_label`. Required when no cached data exists.
             mlenergy_data_dir: Path to compiled mlenergy-data directory.
             plot: If `True`, generate characterization plots on generation.
             duration_s: Simulation duration for template building.
             dt_s: Simulation timestep for template building.
             steady_skip_s: Skip seconds for template building.
         """
-        data_dir = Path(data_dir)
-        if not (data_dir / "traces_summary.csv").exists():
-            if data_sources is None:
-                raise ValueError("data_sources required for InferenceData generation (no cached data)")
-            logger.info("Generating inference data to %s ...", data_dir)
+        base_dir = Path(base_dir)
+        base_dir.mkdir(parents=True, exist_ok=True)
+
+        missing = tuple(ms for ms in models if not (base_dir / ms.cache_hash() / "_manifest.json").exists())
+        if missing:
+            missing_labels = [ms.model_label for ms in missing]
+            logger.info(
+                "Generating inference data for %d/%d specs (missing=%s) under %s ...",
+                len(missing),
+                len(models),
+                missing_labels,
+                base_dir,
+            )
             cls.generate(
-                models,
-                data_sources,
+                missing,
                 mlenergy_data_dir=mlenergy_data_dir,
                 dt_s=dt_s,
-            ).save(data_dir, plot=plot)
-        return cls.load(data_dir, models, duration_s=duration_s, dt_s=dt_s, steady_skip_s=steady_skip_s)
+            ).save(base_dir, missing, plot=plot)
+        return cls.load(base_dir, models, duration_s=duration_s, dt_s=dt_s, steady_skip_s=steady_skip_s)
 
     @property
     def models(self) -> tuple[InferenceModelSpec, ...]:
@@ -755,6 +728,52 @@ def _check_version_stamp(data_dir: Path, label: str) -> None:
         )
 
 
+def _pkg_version(name: str) -> str:
+    try:
+        return importlib.metadata.version(name)
+    except importlib.metadata.PackageNotFoundError:
+        return "unknown"
+
+
+def _write_inference_manifest(
+    base_dir: Path,
+    specs: tuple[InferenceModelSpec, ...],
+) -> None:
+    """Write per-spec `_manifest.json` files under `base_dir/<hash>/`.
+
+    Each file records the full spec fields, openg2g/mlenergy-data
+    versions, the content hash, and the UTC timestamp — enough for any
+    reader to recover exactly which benchmark query produced this dir.
+    """
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+    for ms in specs:
+        spec_dir = base_dir / ms.cache_hash()
+        spec_dir.mkdir(parents=True, exist_ok=True)
+        spec_fields = {
+            "model_label": ms.model_label,
+            "model_id": ms.model_id,
+            "gpu_model": ms.gpu_model,
+            "task": ms.task,
+            "precision": ms.precision,
+            "gpus_per_replica": ms.gpus_per_replica,
+            "tensor_parallel": ms.tensor_parallel,
+            "expert_parallel": ms.expert_parallel,
+            "itl_deadline_s": ms.itl_deadline_s,
+            "batch_sizes": list(ms.batch_sizes),
+            "feasible_batch_sizes": list(ms.feasible_batch_sizes),
+            "fit_exclude_batch_sizes": list(ms.fit_exclude_batch_sizes),
+        }
+        manifest = {
+            "schema_version": _MANIFEST_SCHEMA_VERSION,
+            "spec_hash": ms.cache_hash(),
+            "spec": spec_fields,
+            "openg2g_version": openg2g.__version__,
+            "mlenergy_data_version": _pkg_version("mlenergy-data"),
+            "written_utc": now,
+        }
+        (spec_dir / "_manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True))
+
+
 def _build_trace_store_from_timelines(tl: pd.DataFrame, *, dt_s: float) -> InferenceTraceStore:
     """Build an InferenceTraceStore from raw timeline data.
 
@@ -770,11 +789,7 @@ def _build_trace_store_from_timelines(tl: pd.DataFrame, *, dt_s: float) -> Infer
         raise ValueError("No timeline rows extracted from selected runs")
 
     traces: dict[str, dict[int, InferenceTrace]] = {}
-    keys = [
-        InferenceTraceStore.MANIFEST_COL_MODEL_LABEL,
-        InferenceTraceStore.MANIFEST_COL_NUM_GPUS,
-        InferenceTraceStore.MANIFEST_COL_BATCH_SIZE,
-    ]
+    keys = ["model_label", "num_gpus", "max_num_seqs"]
     for key, g in tl.groupby(keys, dropna=False):
         if not isinstance(key, tuple):
             raise TypeError(f"Expected tuple groupby key, got {type(key).__name__}")

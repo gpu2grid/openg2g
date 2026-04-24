@@ -32,7 +32,7 @@ Run all evaluation cases from the [GPU-to-Grid paper](https://arxiv.org/abs/2602
 python examples/offline/run_ofo.py --system ieee13 --mode all
 ```
 
-The first run will download benchmark data and generate simulation artifacts (this takes a few minutes). Subsequent runs load from the cache directory (`data/offline/{hash}/`).
+The first run will download benchmark data and generate simulation artifacts (this takes a few minutes). Subsequent runs reuse the per-spec cache under `data/specs/<spec-hash>/`.
 
 Outputs (plots and CSVs) are saved to `outputs/ieee13/` with one subdirectory per case. See [Voltage Regulation Strategies](../examples/voltage-regulation-strategies.md) for individual `--mode` options.
 

@@ -19,6 +19,20 @@ from openg2g.controller.ofo import (
 from openg2g.datacenter.config import InferenceModelSpec
 
 
+def _make_spec(**overrides) -> InferenceModelSpec:
+    return InferenceModelSpec(
+        model_id="test/Model",
+        model_label="M",
+        gpu_model="H100",
+        task="lm-arena-chat",
+        gpus_per_replica=1,
+        itl_deadline_s=0.1,
+        batch_sizes=(64, 128),
+        feasible_batch_sizes=(64, 128),
+        **overrides,
+    )
+
+
 def _trivial_logistic(L: float = 100.0, x0: float = 5.0, k: float = 1.0, b0: float = 0.0):
     """Build a LogisticModel with known parameters."""
     return LogisticModel.from_dict({"L": L, "x0": x0, "k": k, "b0": b0})
@@ -34,9 +48,7 @@ def _make_primal(
         feasible_batch_sizes = [8, 16, 32, 64, 128]
     if config is None:
         config = OFOConfig()
-    model = InferenceModelSpec(
-        model_id="test/Model", model_label="M", gpus_per_replica=1, itl_deadline_s=0.1, feasible_batch_sizes=(64, 128)
-    )
+    model = _make_spec()
     fit = _trivial_logistic()
     return PrimalBatchOptimizer(
         models=[model],

@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from collections.abc import Iterator
 from dataclasses import dataclass
+from typing import Any
 
 import numpy as np
 from pydantic import BaseModel, ConfigDict, model_validator
@@ -19,36 +22,111 @@ class InferenceModelSpec(BaseModel):
     (replica count, initial batch size) are specified via
     [`ModelDeployment`][openg2g.datacenter.config.ModelDeployment].
 
+    The fields cover (a) model identity (`model_label`, `model_id`,
+    `precision`), (b) the measurement setting in ML.ENERGY v3
+    (`gpu_model`, `task`, `gpus_per_replica`, `tensor_parallel`,
+    `expert_parallel`, `batch_sizes`), and (c) the serving-level knobs
+    the simulator needs (`itl_deadline_s`, `feasible_batch_sizes`,
+    `fit_exclude_batch_sizes`). The spec is thus the single source of
+    truth for "what exactly is deployed here".
+
     Attributes:
         model_label: Human-readable model identifier (e.g. `"Llama-3.1-70B"`).
         model_id: HuggingFace model ID (e.g. `"meta-llama/Llama-3.1-70B-Instruct"`).
             Used for benchmark data lookups and online API model fields.
-        gpus_per_replica: GPUs allocated to each replica (determines model
-            parallelism and per-replica power draw).
-        itl_deadline_s: Per-model inter-token latency deadline for the OFO
-            latency dual (seconds).
-        feasible_batch_sizes: Allowed batch sizes. Used by the OFO
-            controller for discretizing continuous batch-size updates
-            and by the online datacenter for load-generator sizing.
+        gpu_model: GPU generation (e.g. `"H100"`, `"B200"`). Used to
+            filter ML.ENERGY benchmark runs.
+        task: Benchmark task name (e.g. `"lm-arena-chat"`, `"gpqa"`,
+            `"sourcegraph-fim"`).
+        precision: Weight precision (e.g. `"bfloat16"`, `"fp8"`, `"mxfp4"`).
+            Informational — the underlying precision is already encoded in
+            the `model_id` of the HuggingFace checkpoint.
+        gpus_per_replica: GPUs allocated to each replica.
+        tensor_parallel: Tensor-parallel degree. For metadata / cache
+            key; the data pipeline matches on `gpus_per_replica`.
+        expert_parallel: Expert-parallel degree (MoE models). For
+            metadata / cache key; the data pipeline matches on `gpus_per_replica`.
+        itl_deadline_s: Per-model inter-token latency deadline for the
+            OFO latency dual (seconds).
+        batch_sizes: Benchmark batch sizes that were measured for this
+            model. These are what the data pipeline requests from v3.
+        feasible_batch_sizes: OFO- / simulator-allowed subset of
+            `batch_sizes`. Must be ⊆ `batch_sizes`. When omitted at
+            construction (set to `None`), defaults to `batch_sizes`.
+        fit_exclude_batch_sizes: Batch sizes to exclude from logistic
+            curve fitting (still included in trace extraction). Use
+            when a specific batch has pathological measurements that
+            would warp the fit.
     """
 
     model_config = ConfigDict(frozen=True)
 
     model_label: str
     model_id: str
-    gpus_per_replica: int
+    gpu_model: str
+    task: str
+    precision: str = "bfloat16"
+    gpus_per_replica: int = 1
+    tensor_parallel: int = 1
+    expert_parallel: int = 1
     itl_deadline_s: float
-    feasible_batch_sizes: tuple[int, ...]
+    batch_sizes: tuple[int, ...]
+    feasible_batch_sizes: tuple[int, ...] | None = None
+    fit_exclude_batch_sizes: tuple[int, ...] = ()
+
+    @model_validator(mode="before")
+    @classmethod
+    def _fill_feasible(cls, data: Any) -> Any:
+        if isinstance(data, dict) and data.get("feasible_batch_sizes") is None:
+            data["feasible_batch_sizes"] = tuple(data.get("batch_sizes", ()))
+        return data
 
     @model_validator(mode="after")
     def _validate(self) -> InferenceModelSpec:
         if self.gpus_per_replica < 1:
             raise ValueError(f"gpus_per_replica must be >= 1, got {self.gpus_per_replica}.")
+        if self.tensor_parallel < 1:
+            raise ValueError(f"tensor_parallel must be >= 1, got {self.tensor_parallel}.")
+        if self.expert_parallel < 1:
+            raise ValueError(f"expert_parallel must be >= 1, got {self.expert_parallel}.")
         if self.itl_deadline_s <= 0:
             raise ValueError(f"itl_deadline_s must be > 0, got {self.itl_deadline_s}.")
+        if not self.batch_sizes:
+            raise ValueError("batch_sizes must not be empty.")
         if not self.feasible_batch_sizes:
             raise ValueError("feasible_batch_sizes must not be empty.")
+        if not set(self.feasible_batch_sizes).issubset(set(self.batch_sizes)):
+            raise ValueError(
+                f"feasible_batch_sizes {self.feasible_batch_sizes} must be a subset of batch_sizes {self.batch_sizes}."
+            )
         return self
+
+    def cache_hash(self) -> str:
+        """Content-addressable SHA-256 hex digest (16-char prefix) of the
+        measurement-relevant spec fields.
+
+        Two `InferenceModelSpec` instances with matching `model_id`,
+        `gpu_model`, `task`, `precision`, `gpus_per_replica`,
+        `tensor_parallel`, `expert_parallel`, `batch_sizes`, and
+        `fit_exclude_batch_sizes` produce the same hash. `model_label`,
+        `itl_deadline_s`, and `feasible_batch_sizes` are simulation-time
+        knobs that do not invalidate the on-disk measurement cache.
+
+        Used as the per-spec cache directory name under `data/specs/`.
+        """
+        payload = {
+            "model_id": self.model_id,
+            "gpu_model": self.gpu_model,
+            "task": self.task,
+            "precision": self.precision,
+            "gpus_per_replica": self.gpus_per_replica,
+            "tensor_parallel": self.tensor_parallel,
+            "expert_parallel": self.expert_parallel,
+            "batch_sizes": sorted(self.batch_sizes),
+            "fit_exclude_batch_sizes": sorted(self.fit_exclude_batch_sizes),
+        }
+        blob = json.dumps(payload, sort_keys=True).encode()
+        return hashlib.sha256(blob).hexdigest()[:16]
 
 
 @dataclass(frozen=True)
@@ -72,10 +150,13 @@ class ModelDeployment:
     def __post_init__(self) -> None:
         if self.initial_batch_size <= 0:
             raise ValueError(f"initial_batch_size must be > 0, got {self.initial_batch_size}.")
-        if self.initial_batch_size not in self.spec.feasible_batch_sizes:
+        feasible_batch_sizes = self.spec.feasible_batch_sizes
+        if feasible_batch_sizes is None:
+            raise ValueError("spec.feasible_batch_sizes must not be None.")
+        if self.initial_batch_size not in feasible_batch_sizes:
             raise ValueError(
                 f"initial_batch_size ({self.initial_batch_size}) must be in "
-                f"feasible_batch_sizes ({self.spec.feasible_batch_sizes})."
+                f"feasible_batch_sizes ({feasible_batch_sizes})."
             )
 
 

@@ -36,6 +36,19 @@ from openg2g.events import EventEmitter
 _EVENTS = EventEmitter(SimulationClock(Fraction(1, 10)), SimulationLog(), "custom")
 
 
+def _make_spec(label: str, gpus_per_replica: int) -> InferenceModelSpec:
+    return InferenceModelSpec(
+        model_id="test/Model",
+        model_label=label,
+        gpu_model="H100",
+        task="lm-arena-chat",
+        gpus_per_replica=gpus_per_replica,
+        itl_deadline_s=0.1,
+        batch_sizes=(64, 128),
+        feasible_batch_sizes=(64, 128),
+    )
+
+
 def _make_deployment(
     label: str = "test-model",
     num_replicas: int = 100,
@@ -44,13 +57,7 @@ def _make_deployment(
     port: int = 4938,
     gpu_indices: tuple[int, ...] = (0,),
 ) -> VLLMDeployment:
-    spec = InferenceModelSpec(
-        model_id="test/Model",
-        model_label=label,
-        gpus_per_replica=gpus_per_replica,
-        itl_deadline_s=0.1,
-        feasible_batch_sizes=(64, 128),
-    )
+    spec = _make_spec(label, gpus_per_replica)
     return VLLMDeployment(
         spec=spec,
         simulated_num_replicas=num_replicas,

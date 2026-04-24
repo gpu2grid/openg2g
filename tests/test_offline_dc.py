@@ -23,13 +23,22 @@ from openg2g.datacenter.workloads.inference import (
 )
 from openg2g.events import EventEmitter
 
-MODEL = InferenceModelSpec(
-    model_label="TestModel",
-    model_id="test/TestModel",
-    gpus_per_replica=1,
-    itl_deadline_s=0.1,
-    feasible_batch_sizes=(64, 128),
-)
+
+def _make_spec(**overrides) -> InferenceModelSpec:
+    return InferenceModelSpec(
+        model_label="TestModel",
+        model_id="test/TestModel",
+        gpu_model="H100",
+        task="lm-arena-chat",
+        gpus_per_replica=1,
+        itl_deadline_s=0.1,
+        batch_sizes=(64, 128),
+        feasible_batch_sizes=(64, 128),
+        **overrides,
+    )
+
+
+MODEL = InferenceModelSpec(**_make_spec().model_dump())
 _REPLICA_SCHEDULES = {"TestModel": ReplicaSchedule(initial=10)}
 _INITIAL_BATCH_SIZES = {"TestModel": 128}
 DC_CFG = DatacenterConfig(gpus_per_server=8)

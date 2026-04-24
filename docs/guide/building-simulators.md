@@ -36,34 +36,28 @@ from openg2g.datacenter.config import (
     ModelDeployment, PowerAugmentationConfig, TrainingRun,
 )
 from openg2g.datacenter.offline import OfflineDatacenter, OfflineWorkload
-from openg2g.datacenter.workloads.inference import InferenceData, MLEnergySource
+from openg2g.datacenter.workloads.inference import InferenceData
 from openg2g.datacenter.workloads.training import TrainingTrace
 
 spec_8b = InferenceModelSpec(
     model_label="Llama-3.1-8B", model_id="meta-llama/Llama-3.1-8B-Instruct",
-    gpus_per_replica=1, itl_deadline_s=0.08,
+    gpu_model="H100", task="lm-arena-chat",
+    gpus_per_replica=1, tensor_parallel=1, itl_deadline_s=0.08,
+    batch_sizes=(8, 16, 32, 64, 96, 128, 192, 256, 384, 512, 768),
     feasible_batch_sizes=(8, 16, 32, 64, 128, 256, 512),
 )
 spec_70b = InferenceModelSpec(
     model_label="Llama-3.1-70B", model_id="meta-llama/Llama-3.1-70B-Instruct",
-    gpus_per_replica=4, itl_deadline_s=0.10,
+    gpu_model="H100", task="lm-arena-chat",
+    gpus_per_replica=4, tensor_parallel=4, itl_deadline_s=0.10,
+    batch_sizes=(8, 16, 32, 64, 96, 128, 192, 256, 384, 512, 768, 1024),
     feasible_batch_sizes=(8, 16, 32, 64, 128, 256, 512),
 )
 models = (spec_8b, spec_70b)
 
-data_dir = Path("data/offline")
-data_sources = {
-    "Llama-3.1-8B": MLEnergySource(
-        model_label="Llama-3.1-8B", task="lm-arena-chat", gpu="H100",
-        batch_sizes=[8, 16, 32, 64, 128, 256, 512],
-    ),
-    "Llama-3.1-70B": MLEnergySource(
-        model_label="Llama-3.1-70B", task="lm-arena-chat", gpu="H100",
-        batch_sizes=[8, 16, 32, 64, 128, 256, 512],
-    ),
-}
-inference_data = InferenceData.ensure(data_dir, models, data_sources, dt_s=0.1)
-training_trace = TrainingTrace.ensure(data_dir / "training_trace.csv")
+data_dir = Path("data/specs")
+inference_data = InferenceData.ensure(data_dir, models, dt_s=0.1)
+training_trace = TrainingTrace.ensure(Path("data/training_trace.csv"))
 
 workload = OfflineWorkload(
     inference_data=inference_data,
@@ -203,7 +197,7 @@ from openg2g.controller.tap_schedule import TapScheduleController
 from openg2g.controller.ofo import LogisticModelStore, OFOBatchSizeController, OFOConfig
 
 logistic_models = LogisticModelStore.ensure(
-    data_dir / "logistic_fits.csv", models, data_sources,
+    data_dir, models,
 )
 
 model_specs = tuple(m.spec for m in models)

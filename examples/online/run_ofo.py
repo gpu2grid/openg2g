@@ -40,7 +40,7 @@ from openg2g.datacenter.online import (
     OnlineDatacenter,
     VLLMDeployment,
 )
-from openg2g.datacenter.workloads.inference import MLEnergySource, RequestsConfig, RequestStore
+from openg2g.datacenter.workloads.inference import RequestsConfig, RequestStore
 from openg2g.grid.config import TapPosition, TapSchedule
 from openg2g.grid.opendss import OpenDSSGrid
 from openg2g.metrics.performance import compute_performance_stats
@@ -74,21 +74,12 @@ class OnlineConfig(BaseModel):
     requests_dir: Path | None = None
     ieee_case_dir: Path
     data_dir: Path | None = None
-    data_sources: list[MLEnergySource] = []
     mlenergy_data_dir: Path | None = None
 
     @property
     def requests_hash(self) -> str:
         blob = json.dumps(
             (self.requests.model_dump(mode="json"), sorted(d.spec.model_label for d in self.deployments)),
-            sort_keys=True,
-        ).encode()
-        return hashlib.sha256(blob).hexdigest()[:16]
-
-    @property
-    def data_hash(self) -> str:
-        blob = json.dumps(
-            (sorted([s.model_dump(mode="json") for s in self.data_sources], key=lambda s: s["model_label"]),),
             sort_keys=True,
         ).encode()
         return hashlib.sha256(blob).hexdigest()[:16]
@@ -147,12 +138,10 @@ def main(*, config_path: Path, mode: str = "ofo") -> None:
     elif mode == "ofo":
         controllers.append(TapScheduleController(schedule=TapSchedule(()), dt_s=DT_CTRL))
 
-        data_sources = {s.model_label: s for s in config.data_sources} if config.data_sources else None
-        data_dir = config.data_dir or _PROJECT_ROOT / "data" / "offline" / config.data_hash
+        data_dir = config.data_dir or _PROJECT_ROOT / "data" / "specs"
         logistic_models = LogisticModelStore.ensure(
-            data_dir / "logistic_fits.csv",
+            data_dir,
             models,
-            data_sources,
             mlenergy_data_dir=config.mlenergy_data_dir,
             plot=False,
         )
