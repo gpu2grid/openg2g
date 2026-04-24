@@ -95,10 +95,18 @@ class TestCacheHash:
     def test_hash_ignores_simulation_time_knobs(self) -> None:
         """model_label, itl_deadline_s, and feasible_batch_sizes do not
         invalidate the on-disk measurement cache."""
-        base = _make_spec(model_label="A", itl_deadline_s=0.1, batch_sizes=(8, 16, 32), feasible_batch_sizes=(8, 16, 32))
-        relabeled = _make_spec(model_label="B", itl_deadline_s=0.1, batch_sizes=(8, 16, 32), feasible_batch_sizes=(8, 16, 32))
-        re_deadlined = _make_spec(model_label="A", itl_deadline_s=0.2, batch_sizes=(8, 16, 32), feasible_batch_sizes=(8, 16, 32))
-        re_feasible = _make_spec(model_label="A", itl_deadline_s=0.1, batch_sizes=(8, 16, 32), feasible_batch_sizes=(16, 32))
+        base = _make_spec(
+            model_label="A", itl_deadline_s=0.1, batch_sizes=(8, 16, 32), feasible_batch_sizes=(8, 16, 32)
+        )
+        relabeled = _make_spec(
+            model_label="B", itl_deadline_s=0.1, batch_sizes=(8, 16, 32), feasible_batch_sizes=(8, 16, 32)
+        )
+        re_deadlined = _make_spec(
+            model_label="A", itl_deadline_s=0.2, batch_sizes=(8, 16, 32), feasible_batch_sizes=(8, 16, 32)
+        )
+        re_feasible = _make_spec(
+            model_label="A", itl_deadline_s=0.1, batch_sizes=(8, 16, 32), feasible_batch_sizes=(16, 32)
+        )
         assert relabeled.cache_hash() == base.cache_hash()
         assert re_deadlined.cache_hash() == base.cache_hash()
         assert re_feasible.cache_hash() == base.cache_hash()
@@ -113,7 +121,10 @@ class TestCacheHash:
         assert _make_spec(model_label="A", gpus_per_replica=2, tensor_parallel=2).cache_hash() != base.cache_hash()
         assert _make_spec(model_label="A", tensor_parallel=2).cache_hash() != base.cache_hash()
         assert _make_spec(model_label="A", expert_parallel=2).cache_hash() != base.cache_hash()
-        assert _make_spec(model_label="A", batch_sizes=(64, 128, 256), feasible_batch_sizes=(64, 128)).cache_hash() != base.cache_hash()
+        assert (
+            _make_spec(model_label="A", batch_sizes=(64, 128, 256), feasible_batch_sizes=(64, 128)).cache_hash()
+            != base.cache_hash()
+        )
         assert _make_spec(model_label="A", fit_exclude_batch_sizes=(64,)).cache_hash() != base.cache_hash()
 
 
