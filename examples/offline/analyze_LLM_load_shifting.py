@@ -12,8 +12,6 @@ Usage:
 from __future__ import annotations
 
 import csv
-import hashlib
-import json
 import logging
 import math
 from fractions import Fraction
@@ -43,7 +41,7 @@ from openg2g.datacenter.config import (
     ReplicaSchedule,
 )
 from openg2g.datacenter.offline import OfflineDatacenter, OfflineWorkload
-from openg2g.datacenter.workloads.inference import InferenceData, MLEnergySource
+from openg2g.datacenter.workloads.inference import InferenceData
 from openg2g.datacenter.workloads.training import TrainingTrace
 from openg2g.grid.config import TapPosition, TapSchedule
 from openg2g.grid.opendss import OpenDSSGrid
@@ -71,40 +69,68 @@ POWER_AUG = PowerAugmentationConfig(amplitude_scale_range=(0.98, 1.02), noise_fr
 LLAMA_8B = InferenceModelSpec(
     model_label="Llama-3.1-8B",
     model_id="meta-llama/Llama-3.1-8B-Instruct",
+    gpu_model="H100",
+    task="lm-arena-chat",
+    precision="bfloat16",
     gpus_per_replica=1,
+    tensor_parallel=1,
     itl_deadline_s=0.08,
-    feasible_batch_sizes=[8, 16, 32, 64, 128, 256, 512],
+    batch_sizes=(8, 16, 32, 64, 96, 128, 192, 256, 384, 512, 768, 1024),
+    feasible_batch_sizes=(8, 16, 32, 64, 128, 256, 512),
 )
 LLAMA_70B = InferenceModelSpec(
     model_label="Llama-3.1-70B",
     model_id="meta-llama/Llama-3.1-70B-Instruct",
+    gpu_model="H100",
+    task="lm-arena-chat",
+    precision="bfloat16",
     gpus_per_replica=4,
+    tensor_parallel=4,
     itl_deadline_s=0.10,
-    feasible_batch_sizes=[8, 16, 32, 64, 128, 256, 512],
+    batch_sizes=(8, 16, 32, 64, 96, 128, 192, 256, 384, 512, 768, 1024, 1536, 2048),
+    feasible_batch_sizes=(8, 16, 32, 64, 128, 256, 512),
 )
 LLAMA_405B = InferenceModelSpec(
     model_label="Llama-3.1-405B",
     model_id="meta-llama/Llama-3.1-405B-Instruct-FP8",
+    gpu_model="H100",
+    task="lm-arena-chat",
+    precision="fp8",
     gpus_per_replica=8,
+    tensor_parallel=8,
     itl_deadline_s=0.12,
-    feasible_batch_sizes=[8, 16, 32, 64, 128, 256, 512],
+    batch_sizes=(8, 16, 32, 64, 96, 128, 192, 256, 384, 512),
+    feasible_batch_sizes=(8, 16, 32, 64, 128, 256, 512),
 )
 QWEN_30B = InferenceModelSpec(
     model_label="Qwen3-30B-A3B",
     model_id="Qwen/Qwen3-30B-A3B-Thinking-2507",
+    gpu_model="H100",
+    task="gpqa",
+    precision="bfloat16",
     gpus_per_replica=2,
+    tensor_parallel=2,
     itl_deadline_s=0.06,
-    feasible_batch_sizes=[8, 16, 32, 64, 128, 256, 512],
+    batch_sizes=(8, 16, 32, 64, 96, 128, 192, 256, 384, 512),
+    feasible_batch_sizes=(8, 16, 32, 64, 128, 256, 512),
 )
 QWEN_235B = InferenceModelSpec(
     model_label="Qwen3-235B-A22B",
     model_id="Qwen/Qwen3-235B-A22B-Thinking-2507",
+    gpu_model="H100",
+    task="gpqa",
+    precision="bfloat16",
     gpus_per_replica=8,
+    tensor_parallel=8,
     itl_deadline_s=0.14,
-    feasible_batch_sizes=[8, 16, 32, 64, 128, 256, 512],
+    batch_sizes=(8, 16, 32, 64, 96, 128, 192, 256, 384, 512),
+    feasible_batch_sizes=(8, 16, 32, 64, 128, 256, 512),
 )
 ALL_MODEL_SPECS = (LLAMA_8B, LLAMA_70B, LLAMA_405B, QWEN_30B, QWEN_235B)
 MODEL_SPECS: dict[str, InferenceModelSpec] = {s.model_label: s for s in ALL_MODEL_SPECS}
+
+SPECS_CACHE_DIR = _PROJECT_ROOT / "data" / "specs"
+TRAINING_TRACE_PATH = _PROJECT_ROOT / "data" / "training_trace.csv"
 
 
 def deploy(label: str, num_replicas: int, initial_batch_size: int = 128) -> tuple[ModelDeployment, ReplicaSchedule]:
@@ -113,27 +139,6 @@ def deploy(label: str, num_replicas: int, initial_batch_size: int = 128) -> tupl
         ModelDeployment(spec=MODEL_SPECS[label], initial_batch_size=initial_batch_size),
         ReplicaSchedule(initial=num_replicas),
     )
-
-
-def load_data_sources(config_path: Path | None = None) -> tuple[dict[str, MLEnergySource], Path]:
-    """Load ML.ENERGY data sources from `data_sources.json`.
-
-    Returns:
-        (data_sources, data_dir) where *data_dir* is a hash-based cache
-        directory under `<repo_root>/data/offline`.
-    """
-    if config_path is None:
-        config_path = Path(__file__).resolve().parent / "data_sources.json"
-    with open(config_path) as f:
-        cfg = json.load(f)
-    sources_raw = cfg["data_sources"]
-    data_sources = {s["model_label"]: MLEnergySource(**s) for s in sources_raw}
-    blob = json.dumps(
-        sorted(sources_raw, key=lambda s: s["model_label"]),
-        sort_keys=True,
-    ).encode()
-    data_dir = _PROJECT_ROOT / "data" / "offline" / hashlib.sha256(blob).hexdigest()[:16]
-    return data_sources, data_dir
 
 
 # IEEE 123-bus load-shift experiment definition
@@ -697,24 +702,19 @@ def main(*, system: str = "ieee123") -> None:
                 seen.add(m.spec.model_label)
     all_specs = tuple(m.spec for m in all_models)
 
-    # Load data pipeline
-    data_sources, data_dir = load_data_sources()
-
     logger.info("Loading inference data...")
     inference_data = InferenceData.ensure(
-        data_dir,
+        SPECS_CACHE_DIR,
         all_specs,
-        data_sources,
         plot=False,
         dt_s=float(DT_DC),
     )
     logistic_models = LogisticModelStore.ensure(
-        data_dir / "logistic_fits.csv",
+        SPECS_CACHE_DIR,
         all_specs,
-        data_sources,
         plot=False,
     )
-    training_trace = TrainingTrace.ensure(data_dir / "training_trace.csv")
+    training_trace = TrainingTrace.ensure(TRAINING_TRACE_PATH)
 
     save_dir = Path(__file__).resolve().parent / "outputs" / system / "load_shift_comparison"
     save_dir.mkdir(parents=True, exist_ok=True)

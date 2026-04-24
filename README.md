@@ -68,16 +68,20 @@ from openg2g.grid.config import TapPosition
 models = (
     InferenceModelSpec(
         model_label="Llama-3.1-8B", model_id="meta-llama/Llama-3.1-8B-Instruct",
-        gpus_per_replica=1, itl_deadline_s=0.08,
+        gpu_model="H100", task="lm-arena-chat",
+        gpus_per_replica=1, tensor_parallel=1, itl_deadline_s=0.08,
+        batch_sizes=(8, 16, 32, 64, 96, 128, 192, 256, 384, 512, 768),
         feasible_batch_sizes=(8, 16, 32, 64, 128, 256, 512),
     ),
     InferenceModelSpec(
         model_label="Llama-3.1-70B", model_id="meta-llama/Llama-3.1-70B-Instruct",
-        gpus_per_replica=4, itl_deadline_s=0.10,
+        gpu_model="H100", task="lm-arena-chat",
+        gpus_per_replica=4, tensor_parallel=4, itl_deadline_s=0.10,
+        batch_sizes=(8, 16, 32, 64, 96, 128, 192, 256, 384, 512, 768, 1024),
         feasible_batch_sizes=(8, 16, 32, 64, 128, 256, 512),
     ),
 )
-data_dir = Path("data/offline")
+data_dir = Path("data/specs")
 inference_data = InferenceData.load(data_dir, models, duration_s=3600, dt_s=0.1)
 dc_config = DatacenterConfig()
 dc = OfflineDatacenter(
@@ -136,7 +140,7 @@ python examples/offline/run_ofo.py --system ieee13 --mode ofo-no-tap
 python examples/offline/run_ofo.py --system ieee13 --mode all
 ```
 
-`--system` selects the IEEE test feeder (ieee13, ieee34, or ieee123). `--mode` selects one of `baseline-no-tap`, `baseline-tap-change`, `ofo-no-tap`, `ofo-tap-change`, or `all`. Data sources are in `data_sources.json`; all other experiment parameters are defined inline in each script. Generated data is cached in `data/offline/{hash}/`.
+`--system` selects the IEEE test feeder (ieee13, ieee34, or ieee123). `--mode` selects one of `baseline-no-tap`, `baseline-tap-change`, `ofo-no-tap`, `ofo-tap-change`, or `all`. Benchmark selection now lives directly in each `InferenceModelSpec`, and generated artifacts are cached per spec under `data/specs/<spec-hash>/`.
 
 ## Documentation
 

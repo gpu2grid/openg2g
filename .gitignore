@@ -11,7 +11,5 @@ docs/api/
 
 .DS_Store
 
-data/offline/
-data/online/
-.claude/
-examples/offline/outputs
+data
+examples/*/outputs
