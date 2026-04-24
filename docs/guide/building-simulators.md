@@ -138,6 +138,8 @@ All `attach_*` calls must happen before `start()` (which the [`Coordinator`][ope
 | [`ConstantLoad`][openg2g.grid.load.ConstantLoad] | Fixed power consumption |
 | [`CSVProfileLoad`][openg2g.grid.load.CSVProfileLoad] | Interpolated from a CSV time series |
 
+The CSV variants expect a two-column file (time in seconds, power in kW) with a header row; values between samples are linearly interpolated.
+
 Subclass `Generator` or `ExternalLoad` to implement custom profiles (e.g., real weather-driven PV, measured load traces).
 
 #### Tap schedules
