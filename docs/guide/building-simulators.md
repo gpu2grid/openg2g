@@ -101,6 +101,7 @@ from openg2g.grid.opendss import OpenDSSGrid
 from openg2g.grid.config import TapPosition
 from openg2g.grid.generator import SyntheticPV
 from openg2g.grid.load import SyntheticLoad
+from openg2g.grid.storage import BatteryStorage
 
 TAP_STEP = 0.00625  # standard 5/8% tap step
 
@@ -121,6 +122,17 @@ grid.attach_generator(SyntheticPV(peak_kw=10.0), bus="675")
 
 # Attach a time-varying external load at bus 680
 grid.attach_load(SyntheticLoad(peak_kw=500.0), bus="680")
+
+# Attach a battery storage system at the datacenter bus
+grid.attach_storage(
+    BatteryStorage(
+        name="bat_671",
+        rated_power_kw=250.0,
+        capacity_kwh=500.0,
+        apparent_power_kva=300.0,
+    ),
+    bus="671",
+)
 ```
 
 All `attach_*` calls must happen before `start()` (which the [`Coordinator`][openg2g.coordinator.Coordinator] calls automatically). Static loads defined in the DSS file coexist with attached dynamic components -- the power flow sees both.
@@ -141,6 +153,70 @@ All `attach_*` calls must happen before `start()` (which the [`Coordinator`][ope
 The CSV variants expect a two-column file (time in seconds, power in kW) with a header row; values between samples are linearly interpolated.
 
 Subclass `Generator` or `ExternalLoad` to implement custom profiles (e.g., real weather-driven PV, measured load traces).
+
+#### Energy storage
+
+[`EnergyStorage`][openg2g.grid.storage.EnergyStorage] resources are bidirectional, stateful grid resources. Attach them with [`OpenDSSGrid.attach_storage`][openg2g.grid.opendss.OpenDSSGrid.attach_storage]:
+
+```python
+from openg2g.grid.storage import BatteryStorage
+
+storage = BatteryStorage(
+    name="bat_671",
+    rated_power_kw=250.0,
+    capacity_kwh=500.0,
+    initial_soc=0.5,
+    apparent_power_kva=300.0,
+)
+grid.attach_storage(storage, bus="671")
+```
+
+The OpenDSS backend creates a native `Storage` element during `start()`. The base DSS files are not modified; the element is added to the compiled circuit for the simulation run. Storage attachments must happen before `start()`, like the other `attach_*` APIs.
+
+Positive real power discharges the battery into the grid, while negative real power charges it from the grid. Positive reactive power injects kvar; negative reactive power absorbs kvar. [`BatteryStorage`][openg2g.grid.storage.BatteryStorage] supports externally held setpoints via [`SetStoragePower`][openg2g.grid.command.SetStoragePower]:
+
+```python
+from openg2g.grid.command import SetStoragePower
+
+# Discharge 50 kW.
+SetStoragePower(storage_name="bat_671", power_kw=50.0)
+
+# Charge 25 kW.
+SetStoragePower(storage_name="bat_671", power_kw=-25.0)
+
+# Pure reactive support: inject 100 kvar without a real-power command.
+SetStoragePower(storage_name="bat_671", power_kw=0.0, reactive_power_kvar=100.0)
+```
+
+Controllers emit these commands and the coordinator routes them to the grid backend. The storage object holds the latest command between controller ticks, so a slower controller setpoint affects multiple faster grid/storage timesteps.
+
+Use grid query helpers to discover and monitor storage resources:
+
+```python
+if grid.has_storage:
+    for name in grid.storage_names:
+        bus = grid.storage_bus(name)
+        state = grid.storage_state(name)
+        print(name, bus, state.soc, state.power_kw, state.reactive_power_kvar)
+```
+
+The state returned by [`storage_state`][openg2g.grid.opendss.OpenDSSGrid.storage_state] is read back from OpenDSS after the grid step. Treat realized `power_kw` and `reactive_power_kvar` as simulation results, even when they differ slightly from the commanded value.
+
+For a built-in local voltage policy, use [`LocalVoltageStorageDroopController`][openg2g.controller.storage.LocalVoltageStorageDroopController]:
+
+```python
+from fractions import Fraction
+
+from openg2g.controller.storage import LocalVoltageStorageDroopController, StorageDroopConfig
+
+storage_controller = LocalVoltageStorageDroopController(
+    grid=grid,
+    config=StorageDroopConfig(mode="qv"),
+    dt_s=Fraction(1),
+)
+```
+
+The default Q-V mode emits reactive-power commands using each storage resource's local bus voltage from the previous control window. Set `StorageDroopConfig(mode="pv")` for real-power droop. In both modes, commands are local, fleet-capable, and zero-order held until the next controller step.
 
 #### Tap schedules
 
@@ -469,11 +545,23 @@ How it implements the interface:
 How it implements the interface:
 
 - **`step(clock, power_samples_w, events)`** takes the most recent power sample from the accumulated buffer and runs a single OpenDSS power flow solve. If no samples are provided (grid runs faster than datacenter), the last known power is reused. Returns a [`GridState`][openg2g.grid.base.GridState] with per-bus, per-phase voltages and tap positions.
-- **`apply_control(command, events)`** dispatches [`SetTaps`][openg2g.grid.command.SetTaps] commands to update regulator tap positions.
+- **`apply_control(command, events)`** dispatches [`SetTaps`][openg2g.grid.command.SetTaps] commands to update regulator tap positions and [`SetStoragePower`][openg2g.grid.command.SetStoragePower] commands to update storage setpoints.
 - **`reset()`** clears cached state and the `_started` flag. History is cleared automatically by `do_reset()`. The DSS circuit is recompiled on the next `start()`.
-- **`start()`** compiles the DSS circuit from the case files, builds the bus-phase voltage index (`v_index`), and prepares snapshot indexing structures.
+- **`start()`** compiles the DSS circuit from the case files, builds the bus-phase voltage index (`v_index`), prepares snapshot indexing structures, and creates native OpenDSS `Storage` elements for any attached storage resources.
 - **`voltages_vector()`** returns a flat numpy array of all bus-phase voltages in `v_index` order (used by the OFO controller for gradient computation).
 - **`estimate_sensitivity(perturbation_kw)`** computes a finite-difference estimate of the voltage sensitivity matrix dV/dP.
+- **Storage helpers**: `has_storage`, `storage_names`, `storage_state(name)`, `storage_bus(name)`, `storage_rated_power_kw(name)`, and `storage_rated_apparent_power_kva(name)` expose storage metadata and OpenDSS readback state without requiring controllers to inspect attachment internals.
+
+### `BatteryStorage`
+
+[`BatteryStorage`][openg2g.grid.storage.BatteryStorage] is a simple mutable setpoint storage resource backed by native OpenDSS `Storage` physics.
+
+How it implements the interface:
+
+- **`power_kw(t)` / `reactive_power_kvar(t)`** return the currently held setpoints. Positive real power discharges; negative real power charges. Positive reactive power injects kvar.
+- **`set_power_kw(power_kw, reactive_power_kvar=0.0)`** updates the held setpoint used on subsequent grid steps. The method validates real-power and apparent-power limits before accepting the command.
+- **`update_state(state)`** receives [`StorageState`][openg2g.grid.storage.StorageState] read back from OpenDSS after the grid step. The state includes stored energy, SOC, realized real/reactive power, and OpenDSS storage state.
+- **`sized_for_datacenter(...)`** creates a battery sized relative to total datacenter real power. The default is 20% of datacenter power and 2 hours of storage duration.
 
 ### `OFOBatchSizeController`
 
@@ -536,6 +624,19 @@ controllers = [
 
 Every `DatacenterCommand` must set `target` to the datacenter it applies to. The `ShiftReplicas` command sets `target` explicitly on both the send and receive sides.
 
+### `LocalVoltageStorageDroopController`
+
+[`LocalVoltageStorageDroopController`][openg2g.controller.storage.LocalVoltageStorageDroopController] implements a local voltage droop policy for one or more attached storage resources.
+
+How it works:
+
+- **Local voltage only**: Each storage resource uses the voltage at its own attachment bus. The controller does not aggregate feeder-wide voltage.
+- **Previous-window control**: The controller reads grid history emitted since its previous control tick and reduces the local voltage samples using `voltage_statistic` (`minimum`, `mean`, or `latest`).
+- **Q-V mode**: `StorageDroopConfig(mode="qv")` emits reactive-power commands. Positive output injects kvar when local voltage is low; negative output absorbs kvar when local voltage is high.
+- **P-V mode**: `StorageDroopConfig(mode="pv")` emits real-power commands. Positive output discharges when local voltage is low; negative output charges when local voltage is high.
+- **Fleet targeting**: By default, the controller targets all attached storage resources. Pass `storage_name=` for a single resource or `storage_names=` for a subset.
+- **Deadband and clipping**: `deadband_pu` avoids small commands near `v_ref`; `full_output_voltage_error_pu` sets the error where output reaches the storage rating. The output ramps continuously from the deadband edge and is clipped to the storage rating or `max_abs_output`.
+
 ## Example Analysis Scripts
 
 The `examples/offline/` directory includes ready-to-run analysis scripts. For detailed usage, examples across IEEE test systems, and interpretation guides, see the [Examples](../examples/) documentation:
@@ -549,4 +650,5 @@ The `examples/offline/` directory includes ready-to-run analysis scripts. For de
 | `sweep_hosting_capacities.py` | Per-bus hosting capacity analysis | [Hosting Capacity](../examples/hosting-capacity.md) |
 | `sweep_dc_locations.py` | DC location sweep (1-D, 2-D, zone-constrained) | [DC Location Planning](../examples/dc-location-planning.md) |
 | `analyze_LLM_load_shifting.py` | Cross-site LLM replica shifting comparison | [Multi-DC Coordination](../examples/multi-dc-coordination.md) |
+| `analyze_storage_coordination.py` | Storage-assisted OFO comparison | [Storage-Assisted Coordination](../examples/storage-coordination.md) |
 | `optimize_pv_locations_and_capacities.py` | PV placement + capacity MILP (`--mode pv-only`) and joint PV + DC location MILP (`--mode pv-and-dc`) | [PV + DC Siting](../examples/pv-dc-siting.md) |

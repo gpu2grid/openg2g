@@ -42,7 +42,7 @@ In **online mode**, it reads live GPU power from live vLLM servers via [Zeus](ht
 
 The grid backend runs AC power flow on standard IEEE test feeders using OpenDSS.
 The DSS case file defines the base network: lines, transformers, voltage regulators, and static loads.
-On top of this base network, dynamic components -- datacenters, generators (e.g., solar PV), and external loads -- are attached to specific buses before simulation starts.
+On top of this base network, dynamic components -- datacenters, generators (e.g., solar PV), external loads, and storage systems -- are attached to specific buses before simulation starts.
 Each timestep, the grid updates the attached components' power injections and runs a power flow solve, returning per-bus, per-phase voltages.
 Voltage regulator tap positions can be scheduled statically or controlled dynamically.
 
@@ -52,7 +52,7 @@ Controllers close the feedback loop.
 They read the latest datacenter and grid state, and issue control actions (e.g., adjusting batch sizes, changing tap positions) to either the datacenter or to the grid.
 Multiple controllers compose in order within the simulation coordinator, so you can combine strategies, e.g., a tap schedule controller alongside an LLM inference batch size controller.
 
-OpenG2G ships with several built-in controllers including an [Online Feedback Optimization (OFO)](building-simulators.md#ofobatchsizecontroller) controller for batch size regulation, a tap schedule controller, and a no-op controller for baselines. You can also implement your own by subclassing the [`Controller`][openg2g.controller.base.Controller] interface; see [Writing Custom Components](building-simulators.md#writing-custom-components).
+OpenG2G ships with several built-in controllers including an [Online Feedback Optimization (OFO)](building-simulators.md#ofobatchsizecontroller) controller for batch size regulation, a tap schedule controller, a local-voltage-based storage droop controller, and a no-op controller for baselines. You can also implement your own by subclassing the [`Controller`][openg2g.controller.base.Controller] interface; see [Writing Custom Components](building-simulators.md#writing-custom-components).
 
 ## What Can You Explore?
 
@@ -65,4 +65,5 @@ OpenG2G is designed for researchers studying questions like:
 - **[Datacenter sizing and hosting capacity](../examples/hosting-capacity.md)**: How large can an AI datacenter be on a given feeder before voltage violations become unmanageable? What is the maximum GPU count each bus can host?
 - **[Datacenter location planning](../examples/dc-location-planning.md)**: Which buses on a feeder are best suited for datacenter placement, how does location affect controllability, and how to find the best locations in a zonal system if multiple datacenters need to be built?
 - **[Multi-datacenter coordination](../examples/multi-dc-coordination.md)**: How do multiple datacenters at different grid locations interact, how should their controllers coordinate, and can shifting LLM replicas between sites further reduce voltage violations when batch-size control is exhausted?
+- **[Storage impact on datacenter-grid operation](../examples/storage-coordination.md)**: How does adding storage change voltage conditions, datacenter fleet power, and the grid-performance tradeoff? How do these effects interact with datacenter OFO when it is active?
 - **[Joint PV + DC siting and sizing](../examples/pv-dc-siting.md)**: How does co-located solar PV interact with datacenter loads? Where should PV systems be placed and sized to maximize economic return while minimizing voltage violations? Can PV and datacenter locations be co-optimized?
