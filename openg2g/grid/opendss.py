@@ -18,7 +18,7 @@ from openg2g.clock import SimulationClock
 from openg2g.common import ThreePhase
 from openg2g.events import EventEmitter
 from openg2g.grid.base import BusVoltages, GridBackend, GridState, PhaseVoltages
-from openg2g.grid.command import GridCommand, SetTaps
+from openg2g.grid.command import GridCommand, SetStoragePower, SetTaps
 from openg2g.grid.config import TapPosition
 from openg2g.grid.generator import Generator
 from openg2g.grid.load import ExternalLoad
@@ -137,6 +137,7 @@ class OpenDSSGrid(GridBackend[GridState]):
         self._gen_attachments: list[_GenAttachment] = []
         self._load_attachments: list[_LoadAttachment] = []
         self._storage_attachments: list[_StorageAttachment] = []
+        self._storage_states: dict[str, StorageState] = {}
 
         # Simulation state (cleared by reset)
         self._prev_power: dict[DatacenterBackend, ThreePhase] = {}
@@ -278,6 +279,24 @@ class OpenDSSGrid(GridBackend[GridState]):
         """Return the bus name a datacenter is attached to."""
         return self._dc_attachments[dc].bus
 
+    @property
+    def has_storage(self) -> bool:
+        """Whether any storage resource is attached."""
+        return bool(self._storage_attachments)
+
+    @property
+    def storage_names(self) -> tuple[str, ...]:
+        """Names of attached storage resources."""
+        return tuple(att.storage.name for att in self._storage_attachments)
+
+    def storage_state(self, storage_name: str) -> StorageState:
+        """Return the latest observed state for an attached storage resource."""
+        key = self._storage_key(storage_name)
+        if key in self._storage_states:
+            return self._storage_states[key]
+        self._storage_attachment_by_name(storage_name)
+        raise RuntimeError(f"Storage {storage_name!r} has no observed state yet; call start() first.")
+
     def step(
         self,
         clock: SimulationClock,
@@ -360,8 +379,22 @@ class OpenDSSGrid(GridBackend[GridState]):
             {"tap_position": command.tap_position},
         )
 
+    @apply_control.register
+    def apply_control_set_storage_power(self, command: SetStoragePower, events: EventEmitter) -> None:
+        att = self._storage_attachment_by_name(command.storage_name)
+        att.storage.set_power_kw(command.power_kw, command.reactive_power_kvar)
+        events.emit(
+            "grid.storage_power.updated",
+            {
+                "storage_name": att.storage.name,
+                "power_kw": float(command.power_kw),
+                "reactive_power_kvar": float(command.reactive_power_kvar),
+            },
+        )
+
     def reset(self) -> None:
         self._prev_power = {}
+        self._storage_states = {}
         self._started = False
 
     def start(self) -> None:
@@ -586,6 +619,17 @@ class OpenDSSGrid(GridBackend[GridState]):
             f"Edit Storage.{att.element_name} State={state} kW={power_kw:.6f} kvar={reactive_power_kvar:.6f}"
         )
 
+    def _storage_attachment_by_name(self, storage_name: str) -> _StorageAttachment:
+        key = self._storage_key(storage_name)
+        for att in self._storage_attachments:
+            if self._storage_key(att.storage.name) == key:
+                return att
+        raise ValueError(f"Unknown storage {storage_name!r}. Known storage resources: {list(self.storage_names)}")
+
+    @staticmethod
+    def _storage_key(storage_name: str) -> str:
+        return str(storage_name).lower()
+
     def _finish_storage_timestep(self, time_s: float) -> None:
         """Advance OpenDSS native storage physics and sync Python state."""
         if not self._storage_attachments:
@@ -610,16 +654,16 @@ class OpenDSSGrid(GridBackend[GridState]):
             power_kw = variables.get("kWOut", 0.0) - variables.get("kWIn", 0.0)
             reactive_power_kvar = variables.get("kvarOut", 0.0)
 
-            att.storage.update_state(
-                StorageState(
-                    time_s=time_s,
-                    stored_kwh=stored_kwh,
-                    soc=soc,
-                    power_kw=power_kw,
-                    reactive_power_kvar=reactive_power_kvar,
-                    dss_state=dss_state,
-                )
+            state = StorageState(
+                time_s=time_s,
+                stored_kwh=stored_kwh,
+                soc=soc,
+                power_kw=power_kw,
+                reactive_power_kvar=reactive_power_kvar,
+                dss_state=dss_state,
             )
+            self._storage_states[self._storage_key(att.storage.name)] = state
+            att.storage.update_state(state)
 
     def _cache_buses_with_phases(self) -> None:
         """Populate `all_buses` and `buses_with_phase` from the compiled circuit."""

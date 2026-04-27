@@ -74,6 +74,14 @@ class EnergyStorage(ABC):
         """
         return 0.0
 
+    def set_power_kw(self, power_kw: float, reactive_power_kvar: float = 0.0) -> None:
+        """Set externally commanded storage power.
+
+        Subclasses with dispatch controlled by [`SetStoragePower`][openg2g.grid.command.SetStoragePower]
+        should override this method.
+        """
+        raise NotImplementedError(f"{type(self).__name__} does not support external storage power commands.")
+
     def update_state(self, state: StorageState) -> None:
         """Receive the latest storage state observed from OpenDSS."""
         return None

@@ -29,3 +29,22 @@ class SetTaps(GridCommand):
     """
 
     tap_position: TapPosition
+
+
+@dataclass(frozen=True)
+class SetStoragePower(GridCommand):
+    """Set energy storage real/reactive power.
+
+    Positive real power discharges storage into the grid; negative real power
+    charges storage from the grid.
+
+    Attributes:
+        storage_name: Name of the attached storage resource to command.
+        power_kw: Real-power setpoint in kW.
+        reactive_power_kvar: Reactive-power setpoint in kvar. Positive values
+            inject reactive power.
+    """
+
+    storage_name: str
+    power_kw: float
+    reactive_power_kvar: float = 0.0
