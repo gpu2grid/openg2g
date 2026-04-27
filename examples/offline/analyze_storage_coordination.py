@@ -131,6 +131,10 @@ class RecordingBatteryStorage(BatteryStorage):
         else:
             self.history.append(state)
 
+    def reset(self) -> None:
+        super().reset()
+        self.history.clear()
+
 
 STORAGE_SITES: tuple[StorageSite, ...] = (
     StorageSite("bat_z1", "8", rated_power_kw=250.0, apparent_power_kva=300.0),

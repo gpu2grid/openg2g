@@ -86,6 +86,10 @@ class EnergyStorage(ABC):
         """Receive the latest storage state observed from OpenDSS."""
         return None
 
+    def reset(self) -> None:
+        """Reset per-run storage state before a new simulation starts."""
+        return None
+
 
 @dataclass
 class BatteryStorage(EnergyStorage):
@@ -227,6 +231,11 @@ class BatteryStorage(EnergyStorage):
 
     def update_state(self, state: StorageState) -> None:
         self._state = state
+
+    def reset(self) -> None:
+        self._power_kw = 0.0
+        self._reactive_power_kvar = 0.0
+        self._state = None
 
     @staticmethod
     def _validate_fraction(name: str, value: float) -> None:

@@ -407,11 +407,13 @@ class OpenDSSGrid(GridBackend[GridState]):
     def reset(self) -> None:
         self._prev_power = {}
         self._storage_states = {}
+        self._reset_storage_resources()
         self._started = False
 
     def start(self) -> None:
         if not self._dc_attachments:
             raise RuntimeError("At least one datacenter must be attached before start().")
+        self._reset_storage_resources()
         self._init_dss()
         self._v_index = self._build_v_index()
         self._build_vmag_indices()
@@ -641,6 +643,10 @@ class OpenDSSGrid(GridBackend[GridState]):
     @staticmethod
     def _storage_key(storage_name: str) -> str:
         return str(storage_name).lower()
+
+    def _reset_storage_resources(self) -> None:
+        for att in self._storage_attachments:
+            att.storage.reset()
 
     def _finish_storage_timestep(self, time_s: float) -> None:
         """Advance OpenDSS native storage physics and sync Python state."""
