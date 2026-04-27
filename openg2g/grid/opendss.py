@@ -297,6 +297,18 @@ class OpenDSSGrid(GridBackend[GridState]):
         self._storage_attachment_by_name(storage_name)
         raise RuntimeError(f"Storage {storage_name!r} has no observed state yet; call start() first.")
 
+    def storage_bus(self, storage_name: str) -> str:
+        """Return the bus name an energy storage resource is attached to."""
+        return self._storage_attachment_by_name(storage_name).bus
+
+    def storage_rated_power_kw(self, storage_name: str) -> float:
+        """Return the real-power rating for an attached storage resource."""
+        return self._storage_attachment_by_name(storage_name).storage.rated_power_kw
+
+    def storage_rated_apparent_power_kva(self, storage_name: str) -> float:
+        """Return the apparent-power rating for an attached storage resource."""
+        return self._storage_attachment_by_name(storage_name).storage.rated_apparent_power_kva
+
     def step(
         self,
         clock: SimulationClock,
