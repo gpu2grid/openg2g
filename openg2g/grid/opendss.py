@@ -42,6 +42,7 @@ _PHASES = (1, 2, 3)
 _PHASE_NAME = {1: "A", 2: "B", 3: "C"}
 _PHASE_TO_ATTR = {1: "a", 2: "b", 3: "c"}
 _ATTR_TO_PHASE = {v: k for k, v in _PHASE_TO_ATTR.items()}
+_STORAGE_STATE_NAME = {-1: "Charging", 0: "Idling", 1: "Discharging"}
 
 _DSS_SAFE_NAME = re.compile(r"^[A-Za-z0-9_-]+$")
 
@@ -621,17 +622,17 @@ class OpenDSSGrid(GridBackend[GridState]):
                 f"exceeding rating {storage.rated_apparent_power_kva:.6g} kVA."
             )
 
+        dss.Storages.Name(att.element_name)
         if abs(power_kw) <= 1e-9:
-            state = "IDLING"
+            dss.Storages.State(0)  # IDLING
             power_kw = 0.0
         elif power_kw > 0.0:
-            state = "DISCHARGING"
+            dss.Storages.State(1)  # DISCHARGING
         else:
-            state = "CHARGING"
+            dss.Storages.State(-1)  # CHARGING
 
-        dss.Text.Command(
-            f"Edit Storage.{att.element_name} State={state} kW={power_kw:.6f} kvar={reactive_power_kvar:.6f}"
-        )
+        dss.Properties.Value("kW", power_kw)
+        dss.Properties.Value("kvar", reactive_power_kvar)
 
     def _storage_attachment_by_name(self, storage_name: str) -> _StorageAttachment:
         key = self._storage_key(storage_name)
@@ -660,17 +661,18 @@ class OpenDSSGrid(GridBackend[GridState]):
     def _sync_storage_states(self, time_s: float) -> None:
         """Read OpenDSS Storage state back into attached storage objects."""
         for att in self._storage_attachments:
+            dss.Storages.Name(att.element_name)
             dss.Circuit.SetActiveElement(f"Storage.{att.element_name}")
-            variable_names = dss.CktElement.AllVariableNames()
-            variable_values = dss.CktElement.AllVariableValues()
-            variables = {str(name): float(value) for name, value in zip(variable_names, variable_values, strict=True)}
 
-            stored_kwh = float(dss.Properties.Value("kWhStored"))
-            capacity_kwh = float(dss.Properties.Value("kWhRated"))
-            dss_state = str(dss.Properties.Value("State"))
-            soc = stored_kwh / capacity_kwh if capacity_kwh > 0.0 else float("nan")
-            power_kw = variables.get("kWOut", 0.0) - variables.get("kWIn", 0.0)
-            reactive_power_kvar = variables.get("kvarOut", 0.0)
+            soc = float(dss.Storages.puSOC())
+            capacity_kwh = float(att.storage.capacity_kwh)
+            stored_kwh = capacity_kwh * soc
+            dss_state_value = int(dss.Storages.State())
+            dss_state = _STORAGE_STATE_NAME.get(dss_state_value, str(dss_state_value))
+
+            powers = dss.CktElement.Powers()
+            power_kw = -float(sum(powers[0::2]))
+            reactive_power_kvar = -float(sum(powers[1::2]))
 
             state = StorageState(
                 time_s=time_s,

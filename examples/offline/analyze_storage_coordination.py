@@ -236,11 +236,11 @@ def run_scenario(
     return ScenarioResult(name=scenario, log=log, stats=stats, performance=performance, storages=storages)
 
 
-def local_voltage_pu(state: GridState, bus: str) -> float:
+def local_voltage_pu(state: GridState, bus: str, bus_case_cache: dict[str, str] | None = None) -> float:
     if bus in state.voltages:
         phases = state.voltages[bus]
     else:
-        phases = state.voltages[_resolve_bus_case(state, bus)]
+        phases = state.voltages[_resolve_bus_case(state, bus, bus_case_cache)]
     values = finite_phase_voltages(phases)
     if not values:
         return float("nan")
@@ -251,10 +251,16 @@ def finite_phase_voltages(phases: PhaseVoltages) -> list[float]:
     return [float(v) for v in (phases.a, phases.b, phases.c) if not math.isnan(float(v))]
 
 
-def _resolve_bus_case(state: GridState, bus: str) -> str:
+def _resolve_bus_case(state: GridState, bus: str, bus_case_cache: dict[str, str] | None = None) -> str:
     target = bus.lower()
+    if bus_case_cache is not None:
+        cached = bus_case_cache.get(target)
+        if cached is not None and cached in state.voltages:
+            return cached
     for candidate in state.voltages.buses():
         if candidate.lower() == target:
+            if bus_case_cache is not None:
+                bus_case_cache[target] = candidate
             return candidate
     raise KeyError(f"Bus {bus!r} not found in grid state.")
 
@@ -336,6 +342,7 @@ def write_storage_timeseries(results: dict[ScenarioName, ScenarioResult], save_d
         for scenario, result in results.items():
             state_by_time = {state.time_s: state for state in result.log.grid_states}
             bus_by_storage = {site.name: site.bus for site in STORAGE_SITES}
+            bus_case_cache: dict[str, str] = {}
             for storage in result.storages:
                 bus = bus_by_storage[storage.name]
                 for state in storage.history:
@@ -346,7 +353,9 @@ def write_storage_timeseries(results: dict[ScenarioName, ScenarioResult], save_d
                             "storage_name": storage.name,
                             "time_s": state.time_s,
                             "bus": bus,
-                            "local_voltage_pu": "" if grid_state is None else local_voltage_pu(grid_state, bus),
+                            "local_voltage_pu": ""
+                            if grid_state is None
+                            else local_voltage_pu(grid_state, bus, bus_case_cache),
                             "soc": state.soc,
                             "stored_kwh": state.stored_kwh,
                             "power_kw": state.power_kw,
@@ -460,7 +469,8 @@ def plot_local_storage_voltages(results: dict[ScenarioName, ScenarioResult], sav
     for ax, (storage_name, bus) in zip(axes, storage_buses.items(), strict=True):
         for scenario, result in results.items():
             time_s = np.asarray(result.log.time_s)
-            voltages = np.asarray([local_voltage_pu(state, bus) for state in result.log.grid_states])
+            bus_case_cache: dict[str, str] = {}
+            voltages = np.asarray([local_voltage_pu(state, bus, bus_case_cache) for state in result.log.grid_states])
             ax.plot(time_s, voltages, linewidth=1.0, label=scenario.replace("_", " "))
         ax.axhline(V_MIN, color="#C44E52", linestyle="--", linewidth=1.0)
         ax.axhline(V_MAX, color="#C44E52", linestyle="--", linewidth=1.0)

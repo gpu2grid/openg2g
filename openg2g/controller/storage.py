@@ -90,6 +90,7 @@ class LocalVoltageStorageDroopController(Controller[DatacenterBackend, OpenDSSGr
         self._dt_s = dt_s
         self._storages = self._resolve_controlled_storages(grid, config, storage_name, storage_names)
         self._history_cursor = 0
+        self._bus_case_cache: dict[str, str] = {}
 
     @property
     def dt_s(self) -> Fraction:
@@ -97,6 +98,7 @@ class LocalVoltageStorageDroopController(Controller[DatacenterBackend, OpenDSSGr
 
     def reset(self) -> None:
         self._history_cursor = 0
+        self._bus_case_cache.clear()
 
     def step(
         self,
@@ -167,13 +169,16 @@ class LocalVoltageStorageDroopController(Controller[DatacenterBackend, OpenDSSGr
             raise ValueError(f"Storage bus {storage_bus!r} has no finite phase voltages.")
         return min(values)
 
-    @staticmethod
-    def _resolve_bus_in_state(state: GridState, storage_bus: str) -> str:
+    def _resolve_bus_in_state(self, state: GridState, storage_bus: str) -> str:
         if storage_bus in state.voltages:
             return storage_bus
         target = storage_bus.lower()
+        cached = self._bus_case_cache.get(target)
+        if cached is not None and cached in state.voltages:
+            return cached
         for bus in state.voltages.buses():
             if bus.lower() == target:
+                self._bus_case_cache[target] = bus
                 return bus
         raise ValueError(f"Storage bus {storage_bus!r} not found in grid voltages.")
 
