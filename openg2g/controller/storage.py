@@ -33,33 +33,34 @@ class _ControlledStorage:
 
 
 class StorageDroopConfig(BaseModel):
-    """Configuration for local-voltage storage droop control."""
+    """Configuration for local-voltage storage droop control.
+
+    Attributes:
+        mode: Droop output mode: `qv` controls kvar, `pv` controls kW.
+        v_ref: Reference local voltage in pu.
+        deadband_pu: Symmetric deadband around `v_ref`, in pu.
+        full_output_voltage_error_pu: Absolute voltage error from `v_ref` where
+            storage reaches its output limit.
+        droop_gain_per_pu: Optional gain override in kW/pu for P-V mode or
+            kvar/pu for Q-V mode.
+        max_abs_output: Optional output limit in kW for P-V mode or kvar for
+            Q-V mode.
+        allow_negative_output: Whether overvoltage may command charging in P-V
+            mode or kvar absorption in Q-V mode.
+        voltage_statistic: How to reduce local voltage samples from the previous
+            control window.
+    """
 
     model_config = ConfigDict(frozen=True)
 
     mode: StorageDroopMode = "qv"
-    """Droop output mode: `qv` controls kvar, `pv` controls kW."""
-
     v_ref: float = 1.0
-    """Reference local voltage in pu."""
-
     deadband_pu: float = 0.005
-    """Symmetric deadband around `v_ref`, in pu."""
-
     full_output_voltage_error_pu: float = 0.05
-    """Absolute voltage error from `v_ref` where storage reaches its output limit."""
-
     droop_gain_per_pu: float | None = None
-    """Optional gain override in kW/pu for P-V mode or kvar/pu for Q-V mode."""
-
     max_abs_output: float | None = None
-    """Optional output limit in kW for P-V mode or kvar for Q-V mode."""
-
     allow_negative_output: bool = True
-    """Whether overvoltage may command charging in P-V mode or kvar absorption in Q-V mode."""
-
     voltage_statistic: VoltageWindowStatistic = "minimum"
-    """How to reduce local voltage samples from the previous control window."""
 
 
 class LocalVoltageStorageDroopController(Controller[DatacenterBackend, OpenDSSGrid]):

@@ -421,35 +421,35 @@ class TestWarmup:
 
     def test_warmup_completes_when_saturated(self) -> None:
         dep = _make_deployment(num_replicas=100, gpu_indices=(0, 1))
-        with _online_dc([dep], stagger_buffer_s=0.3) as (dc, _):
+        with _online_dc([dep], stagger_buffer_s=0.05) as (dc, _):
             prom_mock = MagicMock()
             prom_mock.get_latest.return_value = {dep.model_label: {"num_requests_running": 128.0}}
             dc._prometheus = prom_mock
-            dc._warmup(timeout_s=5.0, poll_interval_s=0.05)
+            dc._warmup(timeout_s=5.0, poll_interval_s=0.01)
 
     def test_warmup_waits_for_buffer_after_saturation(self) -> None:
         dep = _make_deployment(num_replicas=100, gpu_indices=(0, 1))
-        with _online_dc([dep], stagger_buffer_s=0.4) as (dc, _):
+        with _online_dc([dep], stagger_buffer_s=0.05) as (dc, _):
             prom_mock = MagicMock()
             prom_mock.get_latest.return_value = {dep.model_label: {"num_requests_running": 128.0}}
             dc._prometheus = prom_mock
 
             t_before = time.monotonic()
-            dc._warmup(timeout_s=5.0, poll_interval_s=0.05)
+            dc._warmup(timeout_s=5.0, poll_interval_s=0.01)
             elapsed = time.monotonic() - t_before
 
             # Must wait at least stagger_buffer_s after saturation
-            assert elapsed >= 0.4
+            assert elapsed >= 0.05
 
     def test_warmup_timeout_raises_with_trajectory(self) -> None:
         dep = _make_deployment(num_replicas=100, gpu_indices=(0, 1))
-        with _online_dc([dep], stagger_buffer_s=0.1) as (dc, _):
+        with _online_dc([dep], stagger_buffer_s=0.05) as (dc, _):
             prom_mock = MagicMock()
             prom_mock.get_latest.return_value = {dep.model_label: {"num_requests_running": 10.0}}
             dc._prometheus = prom_mock
 
             with pytest.raises(RuntimeError, match="Warmup timed out") as exc_info:
-                dc._warmup(timeout_s=0.5, poll_interval_s=0.05)
+                dc._warmup(timeout_s=0.1, poll_interval_s=0.01)
 
             msg = str(exc_info.value)
             assert dep.model_label in msg
@@ -459,14 +459,14 @@ class TestWarmup:
 
     def test_warmup_no_prometheus_waits_for_buffer_only(self) -> None:
         dep = _make_deployment(num_replicas=100, gpu_indices=(0, 1))
-        with _online_dc([dep], stagger_buffer_s=0.3, prometheus_poll_interval_s=0) as (dc, _):
+        with _online_dc([dep], stagger_buffer_s=0.05, prometheus_poll_interval_s=0) as (dc, _):
             assert dc._prometheus is None
 
             t_before = time.monotonic()
-            dc._warmup(timeout_s=5.0, poll_interval_s=0.05)
+            dc._warmup(timeout_s=5.0, poll_interval_s=0.01)
             elapsed = time.monotonic() - t_before
 
-            assert elapsed >= 0.3
+            assert elapsed >= 0.05
 
 
 class TestHealthChecks:

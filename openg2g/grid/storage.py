@@ -95,7 +95,7 @@ class EnergyStorage(ABC):
 class BatteryStorage(EnergyStorage):
     """Simple mutable setpoint battery storage model.
 
-    Args:
+    Attributes:
         name: Storage name, used as the OpenDSS element name.
         rated_power_kw: Maximum charge/discharge power in kW.
         capacity_kwh: Energy capacity in kWh.
