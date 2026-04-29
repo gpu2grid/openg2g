@@ -1339,7 +1339,8 @@ class RequestStore:
                 messages=system_msgs,
                 max_completion_tokens=config.max_completion_tokens,
                 stream=True,
-                stream_options={"include_usage": True, "continuous_usage_stats": True},
+                # `continuous_usage_stats` is a vLLM extension, not in the upstream TypedDict.
+                stream_options={"include_usage": True, "continuous_usage_stats": True},  # ty: ignore[invalid-key]
             )
             if label in extra:
                 template.update(extra[label])

@@ -24,7 +24,13 @@ logger = logging.getLogger(__name__)
 
 
 class LoadShiftConfig(BaseModel):
-    """Configuration for cross-site load shifting."""
+    """Configuration for cross-site load shifting.
+
+    Attributes:
+        enabled: If False, the controller is a no-op. Useful for ablations.
+        gpus_per_shift: Number of GPUs worth of replicas to shift in a single
+            controller tick.
+    """
 
     enabled: bool = False
     gpus_per_shift: int = 8

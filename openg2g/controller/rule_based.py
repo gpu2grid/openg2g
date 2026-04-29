@@ -37,25 +37,25 @@ logger = logging.getLogger(__name__)
 
 
 class RuleBasedConfig(BaseModel):
-    """Configuration for the rule-based batch-size controller."""
+    """Configuration for the rule-based batch-size controller.
+
+    Attributes:
+        step_size: Proportional gain in log2(batch) change per pu of voltage
+            violation. With feasible batches spaced ~1 log2 unit apart, a
+            violation of 0.01 pu needs `step_size` ~10 to produce a 0.1 log2
+            shift, enough to eventually change the discrete batch level.
+        v_min: Lower voltage limit (pu).
+        v_max: Upper voltage limit (pu).
+        deadband: Ignore violations smaller than this (pu). Prevents chattering.
+        latency_guard: If True, prevent batch-size increases when ITL exceeds
+            the model's deadline.
+    """
 
     step_size: float = 10.0
-    """Proportional gain: log2(batch) change per pu of voltage violation.
-    With feasible batches spaced ~1 log2 unit apart, a violation of 0.01 pu
-    needs step_size ~10 to produce a 0.1 log2 shift, enough to eventually
-    change the discrete batch level."""
-
     v_min: float = 0.95
-    """Lower voltage limit (pu)."""
-
     v_max: float = 1.05
-    """Upper voltage limit (pu)."""
-
     deadband: float = 0.001
-    """Ignore violations smaller than this (pu).  Prevents chattering."""
-
     latency_guard: bool = True
-    """If True, prevent batch size increase when ITL exceeds deadline."""
 
 
 class RuleBasedBatchSizeController(
