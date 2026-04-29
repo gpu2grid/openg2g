@@ -5,7 +5,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from openg2g.datacenter.command import DatacenterCommand, SetBatchSize
-from openg2g.grid.command import GridCommand, SetTaps
+from openg2g.grid.command import GridCommand, SetStoragePower, SetTaps
 from openg2g.grid.config import TapPosition
 
 _MOCK_DC = MagicMock()
@@ -28,6 +28,17 @@ def test_set_taps_is_grid_command() -> None:
     assert isinstance(cmd, GridCommand)
     assert cmd.tap_position.a == 1.05
     assert cmd.tap_position.b == 1.0
+
+
+def test_set_storage_power_is_grid_command() -> None:
+    from openg2g.grid.storage import BatteryStorage
+
+    storage = BatteryStorage(name="battery", rated_power_kw=10.0, capacity_kwh=20.0)
+    cmd = SetStoragePower(storage=storage, power_kw=10.0, reactive_power_kvar=2.0)
+    assert isinstance(cmd, GridCommand)
+    assert cmd.storage is storage
+    assert cmd.power_kw == 10.0
+    assert cmd.reactive_power_kvar == 2.0
 
 
 def test_command_types_are_disjoint() -> None:

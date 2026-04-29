@@ -18,10 +18,11 @@ from openg2g.clock import SimulationClock
 from openg2g.common import ThreePhase
 from openg2g.events import EventEmitter
 from openg2g.grid.base import BusVoltages, GridBackend, GridState, PhaseVoltages
-from openg2g.grid.command import GridCommand, SetTaps
+from openg2g.grid.command import GridCommand, SetStoragePower, SetTaps
 from openg2g.grid.config import TapPosition
 from openg2g.grid.generator import Generator
 from openg2g.grid.load import ExternalLoad
+from openg2g.grid.storage import EnergyStorage, StorageState
 
 if TYPE_CHECKING:
     from opendssdirect import dss
@@ -41,6 +42,7 @@ _PHASES = (1, 2, 3)
 _PHASE_NAME = {1: "A", 2: "B", 3: "C"}
 _PHASE_TO_ATTR = {1: "a", 2: "b", 3: "c"}
 _ATTR_TO_PHASE = {v: k for k, v in _PHASE_TO_ATTR.items()}
+_STORAGE_STATE_NAME = {-1: "Charging", 0: "Idling", 1: "Discharging"}
 
 _DSS_SAFE_NAME = re.compile(r"^[A-Za-z0-9_-]+$")
 
@@ -72,14 +74,23 @@ class _LoadAttachment:
     tanphi: float = 0.0
 
 
+@dataclass
+class _StorageAttachment:
+    bus: str
+    storage: EnergyStorage
+    connection_type: str
+    element_name: str = ""
+
+
 class OpenDSSGrid(GridBackend[GridState]):
     """OpenDSS-based grid simulator for distribution-level voltage analysis.
 
     Uses OpenDSS as a power flow solver. The user's DSS case file defines
-    the network topology. Datacenters, generators, and loads are attached
-    to specific buses via [`attach_dc`][..attach_dc],
-    [`attach_generator`][..attach_generator], and
-    [`attach_load`][..attach_load] before calling [`start`][..start].
+    the network topology. Datacenters, generators, loads, and storage systems
+    are attached to specific buses via [`attach_dc`][..attach_dc],
+    [`attach_generator`][..attach_generator], [`attach_load`][..attach_load],
+    and [`attach_storage`][..attach_storage] before calling
+    [`start`][..start].
 
     Bus voltages (kV) are looked up from the DSS model after compile --
     callers never need to specify `bus_kv`.
@@ -126,6 +137,7 @@ class OpenDSSGrid(GridBackend[GridState]):
         self._dc_attachments: dict[DatacenterBackend, _DCAttachment] = {}
         self._gen_attachments: list[_GenAttachment] = []
         self._load_attachments: list[_LoadAttachment] = []
+        self._storage_attachments: list[_StorageAttachment] = []
 
         # Simulation state (cleared by reset)
         self._prev_power: dict[DatacenterBackend, ThreePhase] = {}
@@ -221,6 +233,44 @@ class OpenDSSGrid(GridBackend[GridState]):
             )
         )
 
+    def attach_storage(
+        self,
+        storage: EnergyStorage,
+        *,
+        bus: str,
+        connection_type: str = "wye",
+    ) -> None:
+        """Attach an energy storage system to a grid bus.
+
+        Args:
+            storage: Energy storage resource whose dispatch will be written to
+                a native OpenDSS `Storage` element. Positive real power
+                discharges into the grid; negative real power charges from it.
+            bus: Bus name on the grid.
+            connection_type: Wye or delta connection.
+        """
+        if self._started:
+            raise RuntimeError("Cannot attach after start().")
+        if not _DSS_SAFE_NAME.match(storage.name):
+            raise ValueError(
+                f"Storage name {storage.name!r} contains characters unsafe for DSS commands. "
+                "Use only letters, digits, underscores, and hyphens."
+            )
+        for att in self._storage_attachments:
+            if att.storage is storage:
+                raise ValueError(f"Storage {storage.name!r} is already attached.")
+            if att.storage.name.lower() == storage.name.lower():
+                raise ValueError(
+                    f"Storage name {storage.name!r} collides with an already attached storage. "
+                    "DSS element names must be unique (case-insensitive)."
+                )
+
+        conn = str(connection_type).lower()
+        if conn not in {"wye", "delta"}:
+            raise ValueError("connection_type must be 'wye' or 'delta'.")
+
+        self._storage_attachments.append(_StorageAttachment(bus=bus, storage=storage, connection_type=conn))
+
     @property
     def dt_s(self) -> Fraction:
         return self._dt_s
@@ -291,10 +341,17 @@ class OpenDSSGrid(GridBackend[GridState]):
                 dss.Loads.kW(kw)
                 dss.Loads.kvar(kvar)
 
+        # 4. Set storage dispatch. OpenDSS Storage uses signed kW:
+        # positive = discharging, negative = charging.
+        for att in self._storage_attachments:
+            self._set_storage_dispatch(att, clock.time_s)
+
         self._solve()
 
         voltages = self._snapshot_bus_voltages()
-        return GridState(time_s=clock.time_s, voltages=voltages, tap_positions=self._read_current_taps())
+        tap_positions = self._read_current_taps()
+        self._finish_storage_timestep(clock.time_s)
+        return GridState(time_s=clock.time_s, voltages=voltages, tap_positions=tap_positions)
 
     @functools.singledispatchmethod
     def apply_control(self, command: GridCommand, events: EventEmitter) -> None:
@@ -310,13 +367,28 @@ class OpenDSSGrid(GridBackend[GridState]):
             {"tap_position": command.tap_position},
         )
 
+    @apply_control.register
+    def apply_control_set_storage_power(self, command: SetStoragePower, events: EventEmitter) -> None:
+        att = self._storage_attachment_for(command.storage)
+        att.storage.set_power_kw(command.power_kw, command.reactive_power_kvar)
+        events.emit(
+            "grid.storage_power.updated",
+            {
+                "storage_name": att.storage.name,
+                "power_kw": float(command.power_kw),
+                "reactive_power_kvar": float(command.reactive_power_kvar),
+            },
+        )
+
     def reset(self) -> None:
         self._prev_power = {}
+        self._reset_storage_resources()
         self._started = False
 
     def start(self) -> None:
         if not self._dc_attachments:
             raise RuntimeError("At least one datacenter must be attached before start().")
+        self._reset_storage_resources()
         self._init_dss()
         self._v_index = self._build_v_index()
         self._build_vmag_indices()
@@ -325,12 +397,15 @@ class OpenDSSGrid(GridBackend[GridState]):
         dc_info = ", ".join(f"{dc.name}@{att.bus}" for dc, att in self._dc_attachments.items())
         n_gen = len(self._gen_attachments)
         n_load = len(self._load_attachments)
+        n_storage = len(self._storage_attachments)
         logger.info(
-            "OpenDSSGrid: case=%s, dc=[%s], %d gen, %d ext load, dt=%s s, controls=%s, %d buses, %d bus-phases",
+            "OpenDSSGrid: case=%s, dc=[%s], %d gen, %d ext load, %d storage, dt=%s s, controls=%s, "
+            "%d buses, %d bus-phases",
             self._master,
             dc_info,
             n_gen,
             n_load,
+            n_storage,
             self._dt_s,
             self._dss_controls,
             len(self.all_buses),
@@ -461,6 +536,26 @@ class OpenDSSGrid(GridBackend[GridState]):
                     f"New Load.{nm} bus1={att.bus}.{ph} phases=1 conn=wye kV={kv_ln:.6f} kW=0 kvar=0 model=1"
                 )
 
+        # Create storage elements. OpenDSS expects line-to-line kV for
+        # three-phase Storage elements.
+        for att in self._storage_attachments:
+            storage = att.storage
+            att.element_name = storage.name
+            self._require_three_phase_bus(att.bus, storage.name)
+            kv_ll = _bus_kv_ln(att.bus) * math.sqrt(3.0)
+            initial_kwh = storage.capacity_kwh * storage.initial_soc
+            reserve_pct = storage.reserve_soc * 100.0
+            charge_eff_pct = storage.charge_efficiency * 100.0
+            discharge_eff_pct = storage.discharge_efficiency * 100.0
+            dss.Text.Command(
+                f"New Storage.{att.element_name} bus1={att.bus}.1.2.3 phases=3 conn={att.connection_type} "
+                f"kV={kv_ll:.6f} kVA={storage.rated_apparent_power_kva:.6f} "
+                f"kWRated={storage.rated_power_kw:.6f} kWhRated={storage.capacity_kwh:.6f} "
+                f"kWhStored={initial_kwh:.6f} %Reserve={reserve_pct:.6f} "
+                f"%EffCharge={charge_eff_pct:.6f} %EffDischarge={discharge_eff_pct:.6f} "
+                f"%IdlingkW={storage.idle_loss_percent:.6f} DispMode=EXTERNAL State=IDLING kW=0 kvar=0"
+            )
+
         dss.Text.Command("Reset")
         dss.Text.Command("Set Mode=Time")
         dss.Text.Command(f"Set Stepsize={float(self._dt_s)}s")
@@ -473,6 +568,7 @@ class OpenDSSGrid(GridBackend[GridState]):
             self._set_reg_taps(self._tap_position_to_reg_dict(self._initial_tap_position))
 
         self._solve()
+        self._sync_storage_states(time_s=0.0)
         self._cache_node_map()
         self._cache_buses_with_phases()
 
@@ -482,6 +578,94 @@ class OpenDSSGrid(GridBackend[GridState]):
             dss.Solution.Solve()
         else:
             dss.Solution.SolveNoControl()
+
+    def _set_storage_dispatch(self, att: _StorageAttachment, time_s: float) -> None:
+        """Write a storage dispatch setpoint into OpenDSS."""
+        storage = att.storage
+        power_kw = float(storage.power_kw(time_s))
+        reactive_power_kvar = float(storage.reactive_power_kvar(time_s))
+
+        if abs(power_kw) > storage.rated_power_kw + 1e-9:
+            raise ValueError(
+                f"Storage {storage.name!r} requested {power_kw:.6g} kW, "
+                f"exceeding rating {storage.rated_power_kw:.6g} kW."
+            )
+        apparent_power = math.hypot(power_kw, reactive_power_kvar)
+        if apparent_power > storage.rated_apparent_power_kva + 1e-9:
+            raise ValueError(
+                f"Storage {storage.name!r} requested {apparent_power:.6g} kVA, "
+                f"exceeding rating {storage.rated_apparent_power_kva:.6g} kVA."
+            )
+
+        dss.Storages.Name(att.element_name)
+        if abs(power_kw) <= 1e-9:
+            dss.Storages.State(0)  # IDLING
+            power_kw = 0.0
+        elif power_kw > 0.0:
+            dss.Storages.State(1)  # DISCHARGING
+        else:
+            dss.Storages.State(-1)  # CHARGING
+
+        dss.Properties.Value("kW", power_kw)
+        dss.Properties.Value("kvar", reactive_power_kvar)
+
+    def _storage_attachment_for(self, storage: EnergyStorage) -> _StorageAttachment:
+        for att in self._storage_attachments:
+            if att.storage is storage:
+                return att
+        attached = [att.storage.name for att in self._storage_attachments]
+        raise ValueError(f"Storage {storage.name!r} is not attached to this grid. Attached: {attached}")
+
+    @staticmethod
+    def _require_three_phase_bus(bus: str, storage_name: str) -> None:
+        """Raise if *bus* does not expose all three phases on the compiled circuit."""
+        dss.Circuit.SetActiveBus(bus)
+        nodes = tuple(int(n) for n in dss.Bus.Nodes() if int(n) in _PHASES)
+        missing = tuple(_PHASE_NAME[ph] for ph in _PHASES if ph not in nodes)
+        if missing:
+            raise ValueError(
+                f"Storage {storage_name!r} is attached to bus {bus!r}, which is missing "
+                f"phase(s) {', '.join(missing)}. Storage requires a three-phase bus."
+            )
+
+    def _reset_storage_resources(self) -> None:
+        for att in self._storage_attachments:
+            att.storage.reset()
+
+    def _finish_storage_timestep(self, time_s: float) -> None:
+        """Advance OpenDSS native storage physics and sync Python state."""
+        if not self._storage_attachments:
+            return
+
+        if not self._dss_controls:
+            dss.Solution.Cleanup()
+        self._sync_storage_states(time_s=time_s)
+
+    def _sync_storage_states(self, time_s: float) -> None:
+        """Read OpenDSS Storage state back into attached storage objects."""
+        for att in self._storage_attachments:
+            dss.Storages.Name(att.element_name)
+            dss.Circuit.SetActiveElement(f"Storage.{att.element_name}")
+
+            soc = float(dss.Storages.puSOC())
+            capacity_kwh = float(att.storage.capacity_kwh)
+            stored_kwh = capacity_kwh * soc
+            dss_state_value = int(dss.Storages.State())
+            dss_state = _STORAGE_STATE_NAME.get(dss_state_value, str(dss_state_value))
+
+            powers = dss.CktElement.Powers()
+            power_kw = -float(sum(powers[0::2]))
+            reactive_power_kvar = -float(sum(powers[1::2]))
+
+            state = StorageState(
+                time_s=time_s,
+                stored_kwh=stored_kwh,
+                soc=soc,
+                power_kw=power_kw,
+                reactive_power_kvar=reactive_power_kvar,
+                dss_state=dss_state,
+            )
+            att.storage.update_state(state)
 
     def _cache_buses_with_phases(self) -> None:
         """Populate `all_buses` and `buses_with_phase` from the compiled circuit."""

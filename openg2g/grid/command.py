@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from openg2g.grid.config import TapPosition
+
+if TYPE_CHECKING:
+    from openg2g.grid.storage import EnergyStorage
 
 
 class GridCommand:
@@ -29,3 +33,22 @@ class SetTaps(GridCommand):
     """
 
     tap_position: TapPosition
+
+
+@dataclass(frozen=True)
+class SetStoragePower(GridCommand):
+    """Set energy storage real/reactive power.
+
+    Positive real power discharges storage into the grid; negative real power
+    charges storage from the grid.
+
+    Attributes:
+        storage: Attached storage resource to command.
+        power_kw: Real-power setpoint in kW.
+        reactive_power_kvar: Reactive-power setpoint in kvar. Positive values
+            inject reactive power.
+    """
+
+    storage: EnergyStorage
+    power_kw: float
+    reactive_power_kvar: float = 0.0
