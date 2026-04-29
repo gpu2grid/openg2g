@@ -138,7 +138,6 @@ class OpenDSSGrid(GridBackend[GridState]):
         self._gen_attachments: list[_GenAttachment] = []
         self._load_attachments: list[_LoadAttachment] = []
         self._storage_attachments: list[_StorageAttachment] = []
-        self._storage_states: dict[str, StorageState] = {}
 
         # Simulation state (cleared by reset)
         self._prev_power: dict[DatacenterBackend, ThreePhase] = {}
@@ -257,8 +256,14 @@ class OpenDSSGrid(GridBackend[GridState]):
                 f"Storage name {storage.name!r} contains characters unsafe for DSS commands. "
                 "Use only letters, digits, underscores, and hyphens."
             )
-        if any(att.storage.name.lower() == storage.name.lower() for att in self._storage_attachments):
-            raise ValueError(f"Storage {storage.name!r} already attached.")
+        for att in self._storage_attachments:
+            if att.storage is storage:
+                raise ValueError(f"Storage {storage.name!r} is already attached.")
+            if att.storage.name.lower() == storage.name.lower():
+                raise ValueError(
+                    f"Storage name {storage.name!r} collides with an already attached storage. "
+                    "DSS element names must be unique (case-insensitive)."
+                )
 
         conn = str(connection_type).lower()
         if conn not in {"wye", "delta"}:
@@ -279,36 +284,6 @@ class OpenDSSGrid(GridBackend[GridState]):
     def dc_bus(self, dc: DatacenterBackend) -> str:
         """Return the bus name a datacenter is attached to."""
         return self._dc_attachments[dc].bus
-
-    @property
-    def has_storage(self) -> bool:
-        """Whether any storage resource is attached."""
-        return bool(self._storage_attachments)
-
-    @property
-    def storage_names(self) -> tuple[str, ...]:
-        """Names of attached storage resources."""
-        return tuple(att.storage.name for att in self._storage_attachments)
-
-    def storage_state(self, storage_name: str) -> StorageState:
-        """Return the latest observed state for an attached storage resource."""
-        key = self._storage_key(storage_name)
-        if key in self._storage_states:
-            return self._storage_states[key]
-        self._storage_attachment_by_name(storage_name)
-        raise RuntimeError(f"Storage {storage_name!r} has no observed state yet; call start() first.")
-
-    def storage_bus(self, storage_name: str) -> str:
-        """Return the bus name an energy storage resource is attached to."""
-        return self._storage_attachment_by_name(storage_name).bus
-
-    def storage_rated_power_kw(self, storage_name: str) -> float:
-        """Return the real-power rating for an attached storage resource."""
-        return self._storage_attachment_by_name(storage_name).storage.rated_power_kw
-
-    def storage_rated_apparent_power_kva(self, storage_name: str) -> float:
-        """Return the apparent-power rating for an attached storage resource."""
-        return self._storage_attachment_by_name(storage_name).storage.rated_apparent_power_kva
 
     def step(
         self,
@@ -394,7 +369,7 @@ class OpenDSSGrid(GridBackend[GridState]):
 
     @apply_control.register
     def apply_control_set_storage_power(self, command: SetStoragePower, events: EventEmitter) -> None:
-        att = self._storage_attachment_by_name(command.storage_name)
+        att = self._storage_attachment_for(command.storage)
         att.storage.set_power_kw(command.power_kw, command.reactive_power_kvar)
         events.emit(
             "grid.storage_power.updated",
@@ -407,7 +382,6 @@ class OpenDSSGrid(GridBackend[GridState]):
 
     def reset(self) -> None:
         self._prev_power = {}
-        self._storage_states = {}
         self._reset_storage_resources()
         self._started = False
 
@@ -567,6 +541,7 @@ class OpenDSSGrid(GridBackend[GridState]):
         for att in self._storage_attachments:
             storage = att.storage
             att.element_name = storage.name
+            self._require_three_phase_bus(att.bus, storage.name)
             kv_ll = _bus_kv_ln(att.bus) * math.sqrt(3.0)
             initial_kwh = storage.capacity_kwh * storage.initial_soc
             reserve_pct = storage.reserve_soc * 100.0
@@ -634,16 +609,24 @@ class OpenDSSGrid(GridBackend[GridState]):
         dss.Properties.Value("kW", power_kw)
         dss.Properties.Value("kvar", reactive_power_kvar)
 
-    def _storage_attachment_by_name(self, storage_name: str) -> _StorageAttachment:
-        key = self._storage_key(storage_name)
+    def _storage_attachment_for(self, storage: EnergyStorage) -> _StorageAttachment:
         for att in self._storage_attachments:
-            if self._storage_key(att.storage.name) == key:
+            if att.storage is storage:
                 return att
-        raise ValueError(f"Unknown storage {storage_name!r}. Known storage resources: {list(self.storage_names)}")
+        attached = [att.storage.name for att in self._storage_attachments]
+        raise ValueError(f"Storage {storage.name!r} is not attached to this grid. Attached: {attached}")
 
     @staticmethod
-    def _storage_key(storage_name: str) -> str:
-        return str(storage_name).lower()
+    def _require_three_phase_bus(bus: str, storage_name: str) -> None:
+        """Raise if *bus* does not expose all three phases on the compiled circuit."""
+        dss.Circuit.SetActiveBus(bus)
+        nodes = tuple(int(n) for n in dss.Bus.Nodes() if int(n) in _PHASES)
+        missing = tuple(_PHASE_NAME[ph] for ph in _PHASES if ph not in nodes)
+        if missing:
+            raise ValueError(
+                f"Storage {storage_name!r} is attached to bus {bus!r}, which is missing "
+                f"phase(s) {', '.join(missing)}. Storage requires a three-phase bus."
+            )
 
     def _reset_storage_resources(self) -> None:
         for att in self._storage_attachments:
@@ -682,7 +665,6 @@ class OpenDSSGrid(GridBackend[GridState]):
                 reactive_power_kvar=reactive_power_kvar,
                 dss_state=dss_state,
             )
-            self._storage_states[self._storage_key(att.storage.name)] = state
             att.storage.update_state(state)
 
     def _cache_buses_with_phases(self) -> None:

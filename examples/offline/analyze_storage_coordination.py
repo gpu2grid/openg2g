@@ -1,30 +1,21 @@
 """Storage-on-OFO datacenter-grid coordination workflow.
 
-This example is intentionally built on top of the standard IEEE 123-bus
-controller-comparison setup in `analyze_different_controllers.py`. It reuses
-the same datacenter placements, model specs, ML.ENERGY inference traces,
-synthetic PV, duration, replica schedules, and OFO tuning, then adds one
-co-located storage system at each datacenter bus.
+Adds a co-located storage system at each IEEE 123-bus datacenter site and
+compares baseline taps, OFO-only, OFO + idle storage, OFO + Q-V storage
+droop, and OFO + P-V storage droop.
 
 Scenarios:
 
-    baseline            Standard IEEE123 baseline mode from the base example
-    ofo                 Standard IEEE123 OFO mode from the base example
-    ofo_idle_storage    Standard OFO plus storage attached but not controlled
-    ofo_qv_storage      Standard OFO plus local Q-V storage droop
-    ofo_pv_storage      Standard OFO plus local P-V storage droop
-
-The main contrast is the incremental effect of storage when datacenter OFO is
-already active: idle storage reproduces OFO-only behavior, Q-V droop can
-support voltage without materially changing SOC, and P-V droop also supports
-voltage while using stored energy.
+    baseline            Tap schedule only, no batch-size control.
+    ofo                 OFO at each datacenter, fixed initial taps.
+    ofo_idle_storage    OFO plus storage attached but not actively controlled.
+    ofo_qv_storage      OFO plus local Q-V storage droop.
+    ofo_pv_storage      OFO plus local P-V storage droop.
 
 Usage:
     python examples/offline/analyze_storage_coordination.py
     python examples/offline/analyze_storage_coordination.py --scenarios ofo ofo_qv_storage
 """
-
-# ruff: noqa: E402
 
 from __future__ import annotations
 
@@ -32,24 +23,15 @@ import argparse
 import csv
 import logging
 import math
-import os
-import sys
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from fractions import Fraction
 from pathlib import Path
 from typing import Literal, cast
-
-_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
-sys.path.insert(0, str(_PROJECT_ROOT))
-
-_MPLCONFIGDIR = Path(os.environ.get("MPLCONFIGDIR", "/tmp/openg2g-matplotlib"))
-_MPLCONFIGDIR.mkdir(parents=True, exist_ok=True)
-os.environ.setdefault("MPLCONFIGDIR", str(_MPLCONFIGDIR))
 
 import matplotlib
 
 matplotlib.use("Agg")
-import analyze_different_controllers as standard_ieee_examples
 import matplotlib.pyplot as plt
 import numpy as np
 
@@ -58,13 +40,23 @@ from openg2g.controller.storage import LocalVoltageStorageDroopController, Stora
 from openg2g.controller.tap_schedule import TapScheduleController
 from openg2g.coordinator import Coordinator, SimulationLog
 from openg2g.datacenter.base import DatacenterState
+from openg2g.datacenter.config import (
+    DatacenterConfig,
+    InferenceModelSpec,
+    PowerAugmentationConfig,
+    ReplicaSchedule,
+)
+from openg2g.datacenter.offline import OfflineDatacenter, OfflineWorkload
 from openg2g.datacenter.workloads.inference import InferenceData
-from openg2g.datacenter.workloads.training import TrainingTrace
 from openg2g.grid.base import GridState, PhaseVoltages
-from openg2g.grid.config import TapSchedule
+from openg2g.grid.config import TapPosition, TapSchedule
+from openg2g.grid.generator import SyntheticPV
+from openg2g.grid.opendss import OpenDSSGrid
 from openg2g.grid.storage import BatteryStorage, StorageState
 from openg2g.metrics.performance import PerformanceStats, compute_performance_stats
 from openg2g.metrics.voltage import VoltageStats, compute_allbus_voltage_stats
+
+from systems import SYSTEMS, tap
 
 logger = logging.getLogger("analyze_storage_coordination")
 
@@ -82,21 +74,80 @@ STORAGE_PLOT_SCENARIOS: tuple[ScenarioName, ...] = (
     "ofo_pv_storage",
     "ofo_qv_storage",
 )
+STORAGE_SCENARIOS: frozenset[ScenarioName] = frozenset({"ofo_idle_storage", "ofo_qv_storage", "ofo_pv_storage"})
 
-DT_DC = standard_ieee_examples.DT_DC
-DT_CTRL = standard_ieee_examples.DT_CTRL
-TOTAL_DURATION_S = standard_ieee_examples.TOTAL_DURATION_S
-V_MIN = standard_ieee_examples.V_MIN
-V_MAX = standard_ieee_examples.V_MAX
-SPECS_CACHE_DIR = standard_ieee_examples.SPECS_CACHE_DIR
-TRAINING_TRACE_PATH = standard_ieee_examples.TRAINING_TRACE_PATH
-STANDARD_IEEE123_MODEL_SPECS = (
-    standard_ieee_examples.LLAMA_8B,
-    standard_ieee_examples.QWEN_30B,
-    standard_ieee_examples.LLAMA_70B,
-    standard_ieee_examples.LLAMA_405B,
-    standard_ieee_examples.QWEN_235B,
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+
+DT_DC = Fraction(1, 10)
+DT_GRID = Fraction(1, 10)
+DT_CTRL = Fraction(1)
+V_MIN, V_MAX = 0.95, 1.05
+TOTAL_DURATION_S = 3600
+POWER_AUG = PowerAugmentationConfig(amplitude_scale_range=(0.98, 1.02), noise_fraction=0.005)
+
+SPECS_CACHE_DIR = _PROJECT_ROOT / "data" / "specs"
+
+LLAMA_8B = InferenceModelSpec(
+    model_label="Llama-3.1-8B",
+    model_id="meta-llama/Llama-3.1-8B-Instruct",
+    gpu_model="H100",
+    task="lm-arena-chat",
+    precision="bfloat16",
+    gpus_per_replica=1,
+    tensor_parallel=1,
+    itl_deadline_s=0.08,
+    batch_sizes=(8, 16, 32, 64, 96, 128, 192, 256, 384, 512, 768, 1024),
+    feasible_batch_sizes=(8, 16, 32, 64, 128, 256, 512),
 )
+LLAMA_70B = InferenceModelSpec(
+    model_label="Llama-3.1-70B",
+    model_id="meta-llama/Llama-3.1-70B-Instruct",
+    gpu_model="H100",
+    task="lm-arena-chat",
+    precision="bfloat16",
+    gpus_per_replica=4,
+    tensor_parallel=4,
+    itl_deadline_s=0.10,
+    batch_sizes=(8, 16, 32, 64, 96, 128, 192, 256, 384, 512, 768, 1024, 1536, 2048),
+    feasible_batch_sizes=(8, 16, 32, 64, 128, 256, 512),
+)
+LLAMA_405B = InferenceModelSpec(
+    model_label="Llama-3.1-405B",
+    model_id="meta-llama/Llama-3.1-405B-Instruct-FP8",
+    gpu_model="H100",
+    task="lm-arena-chat",
+    precision="fp8",
+    gpus_per_replica=8,
+    tensor_parallel=8,
+    itl_deadline_s=0.12,
+    batch_sizes=(8, 16, 32, 64, 96, 128, 192, 256, 384, 512),
+    feasible_batch_sizes=(8, 16, 32, 64, 128, 256, 512),
+)
+QWEN_30B = InferenceModelSpec(
+    model_label="Qwen3-30B-A3B",
+    model_id="Qwen/Qwen3-30B-A3B-Thinking-2507",
+    gpu_model="H100",
+    task="gpqa",
+    precision="bfloat16",
+    gpus_per_replica=2,
+    tensor_parallel=2,
+    itl_deadline_s=0.06,
+    batch_sizes=(8, 16, 32, 64, 96, 128, 192, 256, 384, 512),
+    feasible_batch_sizes=(8, 16, 32, 64, 128, 256, 512),
+)
+QWEN_235B = InferenceModelSpec(
+    model_label="Qwen3-235B-A22B",
+    model_id="Qwen/Qwen3-235B-A22B-Thinking-2507",
+    gpu_model="H100",
+    task="gpqa",
+    precision="bfloat16",
+    gpus_per_replica=8,
+    tensor_parallel=8,
+    itl_deadline_s=0.14,
+    batch_sizes=(8, 16, 32, 64, 96, 128, 192, 256, 384, 512),
+    feasible_batch_sizes=(8, 16, 32, 64, 128, 256, 512),
+)
+ALL_MODEL_SPECS: tuple[InferenceModelSpec, ...] = (LLAMA_8B, QWEN_30B, LLAMA_70B, LLAMA_405B, QWEN_235B)
 
 
 @dataclass(frozen=True)
@@ -106,6 +157,12 @@ class StorageSite:
     rated_power_kw: float
     apparent_power_kva: float
     duration_h: float = 2.0
+
+
+@dataclass
+class _BuiltScenario:
+    coordinator: Coordinator[DatacenterState, GridState]
+    storages: list[RecordingBatteryStorage]
 
 
 @dataclass
@@ -144,22 +201,129 @@ STORAGE_SITES: tuple[StorageSite, ...] = (
 )
 
 
+def build_ieee123_setup(
+    inference_data: InferenceData,
+) -> tuple[
+    list[OfflineDatacenter],
+    dict[OfflineDatacenter, tuple[InferenceModelSpec, ...]],
+    OpenDSSGrid,
+    OFOConfig,
+    TapSchedule,
+    tuple[str, ...],
+]:
+    """IEEE 123-bus, four DC sites: z1@8, z2@23, z3@60, z4@105."""
+    sys = SYSTEMS["ieee123"]()
+    exclude_buses = tuple(sys["exclude_buses"])
+
+    specs_z1 = (LLAMA_8B,)
+    specs_z2 = (QWEN_30B,)
+    specs_z3 = (LLAMA_70B, LLAMA_405B)
+    specs_z4 = (QWEN_235B,)
+
+    dc_z1 = OfflineDatacenter(
+        DatacenterConfig(gpus_per_server=8, base_kw_per_phase=310.0),
+        OfflineWorkload(
+            inference_data=inference_data.filter_models(specs_z1),
+            replica_schedules={
+                "Llama-3.1-8B": ReplicaSchedule(initial=120).ramp_to(180, t_start=500, t_end=1000),
+            },
+        ),
+        name="z1_sw",
+        dt_s=DT_DC,
+        seed=0,
+        power_augmentation=POWER_AUG,
+        total_gpu_capacity=180,
+    )
+    dc_z2 = OfflineDatacenter(
+        DatacenterConfig(gpus_per_server=8, base_kw_per_phase=265.0),
+        OfflineWorkload(
+            inference_data=inference_data.filter_models(specs_z2),
+            replica_schedules={
+                "Qwen3-30B-A3B": ReplicaSchedule(initial=80).ramp_to(104, t_start=1500, t_end=2500),
+            },
+        ),
+        name="z2_nw",
+        dt_s=DT_DC,
+        seed=17,
+        power_augmentation=POWER_AUG,
+        total_gpu_capacity=208,
+    )
+    dc_z3 = OfflineDatacenter(
+        DatacenterConfig(gpus_per_server=8, base_kw_per_phase=295.0),
+        OfflineWorkload(
+            inference_data=inference_data.filter_models(specs_z3),
+            replica_schedules={
+                "Llama-3.1-70B": ReplicaSchedule(initial=30).ramp_to(45, t_start=700, t_end=1100),
+                "Llama-3.1-405B": ReplicaSchedule(initial=35),
+            },
+        ),
+        name="z3_se",
+        dt_s=DT_DC,
+        seed=34,
+        power_augmentation=POWER_AUG,
+        total_gpu_capacity=460,
+    )
+    dc_z4 = OfflineDatacenter(
+        DatacenterConfig(gpus_per_server=8, base_kw_per_phase=325.0),
+        OfflineWorkload(
+            inference_data=inference_data.filter_models(specs_z4),
+            replica_schedules={
+                "Qwen3-235B-A22B": ReplicaSchedule(initial=55).ramp_to(27, t_start=2000, t_end=2500),
+            },
+        ),
+        name="z4_ne",
+        dt_s=DT_DC,
+        seed=51,
+        power_augmentation=POWER_AUG,
+        total_gpu_capacity=440,
+    )
+
+    datacenters = [dc_z1, dc_z2, dc_z3, dc_z4]
+    dc_specs = {dc_z1: specs_z1, dc_z2: specs_z2, dc_z3: specs_z3, dc_z4: specs_z4}
+
+    grid = OpenDSSGrid(
+        dss_case_dir=sys["dss_case_dir"],
+        dss_master_file=sys["dss_master_file"],
+        source_pu=sys["source_pu"],
+        dt_s=DT_GRID,
+        initial_tap_position=sys["initial_taps"],
+        exclude_buses=exclude_buses,
+    )
+    grid.attach_dc(dc_z1, bus="8", connection_type="wye")
+    grid.attach_dc(dc_z2, bus="23", connection_type="wye")
+    grid.attach_dc(dc_z3, bus="60", connection_type="wye")
+    grid.attach_dc(dc_z4, bus="105", connection_type="wye")
+    grid.attach_generator(SyntheticPV(peak_kw=333.3), bus="1")
+    grid.attach_generator(SyntheticPV(peak_kw=333.3, site_idx=1), bus="48")
+    grid.attach_generator(SyntheticPV(peak_kw=333.3, site_idx=2), bus="99")
+
+    tap_schedule = TapSchedule(((1800, TapPosition(regulators={"creg4a": tap(16)})),))
+    ofo_config = OFOConfig(
+        primal_step_size=0.05,
+        w_throughput=0.001,
+        w_switch=1.0,
+        voltage_gradient_scale=1e6,
+        voltage_dual_step_size=0.3,
+        latency_dual_step_size=1.0,
+        sensitivity_update_interval=3600,
+        sensitivity_perturbation_kw=10.0,
+        v_min=V_MIN,
+        v_max=V_MAX,
+    )
+
+    return datacenters, dc_specs, grid, ofo_config, tap_schedule, exclude_buses
+
+
 def build_scenario(
     scenario: ScenarioName,
     inference_data: InferenceData,
-    training_trace: TrainingTrace,
     logistic_models: LogisticModelStore,
-) -> tuple[Coordinator[DatacenterState, GridState], list[RecordingBatteryStorage]]:
-    setup = standard_ieee_examples.SETUPS["ieee123"](inference_data, training_trace, logistic_models)
-    datacenters = setup["datacenters"]
-    dc_specs = setup["dc_specs"]
-    grid = setup["grid"]
-    ofo_config: OFOConfig = setup["ofo_config"]
-    tap_schedule = setup["tap_schedule"]
+) -> _BuiltScenario:
+    datacenters, dc_specs, grid, ofo_config, tap_schedule, _ = build_ieee123_setup(inference_data)
 
     storages: list[RecordingBatteryStorage] = []
-    storage_enabled = scenario in {"ofo_idle_storage", "ofo_qv_storage", "ofo_pv_storage"}
-    if storage_enabled:
+    storage_bus: dict[RecordingBatteryStorage, str] = {}
+    if scenario in STORAGE_SCENARIOS:
         for site in STORAGE_SITES:
             storage = RecordingBatteryStorage(
                 name=site.name,
@@ -169,9 +333,10 @@ def build_scenario(
                 apparent_power_kva=site.apparent_power_kva,
             )
             storages.append(storage)
+            storage_bus[storage] = site.bus
             grid.attach_storage(storage, bus=site.bus)
 
-    controllers = []
+    controllers: list = []
     if scenario == "baseline":
         controllers.append(TapScheduleController(schedule=tap_schedule, dt_s=DT_CTRL))
     else:
@@ -188,19 +353,20 @@ def build_scenario(
                 )
             )
 
+    droop_mode: StorageDroopConfig | None
     if scenario == "ofo_qv_storage":
-        controllers.append(
-            LocalVoltageStorageDroopController(
-                grid=grid,
-                config=StorageDroopConfig(mode="qv"),
-                dt_s=DT_CTRL,
-            )
-        )
+        droop_mode = StorageDroopConfig(mode="qv")
     elif scenario == "ofo_pv_storage":
+        droop_mode = StorageDroopConfig(mode="pv")
+    else:
+        droop_mode = None
+
+    if droop_mode is not None:
         controllers.append(
             LocalVoltageStorageDroopController(
                 grid=grid,
-                config=StorageDroopConfig(mode="pv"),
+                storages=storage_bus,
+                config=droop_mode,
                 dt_s=DT_CTRL,
             )
         )
@@ -211,29 +377,29 @@ def build_scenario(
         controllers=controllers,
         total_duration_s=TOTAL_DURATION_S,
     )
-    return coordinator, storages
+    return _BuiltScenario(coordinator=coordinator, storages=storages)
 
 
 def run_scenario(
     scenario: ScenarioName,
     inference_data: InferenceData,
-    training_trace: TrainingTrace,
     logistic_models: LogisticModelStore,
+    exclude_buses: tuple[str, ...],
 ) -> ScenarioResult:
     logger.info("Running scenario: %s", scenario)
-    coordinator, storages = build_scenario(scenario, inference_data, training_trace, logistic_models)
-    log = coordinator.run()
+    built = build_scenario(scenario, inference_data, logistic_models)
+    log = built.coordinator.run()
     stats = compute_allbus_voltage_stats(
         log.grid_states,
         v_min=V_MIN,
         v_max=V_MAX,
-        exclude_buses=tuple(standard_ieee_examples.SYSTEMS["ieee123"]()["exclude_buses"]),
+        exclude_buses=exclude_buses,
     )
     performance = compute_performance_stats(
         log.dc_states,
-        itl_deadline_s_by_model={spec.model_label: spec.itl_deadline_s for spec in STANDARD_IEEE123_MODEL_SPECS},
+        itl_deadline_s_by_model={spec.model_label: spec.itl_deadline_s for spec in ALL_MODEL_SPECS},
     )
-    return ScenarioResult(name=scenario, log=log, stats=stats, performance=performance, storages=storages)
+    return ScenarioResult(name=scenario, log=log, stats=stats, performance=performance, storages=built.storages)
 
 
 def local_voltage_pu(state: GridState, bus: str, bus_case_cache: dict[str, str] | None = None) -> float:
@@ -431,9 +597,12 @@ def write_datacenter_timeseries(results: dict[ScenarioName, ScenarioResult], sav
     logger.info("Saved %s", path)
 
 
-def plot_voltage_envelopes(results: dict[ScenarioName, ScenarioResult], save_dir: Path) -> None:
+def plot_voltage_envelopes(
+    results: dict[ScenarioName, ScenarioResult],
+    save_dir: Path,
+    exclude_buses: tuple[str, ...],
+) -> None:
     """Plot feeder-wide voltage envelopes for each storage scenario."""
-    exclude = tuple(standard_ieee_examples.SYSTEMS["ieee123"]()["exclude_buses"])
     n = len(results)
     fig, axes = plt.subplots(n, 1, figsize=(12, 3.0 * n), sharex=True, sharey=True)
     if n == 1:
@@ -441,7 +610,7 @@ def plot_voltage_envelopes(results: dict[ScenarioName, ScenarioResult], save_dir
 
     for ax, (scenario, result) in zip(axes, results.items(), strict=True):
         time_s = np.asarray(result.log.time_s)
-        v_min_arr, v_max_arr = scenario_voltage_envelope(result, exclude)
+        v_min_arr, v_max_arr = scenario_voltage_envelope(result, exclude_buses)
         ax.fill_between(time_s, v_min_arr, v_max_arr, alpha=0.28, color="#4C78A8")
         ax.plot(time_s, v_min_arr, color="#2F5F8F", linewidth=0.8, label="Feeder min")
         ax.plot(time_s, v_max_arr, color="#F58518", linewidth=0.8, label="Feeder max")
@@ -627,26 +796,25 @@ def main() -> None:
     save_dir = Path(args.output_dir).expanduser().resolve()
     save_dir.mkdir(parents=True, exist_ok=True)
 
-    specs = STANDARD_IEEE123_MODEL_SPECS
-    logger.info("Loading inference traces for %d model specs...", len(specs))
+    logger.info("Loading inference traces for %d model specs...", len(ALL_MODEL_SPECS))
     inference_data = InferenceData.ensure(
         SPECS_CACHE_DIR,
-        specs,
+        ALL_MODEL_SPECS,
         plot=False,
         dt_s=float(DT_DC),
     )
-    logger.info("Loading standard training trace...")
-    training_trace = TrainingTrace.ensure(TRAINING_TRACE_PATH)
-    logger.info("Loading OFO logistic models for %d model specs...", len(specs))
+    logger.info("Loading OFO logistic models for %d model specs...", len(ALL_MODEL_SPECS))
     logistic_models = LogisticModelStore.ensure(
         SPECS_CACHE_DIR,
-        specs,
+        ALL_MODEL_SPECS,
         plot=False,
     )
 
+    exclude_buses = tuple(SYSTEMS["ieee123"]()["exclude_buses"])
+
     results: dict[ScenarioName, ScenarioResult] = {}
     for scenario in cast_scenarios(args.scenarios):
-        result = run_scenario(scenario, inference_data, training_trace, logistic_models)
+        result = run_scenario(scenario, inference_data, logistic_models, exclude_buses)
         results[scenario] = result
         logger.info(
             (
@@ -666,7 +834,7 @@ def main() -> None:
     write_storage_timeseries(results, save_dir)
     write_storage_dispatch_summary(results, save_dir)
     write_datacenter_timeseries(results, save_dir)
-    plot_voltage_envelopes(results, save_dir)
+    plot_voltage_envelopes(results, save_dir, exclude_buses)
     plot_local_storage_voltages(results, save_dir)
     plot_storage_dispatch(results, save_dir)
     plot_datacenter_fleet_power(results, save_dir)

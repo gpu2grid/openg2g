@@ -31,9 +31,12 @@ def test_set_taps_is_grid_command() -> None:
 
 
 def test_set_storage_power_is_grid_command() -> None:
-    cmd = SetStoragePower(storage_name="battery", power_kw=10.0, reactive_power_kvar=2.0)
+    from openg2g.grid.storage import BatteryStorage
+
+    storage = BatteryStorage(name="battery", rated_power_kw=10.0, capacity_kwh=20.0)
+    cmd = SetStoragePower(storage=storage, power_kw=10.0, reactive_power_kvar=2.0)
     assert isinstance(cmd, GridCommand)
-    assert cmd.storage_name == "battery"
+    assert cmd.storage is storage
     assert cmd.power_kw == 10.0
     assert cmd.reactive_power_kvar == 2.0
 

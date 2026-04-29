@@ -137,86 +137,23 @@ grid.attach_storage(
 
 All `attach_*` calls must happen before `start()` (which the [`Coordinator`][openg2g.coordinator.Coordinator] calls automatically). Static loads defined in the DSS file coexist with attached dynamic components -- the power flow sees both.
 
-#### Generators and loads
+#### Generators, loads, and storage
 
-[`Generator`][openg2g.grid.generator.Generator] and [`ExternalLoad`][openg2g.grid.load.ExternalLoad] are abstract base classes with a single method `power_kw(t)` that returns real power at simulation time `t`. Built-in implementations:
+[`Generator`][openg2g.grid.generator.Generator] and [`ExternalLoad`][openg2g.grid.load.ExternalLoad] are abstract base classes with a single `power_kw(t)` method. [`EnergyStorage`][openg2g.grid.storage.EnergyStorage] is similar but bidirectional and stateful: it returns both `power_kw(t)` and `reactive_power_kvar(t)`, and accepts external setpoints via `set_power_kw(...)`. Built-in implementations:
 
-| Class | Description |
-|-------|-------------|
-| [`SyntheticPV`][openg2g.grid.generator.SyntheticPV] | Demonstration PV profile with cloud dips and trends |
-| [`ConstantGenerator`][openg2g.grid.generator.ConstantGenerator] | Fixed power output |
-| [`CSVProfileGenerator`][openg2g.grid.generator.CSVProfileGenerator] | Interpolated from a CSV time series |
-| [`SyntheticLoad`][openg2g.grid.load.SyntheticLoad] | Demonstration load with diurnal bumps |
-| [`ConstantLoad`][openg2g.grid.load.ConstantLoad] | Fixed power consumption |
-| [`CSVProfileLoad`][openg2g.grid.load.CSVProfileLoad] | Interpolated from a CSV time series |
+| Class | Kind | Description |
+|-------|------|-------------|
+| [`SyntheticPV`][openg2g.grid.generator.SyntheticPV] | Generator | Demonstration PV profile with cloud dips and trends |
+| [`ConstantGenerator`][openg2g.grid.generator.ConstantGenerator] | Generator | Fixed power output |
+| [`CSVProfileGenerator`][openg2g.grid.generator.CSVProfileGenerator] | Generator | Interpolated from a CSV time series |
+| [`SyntheticLoad`][openg2g.grid.load.SyntheticLoad] | External load | Demonstration load with diurnal bumps |
+| [`ConstantLoad`][openg2g.grid.load.ConstantLoad] | External load | Fixed power consumption |
+| [`CSVProfileLoad`][openg2g.grid.load.CSVProfileLoad] | External load | Interpolated from a CSV time series |
+| [`BatteryStorage`][openg2g.grid.storage.BatteryStorage] | Storage | Mutable setpoint battery backed by native OpenDSS `Storage` physics |
 
-The CSV variants expect a two-column file (time in seconds, power in kW) with a header row; values between samples are linearly interpolated.
+The CSV variants expect a two-column file (time in seconds, power in kW) with a header row; values between samples are linearly interpolated. Subclass `Generator`, `ExternalLoad`, or `EnergyStorage` to implement custom profiles or storage models.
 
-Subclass `Generator` or `ExternalLoad` to implement custom profiles (e.g., real weather-driven PV, measured load traces).
-
-#### Energy storage
-
-[`EnergyStorage`][openg2g.grid.storage.EnergyStorage] resources are bidirectional, stateful grid resources. Attach them with [`OpenDSSGrid.attach_storage`][openg2g.grid.opendss.OpenDSSGrid.attach_storage]:
-
-```python
-from openg2g.grid.storage import BatteryStorage
-
-storage = BatteryStorage(
-    name="bat_671",
-    rated_power_kw=250.0,
-    capacity_kwh=500.0,
-    initial_soc=0.5,
-    apparent_power_kva=300.0,
-)
-grid.attach_storage(storage, bus="671")
-```
-
-The OpenDSS backend creates a native `Storage` element during `start()`. The base DSS files are not modified; the element is added to the compiled circuit for the simulation run. Storage attachments must happen before `start()`, like the other `attach_*` APIs.
-
-Positive real power discharges the battery into the grid, while negative real power charges it from the grid. Positive reactive power injects kvar; negative reactive power absorbs kvar. [`BatteryStorage`][openg2g.grid.storage.BatteryStorage] supports externally held setpoints via [`SetStoragePower`][openg2g.grid.command.SetStoragePower]:
-
-```python
-from openg2g.grid.command import SetStoragePower
-
-# Discharge 50 kW.
-SetStoragePower(storage_name="bat_671", power_kw=50.0)
-
-# Charge 25 kW.
-SetStoragePower(storage_name="bat_671", power_kw=-25.0)
-
-# Pure reactive support: inject 100 kvar without a real-power command.
-SetStoragePower(storage_name="bat_671", power_kw=0.0, reactive_power_kvar=100.0)
-```
-
-Controllers emit these commands and the coordinator routes them to the grid backend. The storage object holds the latest command between controller ticks, so a slower controller setpoint affects multiple faster grid/storage timesteps.
-
-Use grid query helpers to discover and monitor storage resources:
-
-```python
-if grid.has_storage:
-    for name in grid.storage_names:
-        bus = grid.storage_bus(name)
-        state = grid.storage_state(name)
-        print(name, bus, state.soc, state.power_kw, state.reactive_power_kvar)
-```
-
-The state returned by [`storage_state`][openg2g.grid.opendss.OpenDSSGrid.storage_state] is read back from OpenDSS after the grid step. Treat realized `power_kw` and `reactive_power_kvar` as simulation results, even when they differ slightly from the commanded value.
-
-For a built-in local voltage policy, use [`LocalVoltageStorageDroopController`][openg2g.controller.storage.LocalVoltageStorageDroopController]:
-
-```python
-from fractions import Fraction
-
-from openg2g.controller.storage import LocalVoltageStorageDroopController, StorageDroopConfig
-
-storage_controller = LocalVoltageStorageDroopController(
-    grid=grid,
-    config=StorageDroopConfig(mode="qv"),
-    dt_s=Fraction(1),
-)
-```
-
-The default Q-V mode emits reactive-power commands using each storage resource's local bus voltage from the previous control window. Set `StorageDroopConfig(mode="pv")` for real-power droop. In both modes, commands are local, fleet-capable, and zero-order held until the next controller step.
+Storage is the only one of the three that the simulation can actively command at runtime: controllers emit [`SetStoragePower`][openg2g.grid.command.SetStoragePower] commands carrying the storage object, and OpenG2G ships a [`LocalVoltageStorageDroopController`][openg2g.controller.storage.LocalVoltageStorageDroopController] for local Q-V or P-V droop. See [`BatteryStorage`](#batterystorage) and [`LocalVoltageStorageDroopController`](#localvoltagestoragedroopcontroller) below.
 
 #### Tap schedules
 
@@ -506,7 +443,7 @@ The following sections describe how the built-in components implement the interf
 
 ### `OfflineDatacenter`
 
-[`OfflineDatacenter`][openg2g.datacenter.offline.OfflineDatacenter] implements [`DatacenterBackend`][openg2g.datacenter.base.DatacenterBackend] by replaying real GPU power traces at controlled batch sizes.
+[`OfflineDatacenter`][openg2g.datacenter.offline.OfflineDatacenter] implements [`DatacenterBackend`][openg2g.datacenter.base.DatacenterBackend] by replaying real GPU power traces at the controller's commanded batch size. Each step it allocates servers per model from a shared phase-balanced [`ServerPool`][openg2g.datacenter.layout.ServerPool], samples per-GPU power templates with per-server stagger and noise, overlays any active training workload, and sums into per-phase totals.
 
 ```
   Per-model server fleet                Power assembly (3-phase)
@@ -529,113 +466,27 @@ The following sections describe how the built-in components implement the interf
                                        P_A(t)     P_B(t)     P_C(t)
 ```
 
-How it implements the interface:
-
-- **`step(clock, events)`** indexes into pre-built per-GPU power templates using `(global_step + offset) % template_length` per server. Random restart offsets desynchronize servers for a realistic aggregate power profile. Returns an [`OfflineDatacenterState`][openg2g.datacenter.offline.OfflineDatacenterState] (extends [`LLMDatacenterState`][openg2g.datacenter.base.LLMDatacenterState]) with per-model batch sizes, replica counts, and observed ITL.
-- **`apply_control(command, events)`** dispatches [`SetBatchSize`][openg2g.datacenter.command.SetBatchSize] and [`ShiftReplicas`][openg2g.datacenter.command.ShiftReplicas] commands. Batch size changes take effect on the next `step()` call. `ShiftReplicas` adjusts a per-model replica offset; the controller is responsible for checking GPU capacity before issuing the command.
-- **`total_gpu_capacity`**: Maximum number of GPUs this datacenter can physically host. The shared [`ServerPool`][openg2g.datacenter.layout.ServerPool] is sized from this. Exposed via `current_gpu_usage()` and `available_gpu_capacity()` for controllers to check before shifting replicas.
-- **`reset()`** clears step counter, replica offsets, and RNG state. Rebuilds the server pool from the stored config so the next run starts fresh. History is cleared automatically by `do_reset()`.
-- A shared [`ServerPool`][openg2g.datacenter.layout.ServerPool] holds `num_servers` virtual servers with model-independent properties (phase assignment, stagger offset, amplitude scale) and a per-model priority ordering. At each step, the datacenter computes each model's effective replica count (schedule + runtime offset) and the pool allocates servers via phase-balanced round-robin: each model gets `ceil(gpus_needed / gpus_per_server)` servers picked by cycling through phases to keep the allocation phase-balanced.
-- Training workload overlays add transient high-power phases.
+[`SetBatchSize`][openg2g.datacenter.command.SetBatchSize] takes effect on the next step; [`ShiftReplicas`][openg2g.datacenter.command.ShiftReplicas] adjusts a per-model replica offset and the caller is responsible for checking GPU capacity.
 
 ### `OpenDSSGrid`
 
-[`OpenDSSGrid`][openg2g.grid.opendss.OpenDSSGrid] implements [`GridBackend`][openg2g.grid.base.GridBackend] using the OpenDSS power flow solver on standard IEEE test feeders.
-
-How it implements the interface:
-
-- **`step(clock, power_samples_w, events)`** takes the most recent power sample from the accumulated buffer and runs a single OpenDSS power flow solve. If no samples are provided (grid runs faster than datacenter), the last known power is reused. Returns a [`GridState`][openg2g.grid.base.GridState] with per-bus, per-phase voltages and tap positions.
-- **`apply_control(command, events)`** dispatches [`SetTaps`][openg2g.grid.command.SetTaps] commands to update regulator tap positions and [`SetStoragePower`][openg2g.grid.command.SetStoragePower] commands to update storage setpoints.
-- **`reset()`** clears cached state and the `_started` flag. History is cleared automatically by `do_reset()`. The DSS circuit is recompiled on the next `start()`.
-- **`start()`** compiles the DSS circuit from the case files, builds the bus-phase voltage index (`v_index`), prepares snapshot indexing structures, and creates native OpenDSS `Storage` elements for any attached storage resources.
-- **`voltages_vector()`** returns a flat numpy array of all bus-phase voltages in `v_index` order (used by the OFO controller for gradient computation).
-- **`estimate_sensitivity(perturbation_kw)`** computes a finite-difference estimate of the voltage sensitivity matrix dV/dP.
-- **Storage helpers**: `has_storage`, `storage_names`, `storage_state(name)`, `storage_bus(name)`, `storage_rated_power_kw(name)`, and `storage_rated_apparent_power_kva(name)` expose storage metadata and OpenDSS readback state without requiring controllers to inspect attachment internals.
+[`OpenDSSGrid`][openg2g.grid.opendss.OpenDSSGrid] implements [`GridBackend`][openg2g.grid.base.GridBackend] by wrapping a compiled OpenDSS circuit and running one power-flow solve per step. `start()` compiles the user's DSS file, builds the bus-phase voltage index, and adds native `Storage` elements for any attached storage (storage requires a three-phase bus). Each step writes datacenter, generator, external-load, and storage setpoints into OpenDSS, solves, and returns per-bus, per-phase voltages plus tap positions; each attached storage then receives a [`StorageState`][openg2g.grid.storage.StorageState] readback through `update_state()`. The grid accepts [`SetTaps`][openg2g.grid.command.SetTaps] and [`SetStoragePower`][openg2g.grid.command.SetStoragePower], and exposes `voltages_vector()` and a finite-difference `estimate_sensitivity()` (dV/dP) for controllers that need fine-grained voltage information — used by [`OFOBatchSizeController`](#ofobatchsizecontroller).
 
 ### `BatteryStorage`
 
-[`BatteryStorage`][openg2g.grid.storage.BatteryStorage] is a simple mutable setpoint storage resource backed by native OpenDSS `Storage` physics.
-
-How it implements the interface:
-
-- **`power_kw(t)` / `reactive_power_kvar(t)`** return the currently held setpoints. Positive real power discharges; negative real power charges. Positive reactive power injects kvar.
-- **`set_power_kw(power_kw, reactive_power_kvar=0.0)`** updates the held setpoint used on subsequent grid steps. The method validates real-power and apparent-power limits before accepting the command.
-- **`update_state(state)`** receives [`StorageState`][openg2g.grid.storage.StorageState] read back from OpenDSS after the grid step. The state includes stored energy, SOC, realized real/reactive power, and OpenDSS storage state.
-- **`sized_for_datacenter(...)`** creates a battery sized relative to total datacenter real power. The default is 20% of datacenter power and 2 hours of storage duration.
+[`BatteryStorage`][openg2g.grid.storage.BatteryStorage] implements [`EnergyStorage`][openg2g.grid.storage.EnergyStorage] as a mutable setpoint battery. `set_power_kw(...)` validates real and apparent power against the rating and stores the request; `OpenDSSGrid` reads the setpoint each step, writes it to a native OpenDSS `Storage` element, and after the solve calls `update_state()` with the OpenDSS-reported [`StorageState`][openg2g.grid.storage.StorageState] (cached on `storage.state`). `BatteryStorage.sized_for_datacenter(...)` is a convenience constructor that derives ratings from a datacenter's real power (default 20% rated power, 2-hour duration).
 
 ### `OFOBatchSizeController`
 
-[`OFOBatchSizeController`][openg2g.controller.ofo.OFOBatchSizeController] implements [`Controller`][openg2g.controller.base.Controller] using Online Feedback Optimization (primal-dual) to regulate batch sizes for voltage safety. For the full mathematical formulation, see the [G2G paper](https://arxiv.org/abs/2602.05116).
-
-How it implements the interface:
-
-- **`__init__(..., datacenter=, grid=)`** binds the controller to a specific datacenter and grid at construction time.
-- **`step(clock, events)`** reads `active_replicas_by_model` and `observed_itl_s_by_model` from `self._datacenter.state`, and `phase_share_by_model` from the datacenter itself. On the grid side, it calls `self._grid.v_index`, `self._grid.voltages_vector()`, and `self._grid.estimate_sensitivity()`. Returns a list of [`SetBatchSize`][openg2g.datacenter.command.SetBatchSize] commands with `target` set explicitly.
-- **`reset()`** clears dual variables (voltage and latency multipliers), primal state, step counters, and the cached sensitivity matrix.
-- Binds its generic type parameters to [`LLMBatchSizeControlledDatacenter`][openg2g.datacenter.base.LLMBatchSizeControlledDatacenter] and [`OpenDSSGrid`][openg2g.grid.opendss.OpenDSSGrid], since it requires LLM-specific state fields and OpenDSS-specific methods (`voltages_vector`, `estimate_sensitivity`).
-- In multi-DC setups, create one controller per DC. Each controller calls `estimate_sensitivity(dc=self._datacenter)` to compute gradients only for its DC's loads.
-
-### `RuleBasedBatchSizeController`
-
-[`RuleBasedBatchSizeController`][openg2g.controller.rule_based.RuleBasedBatchSizeController] implements a proportional rule-based controller for batch-size regulation. Unlike OFO, it requires no sensitivity matrix, no logistic curve fits, and no dual variables, making it a simple baseline for comparison.
-
-How it works:
-
-- **`step(clock, events)`** reads all bus-phase voltages from `self._grid.state.voltages`, finds the worst violation, and adjusts batch sizes proportionally in log2-space. Undervoltage reduces batch (less power draw); overvoltage increases batch.
-- Continuous internal state accumulates pressure across steps, enabling gradual batch transitions even with small violations.
-- Optional **latency guard** prevents batch increases when ITL exceeds the model's deadline.
-- Optional **deadband** (default 0.001 pu) filters tiny violations to prevent chattering.
-- Configuration via [`RuleBasedConfig`][openg2g.controller.rule_based.RuleBasedConfig]: `step_size` (proportional gain), `v_min/v_max`, `deadband`, `latency_guard`.
+[`OFOBatchSizeController`][openg2g.controller.ofo.OFOBatchSizeController] implements [`Controller`][openg2g.controller.base.Controller] using primal-dual Online Feedback Optimization. It illustrates the typical tightly-coupled controller: it binds to a specific datacenter and grid via its generic type parameters, each step reads observed ITL and replica counts from the bound datacenter and `voltages_vector()` + `estimate_sensitivity()` from the bound grid, and emits one [`SetBatchSize`][openg2g.datacenter.command.SetBatchSize] per model with `target` set. In multi-DC setups, use one controller per datacenter so each computes sensitivities only for its own DC's loads. See the [G2G paper](https://arxiv.org/abs/2602.05116) for the math.
 
 ### `LoadShiftController`
 
-[`LoadShiftController`][openg2g.controller.load_shift.LoadShiftController] is a cross-site controller that shifts LLM replicas between datacenters when batch-size control is exhausted and voltage violations persist. It holds references to all DCs and the grid at construction. It must be placed **after** all per-site OFO controllers in the controller list so it sees the latest batch-size state.
-
-**Rules:**
-
-1. **Warm start only**: Only shifts models already running at both source and destination sites.
-2. **Last resort**: Only acts when all models at the violated site have batch sizes at their feasible limit (OFO is saturated).
-3. **Directional**: For undervoltage, shifts replicas OUT of the violated site to the site with the highest voltage. For overvoltage, shifts replicas IN from the site with the lowest voltage.
-4. **Capacity-aware**: Checks `available_gpu_capacity()` on the destination before shifting. Shifts are rejected if the destination datacenter is full.
-5. **Incremental**: Shifts `gpus_per_shift` GPUs worth of replicas per time step, repeating until the violation resolves.
-
-**Wiring:**
-
-```python
-from openg2g.controller.load_shift import LoadShiftConfig, LoadShiftController
-
-controllers = [
-    TapScheduleController(...),
-    OFOBatchSizeController(..., datacenter=dc_a, grid=grid),
-    OFOBatchSizeController(..., datacenter=dc_b, grid=grid),
-    # Load shift controller must be LAST
-    LoadShiftController(
-        config=LoadShiftConfig(enabled=True, gpus_per_shift=8),
-        dt_s=Fraction(1),
-        datacenters=[dc_a, dc_b],
-        grid=grid,
-        models_by_dc={dc_a: ["Model-A", "Model-B"], dc_b: ["Model-B", "Model-C"]},
-        gpus_per_replica_by_model={"Model-A": 1, "Model-B": 4, "Model-C": 8},
-        feasible_batch_sizes_by_model={"Model-A": [8, 16, 32], ...},
-        v_min=0.95, v_max=1.05,
-    ),
-]
-```
-
-Every `DatacenterCommand` must set `target` to the datacenter it applies to. The `ShiftReplicas` command sets `target` explicitly on both the send and receive sides.
+[`LoadShiftController`][openg2g.controller.load_shift.LoadShiftController] implements [`Controller`][openg2g.controller.base.Controller] for cross-site coordination. It holds references to all datacenters and, in a single step, emits paired [`ShiftReplicas`][openg2g.datacenter.command.ShiftReplicas] commands targeting different DCs (`-` at the source, `+` at the destination) — illustrating a controller that spans multiple datacenters and produces a coordinated multi-target action. It also has an ordering relationship with other controllers: its activation rule depends on whether per-site batch controllers are saturated, so it must run after them.
 
 ### `LocalVoltageStorageDroopController`
 
-[`LocalVoltageStorageDroopController`][openg2g.controller.storage.LocalVoltageStorageDroopController] implements a local voltage droop policy for one or more attached storage resources.
-
-How it works:
-
-- **Local voltage only**: Each storage resource uses the voltage at its own attachment bus. The controller does not aggregate feeder-wide voltage.
-- **Previous-window control**: The controller reads grid history emitted since its previous control tick and reduces the local voltage samples using `voltage_statistic` (`minimum`, `mean`, or `latest`).
-- **Q-V mode**: `StorageDroopConfig(mode="qv")` emits reactive-power commands. Positive output injects kvar when local voltage is low; negative output absorbs kvar when local voltage is high.
-- **P-V mode**: `StorageDroopConfig(mode="pv")` emits real-power commands. Positive output discharges when local voltage is low; negative output charges when local voltage is high.
-- **Fleet targeting**: By default, the controller targets all attached storage resources. Pass `storage_name=` for a single resource or `storage_names=` for a subset.
-- **Deadband and clipping**: `deadband_pu` avoids small commands near `v_ref`; `full_output_voltage_error_pu` sets the error where output reaches the storage rating. The output ramps continuously from the deadband edge and is clipped to the storage rating or `max_abs_output`.
+[`LocalVoltageStorageDroopController`][openg2g.controller.storage.LocalVoltageStorageDroopController] implements [`Controller`][openg2g.controller.base.Controller] for storage rather than datacenters. It illustrates two patterns the other built-in controllers don't: targeting an [`EnergyStorage`][openg2g.grid.storage.EnergyStorage] (via [`SetStoragePower`][openg2g.grid.command.SetStoragePower]), and reading windowed grid *history* rather than just the current state — each step it consumes the history accumulated since the previous tick, reduces each storage's local samples by the configured `voltage_statistic`, and runs a deadbanded droop curve clipped to the storage rating. In Q-V mode the output drives kvar; in P-V mode it drives kW.
 
 ## Example Analysis Scripts
 

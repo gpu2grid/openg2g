@@ -91,7 +91,7 @@ class EnergyStorage(ABC):
         return None
 
 
-@dataclass
+@dataclass(eq=False)
 class BatteryStorage(EnergyStorage):
     """Simple mutable setpoint battery storage model.
 

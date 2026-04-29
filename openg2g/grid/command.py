@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from openg2g.grid.config import TapPosition
+
+if TYPE_CHECKING:
+    from openg2g.grid.storage import EnergyStorage
 
 
 class GridCommand:
@@ -39,12 +43,12 @@ class SetStoragePower(GridCommand):
     charges storage from the grid.
 
     Attributes:
-        storage_name: Name of the attached storage resource to command.
+        storage: Attached storage resource to command.
         power_kw: Real-power setpoint in kW.
         reactive_power_kvar: Reactive-power setpoint in kvar. Positive values
             inject reactive power.
     """
 
-    storage_name: str
+    storage: EnergyStorage
     power_kw: float
     reactive_power_kvar: float = 0.0
