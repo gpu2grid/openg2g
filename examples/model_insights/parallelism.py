@@ -17,7 +17,6 @@ largest batch meeting its ITL target.
 
 from __future__ import annotations
 
-import csv
 import logging
 from dataclasses import dataclass
 from pathlib import Path
@@ -207,17 +206,8 @@ def main(
                 )
 
         out_path = outdir / f"parallelism_{gpu_tag}.csv"
-        _write_csv(rows, out_path)
+        aic.write_csv(rows, out_path)
         logger.info("Wrote %d rows to %s", len(rows), out_path)
-
-
-def _write_csv(rows: list[Row], path: Path) -> None:
-    fields = list(Row.__dataclass_fields__.keys())
-    with open(path, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=fields)
-        writer.writeheader()
-        for r in rows:
-            writer.writerow({k: getattr(r, k) for k in fields})
 
 
 if __name__ == "__main__":

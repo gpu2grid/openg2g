@@ -15,7 +15,6 @@ DC footprint is identical within the pair.
 
 from __future__ import annotations
 
-import csv
 import logging
 from dataclasses import dataclass
 from pathlib import Path
@@ -212,17 +211,8 @@ def main(
                     )
                 )
 
-    _write_csv(all_rows, out)
+    aic.write_csv(all_rows, out)
     logger.info("Wrote %d rows to %s", len(all_rows), out)
-
-
-def _write_csv(rows: list[Row], path: Path) -> None:
-    fields = list(Row.__dataclass_fields__.keys())
-    with open(path, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=fields)
-        writer.writeheader()
-        for r in rows:
-            writer.writerow({k: getattr(r, k) for k in fields})
 
 
 if __name__ == "__main__":

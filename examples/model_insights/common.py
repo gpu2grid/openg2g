@@ -10,6 +10,7 @@ controller mode and returns voltage + performance stats.
 
 from __future__ import annotations
 
+import csv
 import logging
 import math
 import sys
@@ -475,9 +476,7 @@ Mode = Literal["baseline-no-tap", "baseline-tap-change", "ofo-no-tap", "ofo-tap-
 
 @dataclass
 class VariantResult:
-    scenario_label: str
     mode: Mode
-    seed: int
     voltage: VoltageStats
     performance: PerformanceStats
     log: SimulationLog | None = field(default=None, repr=False)
@@ -498,7 +497,7 @@ def run_scenario(
     tap_schedule = scenario["tap_schedule"] if "tap_change" in mode else None
     exclude_buses = scenario["exclude_buses"]
 
-    controllers: list = [
+    controllers: list[Any] = [
         TapScheduleController(
             schedule=tap_schedule if tap_schedule is not None else TapSchedule(()),
             dt_s=DT_CTRL,
@@ -534,9 +533,7 @@ def run_scenario(
     pstats = compute_performance_stats(log.dc_states, itl_deadline_s_by_model=itl_deadlines)
 
     return VariantResult(
-        scenario_label="",
         mode=mode,
-        seed=0,
         voltage=vstats,
         performance=pstats,
         log=log,
@@ -694,3 +691,13 @@ def restrict_spec_by_deadline(
     if not capped:
         capped = (min(spec.feasible_batch_sizes),)
     return spec.model_copy(update={"feasible_batch_sizes": capped, "itl_deadline_s": deadline_s})
+
+
+def write_csv(rows: list[Any], path: Path) -> None:
+    """Write a list of dataclass instances to CSV; columns come from the first row's fields."""
+    fields = list(rows[0].__dataclass_fields__.keys())
+    with open(path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fields)
+        writer.writeheader()
+        for r in rows:
+            writer.writerow({k: getattr(r, k) for k in fields})

@@ -44,19 +44,7 @@ COLORS = {
     "ofo": "#4C72B0",
     "h100": "#4C72B0",
     "b200": "#C44E52",
-    "model_size": "#4C72B0",
-    "admissible_capacity": "#55A868",
-    "parallelism": "#DD8452",
     "hardware": "#C44E52",
-    "precision": "#8172B3",
-}
-
-EXP_LABELS = {
-    "model_size": "A. Model size & architecture",
-    "precision": "B. Weight precision",
-    "parallelism": "C. Parallelism",
-    "hardware": "D. GPU hardware generation",
-    "admissible_capacity": "E. DC capacity under SLO",
 }
 
 DISPLAY_LABELS = {
@@ -93,11 +81,6 @@ def _pretty(label: str) -> str:
     return DISPLAY_LABELS.get(label, label)
 
 
-def _bar_handle(color: str, label: str, *, alpha: float = 1.0, hatch: str | None = None) -> Patch:
-    """Legend handle for a bar."""
-    return Patch(facecolor=color, alpha=alpha, hatch=hatch, edgecolor="white", label=label)
-
-
 def _line_handle(color: str, label: str) -> Line2D:
     """Legend handle for a line-marker plot (Pareto curves)."""
     return Line2D(
@@ -124,23 +107,6 @@ def _combo_handle(color: str, label: str):
         [0], [0], color=color, marker="o", markersize=5.5, markeredgecolor="black", markeredgewidth=0.4, lw=1.6
     )
     return ((bar, line), label)
-
-
-def _legend_above(ax, handles, *, ncol: int) -> None:
-    """Place a color-only legend directly above the plot axes (inline)."""
-    if not handles:
-        return
-    ax.legend(
-        handles=handles,
-        ncol=ncol,
-        loc="lower center",
-        bbox_to_anchor=(0.5, 1.02),
-        frameon=False,
-        handlelength=1.3,
-        columnspacing=1.1,
-        handletextpad=0.5,
-        borderaxespad=0,
-    )
 
 
 def _save_legend(handles, stem: Path, *, ncol: int, width: float, tight: bool = True) -> None:
@@ -376,7 +342,7 @@ def _pair_bars(
 
 
 # ──────────────────────────────────────────────────────────────────────
-# Experiment A — model size & architecture
+# Model size & architecture
 
 
 def plot_model_size(
@@ -434,55 +400,7 @@ def plot_model_size(
 
 
 # ──────────────────────────────────────────────────────────────────────
-# Experiment B — admissible DC capacity
-
-
-def plot_admissible_capacity(df, out, logistic_models, *, suffix: str = "") -> None:
-    """Exp B — DC capacity under SLO. One panel: for each SLO, show the
-    grid-feasible replica-count interval [R_min, R_max] under baseline vs
-    OFO. Gap between baseline's R_max and OFO's R_max is the coordination
-    capacity unlock.
-    """
-    # Collapse seeds — num_replicas is the binary-search result (fixed per
-    # SLO × mode × endpoint). integral_mean at the edges is by design
-    # right at the feasibility threshold.
-    piv = df.groupby(["deadline_ms", "mode", "endpoint"])["num_replicas"].first().unstack("endpoint").reset_index()
-    piv = piv.sort_values("deadline_ms")
-
-    base = piv[piv["mode"] == BASELINE_MODE].set_index("deadline_ms").sort_index()
-    ofo = piv[piv["mode"] == OFO_MODE].set_index("deadline_ms").sort_index()
-    xs = base.index.to_numpy(dtype=float)
-
-    fig, ax = plt.subplots(figsize=(2.8, 1.9))
-    # Baseline feasible band (shared lower edge with OFO).
-    ax.fill_between(xs, base["r_min"], base["r_max"], color=COLORS["baseline"], alpha=0.45, label="Baseline feasible")
-    # OFO's additional unlocked region — between baseline's R_max and OFO's R_max.
-    ax.fill_between(
-        xs, base["r_max"].to_numpy(), ofo["r_max"].to_numpy(), color=COLORS["ofo"], alpha=0.50, label="Unlocked by OFO"
-    )
-    # Boundary lines for clarity.
-    ax.plot(xs, base["r_min"], "-", color="black", lw=0.8, zorder=3)
-    ax.plot(xs, base["r_max"], "-", color=COLORS["baseline"], lw=1.6, zorder=3)
-    ax.plot(xs, ofo["r_max"], "-", color=COLORS["ofo"], lw=1.6, zorder=3)
-
-    ax.set_xlabel("ITL deadline (ms)")
-    ax.set_ylabel("Replicas")
-    ax.set_ylim(bottom=0)
-    ax.grid(True, alpha=0.25)
-    _legend_above(
-        ax,
-        [
-            _bar_handle(COLORS["baseline"], "Baseline feasible", alpha=0.45),
-            _bar_handle(COLORS["ofo"], "Unlocked by OFO", alpha=0.50),
-            Line2D([0], [0], color="black", lw=1.0, label=r"$R_{\min}$ boundary"),
-        ],
-        ncol=3,
-    )
-    _save(fig, out / f"admissible_capacity_a{suffix}")
-
-
-# ──────────────────────────────────────────────────────────────────────
-# Experiment C — parallelism
+# Parallelism
 
 
 def plot_parallelism(df, out, logistic_models, *, suffix: str = "") -> None:
@@ -540,7 +458,7 @@ def plot_parallelism(df, out, logistic_models, *, suffix: str = "") -> None:
 
 
 # ──────────────────────────────────────────────────────────────────────
-# Experiment D — hardware (per-pair + shared legend)
+# Hardware (per-pair + shared legend)
 
 
 _HARDWARE_DROP_PAIRS = {"qwen-30b-a3b-instruct-1gpu"}  # MoE finding redundant with model_size
@@ -678,7 +596,7 @@ def plot_hardware(df, out, logistic_models, *, suffix: str = "") -> None:
 
 
 # ──────────────────────────────────────────────────────────────────────
-# Experiment E — precision
+# Precision
 
 
 MAIN_PRECISION_PAIR = "qwen-235b-a22b-instruct-h100-8gpu"
@@ -749,10 +667,10 @@ def main(
 ) -> None:
     """Generate figures for every CSV present in `indir`.
 
-    `model_size`, `admissible_capacity`, and `parallelism` each write one
-    CSV per GPU (`<name>_b200.csv`, `<name>_h100.csv`); one figure set per
-    GPU is emitted with a matching suffix. `hardware` and `precision` span
-    both GPUs in their PAIRS list and write a single CSV (kept under
+    `model_size` and `parallelism` each write one CSV per GPU
+    (`<name>_b200.csv`, `<name>_h100.csv`); one figure set per GPU is
+    emitted with a matching suffix. `hardware` and `precision` span both
+    GPUs in their PAIRS list and write a single CSV (kept under
     `<name>_b200.csv` for filename consistency).
 
     Args:
@@ -769,7 +687,6 @@ def main(
 
     dual_gpu = (
         ("model_size", plot_model_size),
-        ("admissible_capacity", plot_admissible_capacity),
         ("parallelism", plot_parallelism),
     )
     model_size_b200_xlim: tuple[float, float] | None = None

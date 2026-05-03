@@ -12,7 +12,6 @@ variant's largest feasible batch equals a shared 3.12 MW anchor (Qwen 3
 
 from __future__ import annotations
 
-import csv
 import logging
 from dataclasses import dataclass
 from pathlib import Path
@@ -152,7 +151,7 @@ def main(
     only: tuple[str, ...] | None = None,
     outdir: Path = DEFAULT_OUTDIR,
 ) -> None:
-    """Run Experiment A on one or both GPU ladders.
+    """Run the model-size sweep on one or both GPU ladders.
 
     Args:
         seeds: seeds to run per variant.
@@ -209,17 +208,8 @@ def main(
                 )
 
         out_path = outdir / f"model_size_{gpu_tag}.csv"
-        _write_csv(rows, out_path)
+        aic.write_csv(rows, out_path)
         logger.info("Wrote %d rows to %s", len(rows), out_path)
-
-
-def _write_csv(rows: list[Row], path: Path) -> None:
-    fields = list(Row.__dataclass_fields__.keys())
-    with open(path, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=fields)
-        writer.writeheader()
-        for r in rows:
-            writer.writerow({k: getattr(r, k) for k in fields})
 
 
 if __name__ == "__main__":
