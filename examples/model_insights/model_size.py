@@ -1,31 +1,13 @@
-"""Experiment A — model size and architecture on the IEEE 13 scenario.
+"""Model size and architecture sweep on the IEEE 13 scenario.
 
 Runs a model ladder on both B200 and H100 (selectable via `--gpu`) and
 writes one CSV per GPU (`model_size_b200.csv`, `model_size_h100.csv`).
 
-B200 ladder: Qwen 3 dense {8B, 32B}, MoE Qwen 3 30B A3B Instruct at
-1 GPU, Qwen 3 235B A22B BF16 at 8 GPU (the "largest" anchor), and
-GPT-OSS 120B at 2 GPU on gpqa for an mxfp4-reasoning datapoint.
-
-H100 ladder: the B200 counterparts of each of the five (dropping the
-`-B200` suffix in spec labels), plus Llama 3.1 70B and Llama 3.1 405B
-(for which v3 does not yet have B200 measurements).
-
-Both `lm-arena-chat` and `gpqa` tasks are represented; the realistic
-deployment mix covers chat and reasoning workloads and we do not collapse
-to one. Task differences are a covariate, not a confound to eliminate.
-
-DeepSeek R1 / V3.1 replica counts that match our GPU budget exceed
-IEEE 13 feeder capacity (a GPU-allocation phenomenon, not a model-design
-observation), so they stay in the catalog but are not on the ladder.
-
-Each variant uses a per-variant ITL deadline reflecting a realistic
-serving target, and a pre-computed match-peak replica count so that peak
-inference power at the variant's largest feasible batch equals a shared
-3.12 MW anchor (Qwen 3 8B at 4,800 replicas on H100).
-
-Runs `baseline-no-tap` and `ofo-no-tap` across a set of seeds, emitting
-CSVs compatible with `plots.py`.
+Both `lm-arena-chat` and `gpqa` tasks are represented to cover chat and
+reasoning workloads. Each variant uses a per-variant ITL deadline and a
+pre-computed match-peak replica count so peak inference power at the
+variant's largest feasible batch equals a shared 3.12 MW anchor (Qwen 3
+8B at 4,800 replicas on H100).
 """
 
 from __future__ import annotations
@@ -44,18 +26,9 @@ from openg2g.datacenter.config import ModelDeployment, ReplicaSchedule
 logger = logging.getLogger("model_insights.model_size")
 
 
-# Variant catalogs, indexed by GPU.
-#
-# Each entry = (spec_label, num_replicas, deadline_ms). Replica counts
-# are match-peak — sized so peak inference power at the variant's max
-# feasible batch under its deadline equals the shared 3.12 MW anchor
-# (Qwen 3 8B at 4,800 replicas on H100). Matching GPU count would
-# double-book the feeder because B200 draws substantially more per-GPU
-# than H100.
-#
-# Deadlines are realistic per-variant targets; larger / memory-heavier
-# models get slightly looser deadlines because the logistic→mixture-tail
-# mismatch causes occasional ITL misses near the fit boundary.
+# Variant catalogs, indexed by GPU. Each entry is
+# (spec_label, num_replicas, deadline_ms); replica counts are match-peak
+# sized to a 3.12 MW anchor (Qwen 3 8B at 4,800 replicas on H100).
 VARIANTS_B200: list[tuple[str, int, int]] = [
     ("Qwen3-8B-B200", 4326, 50),  # 1 GPU, B200 BF16, lm-arena-chat
     ("Qwen3-32B-1GPU-B200", 3361, 50),  # 1 GPU, B200 BF16, lm-arena-chat
@@ -63,10 +36,6 @@ VARIANTS_B200: list[tuple[str, int, int]] = [
     ("GPT-OSS-120B-B200-2GPU", 2092, 50),  # 2 GPU, B200 MXFP4, gpqa (reasoning)
     ("Qwen3-235B-A22B-Instruct-8GPU-B200", 632, 100),  # 8 GPU MoE, B200 BF16, lm-arena-chat
 ]
-# Note: Qwen3-14B-B200 was tried but dropped — v3 logistic-mean latency
-# at batch 256 is ~50 ms, but the underlying two-component-lognormal ITL
-# mixture has a heavy tail that produces 23 % ITL misses under OFO at
-# the 50 ms deadline. That's a fit artifact, not a model-design finding.
 
 VARIANTS_H100: list[tuple[str, int, int]] = [
     ("Qwen3-8B", 4800, 50),  # 1 GPU, H100 BF16, lm-arena-chat (anchor)
@@ -76,12 +45,6 @@ VARIANTS_H100: list[tuple[str, int, int]] = [
     ("Llama-3.1-70B", 1264, 100),  # 4 GPU, H100 BF16, lm-arena-chat (H100-only)
     ("Llama-3.1-405B", 637, 120),  # 8 GPU, H100 FP8, lm-arena-chat (H100-only)
 ]
-# Note: Qwen3-30B-A3B-Instruct-1GPU on H100 was tried but dropped — v3
-# logistic-mean latency at batch 96 is ~34 ms (well under 50 ms), but
-# the underlying two-component-lognormal ITL mixture has a heavy tail
-# that produces ~38 % ITL misses under OFO at the 50 ms deadline. Same
-# fit artifact pattern as Qwen 3 14B on B200. The MoE role on the H100
-# ladder is carried by Qwen 3 235B A22B Instruct.
 
 VARIANTS_BY_GPU: dict[str, list[tuple[str, int, int]]] = {
     "b200": VARIANTS_B200,

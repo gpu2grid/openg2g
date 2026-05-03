@@ -1,16 +1,9 @@
-"""Experiment D — H100 → B200 hardware upgrade.
+"""H100 → B200 hardware-upgrade sweep on the IEEE 13 scenario.
 
-Paired (model, parallelism) variants measured on both H100 and B200, with
-batch ranges that differ dramatically across GPU generations because B200
-has more memory per GPU. Holds the simulator scenario, the SLO, and the
-active GPU count fixed; the only thing that changes is the per-replica
-power and ITL fit.
-
-The simulator does not differentiate H100 vs B200 GPUs — it only tracks an
-active-GPU count. The per-replica power and ITL come from the
-hardware-specific logistic / mixture fits stored in `LogisticModelStore`.
-That makes this a clean "what does the hardware refresh do to the grid
-problem at the same DC footprint" comparison.
+Paired (model, parallelism) variants measured on both H100 and B200 at
+the same DC footprint. The simulator only tracks an active-GPU count;
+per-replica power and ITL come from hardware-specific logistic fits in
+`LogisticModelStore`.
 """
 
 from __future__ import annotations
@@ -29,16 +22,10 @@ from openg2g.datacenter.config import ModelDeployment, ReplicaSchedule
 logger = logging.getLogger("model_insights.hardware")
 
 
-# (pair_label, spec_label, hardware_label, role)
-# `role="anchor"` runs at 4,800 active GPUs (the master-preset footprint).
-# `role="match-peak"` sizes its replicas so peak inference power at the
-# variant's max-feasible-under-SLO batch matches the H100 anchor's peak —
-# B200 GPUs draw substantially more power than H100s, so equating replica
-# counts would just swamp the feeder. Matching peak power is the clean
-# apples-to-apples way to ask "for the same DC footprint, what does the
-# hardware refresh do to the achievable flexibility?"
-
-
+# (pair_label, spec_label, hardware_label, role).
+# `role="anchor"` runs at `ANCHOR_REPLICAS` active GPUs. `role="match-peak"`
+# sizes replicas so peak inference power at the variant's max-feasible-
+# under-SLO batch matches the anchor's peak.
 PAIRS: list[tuple[str, str, str, str]] = [
     ("qwen-8b-1gpu", "Qwen3-8B", "H100", "anchor"),
     ("qwen-8b-1gpu", "Qwen3-8B-B200", "B200", "match-peak"),

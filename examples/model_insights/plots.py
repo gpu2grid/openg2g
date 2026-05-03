@@ -1,16 +1,9 @@
-"""Cross-variant plots for Section-5 (Model-insights) experiments.
+"""Cross-variant plots for the model-insights experiments.
 
-Paper-grade output: each panel is saved as its own file in PDF, SVG, and
-PNG. The paper composes subfloats with `\\subfloat{...}`. No
-`set_title` / `suptitle` — captions carry semantics.
-
-Style from the local `paper_plots.mplstyle` copy (Arial 9 pt,
-Type-1 fonts, deterministic SVG). Every field in it is load-bearing; the
-script raises if the file is missing.
-
-Legends are color-only (no marker/linestyle cycling), horizontal below
-the axis, no legend title. Display labels drop precision / parallelism
-decorations — those belong in captions, not figure legends.
+Each panel saves as its own PDF, SVG, and PNG; the paper composes subfloats
+from these. Style comes from the local `paper_plots.mplstyle`. Legends are
+color-only and horizontal; display labels drop precision / parallelism
+decorations — those live in captions.
 """
 
 from __future__ import annotations
@@ -66,32 +59,21 @@ EXP_LABELS = {
     "admissible_capacity": "E. DC capacity under SLO",
 }
 
-# Display labels kept minimal — drop #GPUs, precision, parallelism
-# suffixes. Those belong in the paper caption, not the figure legend.
 DISPLAY_LABELS = {
     "Qwen3-8B": "Qwen 3 8B",
-    "Qwen3-14B": "Qwen 3 14B",
-    "Qwen3-32B-TP2": "Qwen 3 32B",
     "Qwen3-30B-A3B-Instruct-1GPU": "Qwen 3 30B A3B",
     "Qwen3-30B-A3B-Instruct-2GPU": "Qwen 3 30B A3B",
-    "Llama-3.1-8B": "Llama 3.1 8B",
     "Llama-3.1-70B": "Llama 3.1 70B",
     "Llama-3.1-405B": "Llama 3.1 405B",
     "GPT-OSS-120B-H100-2GPU": "GPT-OSS 120B",
     "GPT-OSS-120B-B200-1GPU": "GPT-OSS 120B",
     "GPT-OSS-120B-B200-2GPU": "GPT-OSS 120B",
-    "DeepSeek-V3.1-B200-8GPU": "DeepSeek V3.1",
-    "DeepSeek-R1-B200-8GPU": "DeepSeek R1",
     "Qwen3-8B-B200": "Qwen 3 8B",
-    "Qwen3-14B-B200": "Qwen 3 14B",
     "Qwen3-32B-1GPU-H100": "Qwen 3 32B",
     "Qwen3-32B-1GPU-B200": "Qwen 3 32B",
     "Qwen3-30B-A3B-Instruct-1GPU-B200": "Qwen 3 30B A3B",
-    "Qwen3-Coder-30B-A3B-B200": "Qwen 3 Coder 30B A3B",
-    "Qwen3-235B-A22B-Instruct-FP8-4GPU": "Qwen 3 235B A22B",
     "Qwen3-235B-A22B-Instruct-FP8-8GPU": "Qwen 3 235B A22B",
     "Qwen3-235B-A22B-Instruct-8GPU": "Qwen 3 235B A22B",
-    "Qwen3-235B-A22B-Instruct-4GPU-B200": "Qwen 3 235B A22B",
     "Qwen3-235B-A22B-Instruct-8GPU-B200": "Qwen 3 235B A22B",
     "Qwen3-235B-A22B-Thinking-8GPU": "Qwen 3 235B A22B Thinking",
     "Qwen3-235B-A22B-Thinking-4GPU-B200": "Qwen 3 235B A22B Thinking",
@@ -102,7 +84,6 @@ DISPLAY_LABELS = {
     "qwen-32b-1gpu": "Qwen 3 32B",
     "qwen-30b-a3b-instruct-1gpu": "Qwen 3 30B A3B",
     "qwen-30b-a3b-instruct": "Qwen 3 30B A3B",
-    "qwen-235b-a22b-instruct": "Qwen 3 235B A22B",
     "qwen-235b-a22b-thinking": "Qwen 3 235B A22B Thinking",
     "gpt-oss-120b": "GPT-OSS 120B",
 }
@@ -275,11 +256,8 @@ def _grouped_bars(
     ax.grid(True, axis="y", alpha=0.25)
 
 
-# Fixed axes rectangle (in figure fraction). Every (a)/(b) panel uses
-# this same position so that — combined with a shared figsize and
-# `bbox_inches=None` — the saved PDFs have identical dimensions and
-# axes at identical positions. When composed side-by-side in LaTeX,
-# x-baselines line up exactly.
+# Fixed axes rectangle so all (a)/(b) panel PDFs share dimensions and
+# x-baselines line up when composed side-by-side in LaTeX.
 _PANEL_FIGSIZE = (2.6, 1.8)
 _PANEL_AXES = (0.23, 0.26, 0.74, 0.70)  # (left, bottom, width, height)
 
@@ -413,9 +391,6 @@ def plot_model_size(
     all_variants = df["variant"].drop_duplicates().tolist()
 
     # Sort variants by power-swing range (least flexible → most flexible).
-    # This is roughly the ordering of how much coordination can reduce
-    # the integral violation, so the bar chart reads as a "flexibility
-    # ladder" from left to right.
     def _swing(variant: str) -> float:
         row = df[(df["variant"] == variant) & (df["mode"] == OFO_MODE)].iloc[0].to_dict()
         _, p_mw, _ = _pareto_from_row(row, logistic_models)
@@ -541,8 +516,7 @@ def plot_parallelism(df, out, logistic_models, *, suffix: str = "") -> None:
         )
         _save(fig, out / f"{stem}_a{suffix}")
 
-        # (b) Pareto — same colors. No inline legend; standalone legend
-        # saved below so all experiments share the same font metrics.
+        # (b) Pareto — same colors.
         entries = []
         for vv, lbl in zip(variants, labels, strict=True):
             r = df[(df["variant"] == vv) & (df["mode"] == OFO_MODE)].iloc[0].to_dict()
@@ -559,12 +533,8 @@ def plot_parallelism(df, out, logistic_models, *, suffix: str = "") -> None:
         _apply_pareto_axes(ax)
         _save(fig, out / f"{stem}_b{suffix}")
 
-        # Parallelism main-text panels are Pareto-only (no bars), so the
-        # legend shows line-marker handles rather than the bar+line combo
-        # used by Figs A/B/D. Native width is pushed wider with larger
-        # columnspacing so the LaTeX-side scale factor matches Fig 2's
-        # (Fig 2 is rendered at \\linewidth / 6.14in ≈ 0.9×; we want the
-        # same scale here so the rendered font matches).
+        # Pareto-only legend (line markers); width tuned to match the
+        # rendered font scale of the bar+line legends in other experiments.
         handles = [_line_handle(color_map[lbl], lbl) for lbl in labels]
         _save_legend(handles, out / f"{stem}_legend{suffix}", ncol=len(labels), width=2.3)
 
@@ -573,7 +543,7 @@ def plot_parallelism(df, out, logistic_models, *, suffix: str = "") -> None:
 # Experiment D — hardware (per-pair + shared legend)
 
 
-_HARDWARE_DROP_PAIRS = {"qwen-30b-a3b-instruct-1gpu"}  # information-redundant with MoE findings in Exp A
+_HARDWARE_DROP_PAIRS = {"qwen-30b-a3b-instruct-1gpu"}  # MoE finding redundant with model_size
 
 
 def plot_hardware(df, out, logistic_models, *, suffix: str = "") -> None:
@@ -715,10 +685,8 @@ MAIN_PRECISION_PAIR = "qwen-235b-a22b-instruct-h100-8gpu"
 
 
 def plot_precision(df, out, logistic_models, *, suffix: str = "") -> None:
-    # Main paper shows only the P1 pair; the other two bf16↔FP8 pairs
-    # (Thinking on H100 8 GPU, Thinking on B200 4 GPU) share the same
-    # FP8-flattens-power-curve mechanism, differing only on task and
-    # hardware axes, and live in the appendix.
+    # Main paper figure uses only MAIN_PRECISION_PAIR; the other pairs
+    # appear in the appendix.
     df = df[df["pair"] == MAIN_PRECISION_PAIR].copy()
     agg = _aggregate(df).merge(
         df[["variant", "precision_label"]].drop_duplicates(),
@@ -779,14 +747,13 @@ def main(
     indir: Path = OUTDIR,
     outdir: Path = OUTDIR / "figures",
 ) -> None:
-    """Generate Section-5 figures for every CSV present in `indir`.
+    """Generate figures for every CSV present in `indir`.
 
-    The three dual-GPU experiments (`model_size`, `admissible_capacity`,
-    `parallelism`) each write one CSV per GPU (`<name>_b200.csv`,
-    `<name>_h100.csv`); one figure set per GPU is emitted with a matching
-    suffix. `hardware` and `precision` already span both GPUs in their
-    PAIRS lists and write a single CSV (kept under `<name>_b200.csv` for
-    filename consistency with paper figure references).
+    `model_size`, `admissible_capacity`, and `parallelism` each write one
+    CSV per GPU (`<name>_b200.csv`, `<name>_h100.csv`); one figure set per
+    GPU is emitted with a matching suffix. `hardware` and `precision` span
+    both GPUs in their PAIRS list and write a single CSV (kept under
+    `<name>_b200.csv` for filename consistency).
 
     Args:
         indir: Directory holding per-experiment CSVs.

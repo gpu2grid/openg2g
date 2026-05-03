@@ -1,4 +1,4 @@
-"""Experiment C — parallelism sweep on the IEEE 13 scenario.
+"""Parallelism sweep on the IEEE 13 scenario.
 
 Runs parallelism-pair sweeps on both B200 and H100 (selectable via
 `--gpu`) and writes one CSV per GPU (`parallelism_b200.csv`,
@@ -9,7 +9,7 @@ B200 pairs:
     Qwen 3 235B A22B Thinking on gpqa, 100 ms ITL: 4 GPU vs 8 GPU
 
 H100 pair:
-    Qwen 3 30B A3B Instruct on lm-arena-chat, 50 ms ITL: 1 GPU vs 2 GPU
+    Qwen 3 30B A3B Instruct on lm-arena-chat, 100 ms ITL: 1 GPU vs 2 GPU
 
 Each variant is match-peak sized to the shared 3.12 MW anchor at the
 largest batch meeting its ITL target.
@@ -32,13 +32,6 @@ logger = logging.getLogger("model_insights.parallelism")
 
 
 # (pair_label, spec_label, parallelism_degree_label, deadline_ms)
-#
-# Each variant is match-peak sized to the shared 3.12 MW anchor at the
-# largest batch meeting its ITL target. Replica counts therefore
-# differ across the pair because the two parallelism degrees have
-# different per-replica power; that's exactly the effect being varied.
-# Latency targets follow the paper's rule: 50 ms for interactive chat,
-# 100 ms for variants where 50 ms is infeasible.
 PAIRS_B200: list[tuple[str, str, str, int]] = [
     ("gpt-oss-120b", "GPT-OSS-120B-B200-1GPU", "1 GPU", 50),
     ("gpt-oss-120b", "GPT-OSS-120B-B200-2GPU", "2 GPU", 50),
@@ -47,11 +40,6 @@ PAIRS_B200: list[tuple[str, str, str, int]] = [
 ]
 
 PAIRS_H100: list[tuple[str, str, str, int]] = [
-    # 100 ms target rather than 50 ms: the Qwen 3 30B A3B Instruct 1 GPU
-    # H100 fit carries a heavy ITL tail that produces excess misses at
-    # 50 ms even though the logistic mean stays well under 50 ms. Looser
-    # target matches the paper's "50 ms for chat, 100 ms where 50 ms is
-    # infeasible" rule.
     ("qwen-30b-a3b-instruct", "Qwen3-30B-A3B-Instruct-1GPU", "1 GPU", 100),
     ("qwen-30b-a3b-instruct", "Qwen3-30B-A3B-Instruct-2GPU", "2 GPU", 100),
 ]
@@ -64,9 +52,6 @@ PAIRS_BY_GPU: dict[str, list[tuple[str, str, str, int]]] = {
 
 ANCHOR_PEAK_KW: float = 3_120.0
 
-# No fixed initial batch: use each variant's max feasible batch so both
-# variants start under maximum power stress. This isolates the "bigger
-# batch range -> more downward flexibility" mechanism.
 DEFAULT_MODES: tuple[aic.Mode, ...] = ("baseline-no-tap", "ofo-no-tap")
 DEFAULT_OUTDIR = Path(__file__).resolve().parent / "outputs"
 

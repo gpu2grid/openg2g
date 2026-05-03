@@ -1,20 +1,11 @@
-"""Shared building blocks for Model-insights Section-5 experiments.
+"""Shared building blocks for the model-insights experiments.
 
-Factors `setup_ieee13` from `run_ofo.py` into a scenario factory that takes
-an arbitrary list of `(ModelDeployment, ReplicaSchedule)` pairs and returns
-the same dict shape `setup_ieee13` returns. The scenario skeleton keeps the
-training overlay, replica-ramp midpoint, tap schedule, and OFO config aligned
-with the master preset unless the caller overrides it. Exogenous PV/load are
-intentionally disabled for these model-insights scenarios.
-
-Use:
-
-```python
-from common import (
-    SPECS, load_shared_data, build_scenario, run_scenario,
-    compute_achievable_power_range,
-)
-```
+`SPECS` is the model catalog. `load_shared_data` hydrates inference data,
+training trace, and logistic fits. `build_scenario` wraps a list of
+`(ModelDeployment, ReplicaSchedule)` pairs into a scenario dict that mirrors
+the IEEE 13 preset (training overlay, replica ramp, tap schedule, OFO
+config); pass `ScenarioOverrides` to deviate. `run_scenario` runs one
+controller mode and returns voltage + performance stats.
 """
 
 from __future__ import annotations
@@ -57,7 +48,7 @@ from systems import SYSTEMS, tap
 
 logger = logging.getLogger("model_insights")
 
-# Master preset — mirrors `run_ofo.py` constants. Do not tweak per experiment.
+# IEEE 13 scenario preset. Do not tweak per experiment.
 
 DT_DC = Fraction(1, 10)
 DT_GRID = Fraction(1, 10)
@@ -70,13 +61,10 @@ POWER_AUG = PowerAugmentationConfig(amplitude_scale_range=(0.98, 1.02), noise_fr
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
 
-# Model specifications catalog
-#
-# Every InferenceModelSpec carries:
-#   - a simulation label (key in `SPECS`)
-#   - the HuggingFace model_id used to match ML.ENERGY benchmark runs
-#   - gpu_model, task, precision, gpus_per_replica, tensor_parallel, expert_parallel
-#   - batch_sizes (the measurement set) + feasible_batch_sizes (the OFO-allowed subset)
+# Model specifications catalog. Each entry binds a simulation label to an
+# `InferenceModelSpec`. The HuggingFace `model_id` is matched against
+# ML.ENERGY benchmark runs; `feasible_batch_sizes` is the OFO-allowed subset
+# of `batch_sizes`.
 
 
 def _spec(
@@ -109,17 +97,7 @@ def _spec(
 
 
 SPECS: dict[str, InferenceModelSpec] = {
-    # Llama family (inherited from run_ofo.py)
-    "Llama-3.1-8B": _spec(
-        "Llama-3.1-8B",
-        "meta-llama/Llama-3.1-8B-Instruct",
-        gpu_model="H100",
-        task="lm-arena-chat",
-        gpus_per_replica=1,
-        itl_deadline_s=0.08,
-        batch_sizes=(8, 16, 32, 64, 96, 128, 192, 256, 384, 512, 768),
-        feasible_batch_sizes=(8, 16, 32, 64, 128, 256, 512),
-    ),
+    # Llama 3.1
     "Llama-3.1-70B": _spec(
         "Llama-3.1-70B",
         "meta-llama/Llama-3.1-70B-Instruct",
@@ -141,7 +119,7 @@ SPECS: dict[str, InferenceModelSpec] = {
         batch_sizes=(8, 16, 32, 64, 96, 128, 192, 256),
         feasible_batch_sizes=(8, 16, 32, 64, 128, 256),
     ),
-    # Qwen 3 dense ladder (lm-arena-chat)
+    # Qwen 3 dense
     "Qwen3-8B": _spec(
         "Qwen3-8B",
         "Qwen/Qwen3-8B",
@@ -152,212 +130,6 @@ SPECS: dict[str, InferenceModelSpec] = {
         batch_sizes=(8, 16, 32, 64, 96, 128, 192, 256, 384, 512),
         feasible_batch_sizes=(8, 16, 32, 64, 128, 256, 512),
     ),
-    "Qwen3-14B": _spec(
-        "Qwen3-14B",
-        "Qwen/Qwen3-14B",
-        gpu_model="H100",
-        task="lm-arena-chat",
-        gpus_per_replica=1,
-        itl_deadline_s=0.09,
-        batch_sizes=(8, 16, 32, 64, 96, 128, 192, 256),
-        feasible_batch_sizes=(8, 16, 32, 64, 128, 256),
-    ),
-    "Qwen3-32B-TP2": _spec(
-        "Qwen3-32B-TP2",
-        "Qwen/Qwen3-32B",
-        gpu_model="H100",
-        task="lm-arena-chat",
-        gpus_per_replica=2,
-        itl_deadline_s=0.10,
-        batch_sizes=(8, 16, 32, 64, 96, 128, 192, 256, 384),
-        feasible_batch_sizes=(8, 16, 32, 64, 128, 256, 384),
-    ),
-    # Qwen 3 30B A3B Instruct — parallelism sweep (Experiment C)
-    "Qwen3-30B-A3B-Instruct-1GPU": _spec(
-        "Qwen3-30B-A3B-Instruct-1GPU",
-        "Qwen/Qwen3-30B-A3B-Instruct-2507",
-        gpu_model="H100",
-        task="lm-arena-chat",
-        gpus_per_replica=1,
-        itl_deadline_s=0.10,
-        batch_sizes=(8, 16, 32, 64, 96),
-        feasible_batch_sizes=(8, 16, 32, 64, 96),
-    ),
-    "Qwen3-30B-A3B-Instruct-2GPU": _spec(
-        "Qwen3-30B-A3B-Instruct-2GPU",
-        "Qwen/Qwen3-30B-A3B-Instruct-2507",
-        gpu_model="H100",
-        task="lm-arena-chat",
-        gpus_per_replica=2,
-        itl_deadline_s=0.10,
-        batch_sizes=(8, 16, 32, 64, 96, 128, 192, 256, 384, 512, 768, 1024),
-        feasible_batch_sizes=(8, 16, 32, 64, 128, 256, 512, 1024),
-    ),
-    # Qwen 3 235B A22B Instruct FP8 — large MoE parallelism (Experiment C paired)
-    "Qwen3-235B-A22B-Instruct-FP8-4GPU": _spec(
-        "Qwen3-235B-A22B-Instruct-FP8-4GPU",
-        "Qwen/Qwen3-235B-A22B-Instruct-2507-FP8",
-        gpu_model="H100",
-        task="lm-arena-chat",
-        precision="fp8",
-        gpus_per_replica=4,
-        itl_deadline_s=0.14,
-        batch_sizes=(8, 16, 32, 64, 96, 128, 192),
-        feasible_batch_sizes=(8, 16, 32, 64, 96, 128, 192),
-    ),
-    "Qwen3-235B-A22B-Instruct-FP8-8GPU": _spec(
-        "Qwen3-235B-A22B-Instruct-FP8-8GPU",
-        "Qwen/Qwen3-235B-A22B-Instruct-2507-FP8",
-        gpu_model="H100",
-        task="lm-arena-chat",
-        precision="fp8",
-        gpus_per_replica=8,
-        itl_deadline_s=0.14,
-        batch_sizes=(8, 16, 32, 64, 96, 128, 192, 256, 384, 512),
-        feasible_batch_sizes=(8, 16, 32, 64, 128, 256, 512),
-    ),
-    # bf16 counterpart of the 8 GPU FP8 variant — Experiment E (precision)
-    "Qwen3-235B-A22B-Instruct-8GPU": _spec(
-        "Qwen3-235B-A22B-Instruct-8GPU",
-        "Qwen/Qwen3-235B-A22B-Instruct-2507",
-        gpu_model="H100",
-        task="lm-arena-chat",
-        gpus_per_replica=8,
-        itl_deadline_s=0.14,
-        batch_sizes=(8, 16, 32, 64, 96, 128, 192, 256),
-        feasible_batch_sizes=(8, 16, 32, 64, 128, 256),
-    ),
-    # bf16 B200 variants — Experiment C (parallelism on B200)
-    "Qwen3-235B-A22B-Instruct-4GPU-B200": _spec(
-        "Qwen3-235B-A22B-Instruct-4GPU-B200",
-        "Qwen/Qwen3-235B-A22B-Instruct-2507",
-        gpu_model="B200",
-        task="lm-arena-chat",
-        gpus_per_replica=4,
-        itl_deadline_s=0.14,
-        batch_sizes=(8, 16, 32, 64, 128, 256, 512, 1024, 1536, 2048, 3072, 4096),
-        feasible_batch_sizes=(8, 16, 32, 64, 128, 256, 512, 1024, 1536, 2048),
-    ),
-    "Qwen3-235B-A22B-Instruct-8GPU-B200": _spec(
-        "Qwen3-235B-A22B-Instruct-8GPU-B200",
-        "Qwen/Qwen3-235B-A22B-Instruct-2507",
-        gpu_model="B200",
-        task="lm-arena-chat",
-        gpus_per_replica=8,
-        itl_deadline_s=0.14,
-        batch_sizes=(8, 16, 32, 64, 128, 256, 512, 1024, 1536, 2048, 4096),
-        feasible_batch_sizes=(8, 16, 32, 64, 128, 256, 512, 1024, 1536, 2048),
-    ),
-    # Additional precision pairs for Experiment E. Each Thinking pair
-    # below pairs the bf16 (unmarked) and FP8 (explicit `-FP8-`) HF repos
-    # of the same base model at matched hardware and task.
-    "Qwen3-235B-A22B-Thinking-8GPU": _spec(
-        "Qwen3-235B-A22B-Thinking-8GPU",
-        "Qwen/Qwen3-235B-A22B-Thinking-2507",
-        gpu_model="H100",
-        task="gpqa",
-        gpus_per_replica=8,
-        itl_deadline_s=0.14,
-        batch_sizes=(8, 16, 32),
-        feasible_batch_sizes=(8, 16, 32),
-    ),
-    "Qwen3-235B-A22B-Thinking-FP8-8GPU": _spec(
-        "Qwen3-235B-A22B-Thinking-FP8-8GPU",
-        "Qwen/Qwen3-235B-A22B-Thinking-2507-FP8",
-        gpu_model="H100",
-        task="gpqa",
-        precision="fp8",
-        gpus_per_replica=8,
-        itl_deadline_s=0.14,
-        batch_sizes=(8, 16, 32, 64, 96, 128),
-        feasible_batch_sizes=(8, 16, 32, 64, 96, 128),
-    ),
-    "Qwen3-235B-A22B-Thinking-FP8-4GPU-B200": _spec(
-        "Qwen3-235B-A22B-Thinking-FP8-4GPU-B200",
-        "Qwen/Qwen3-235B-A22B-Thinking-2507-FP8",
-        gpu_model="B200",
-        task="gpqa",
-        precision="fp8",
-        gpus_per_replica=4,
-        itl_deadline_s=0.14,
-        # Drop 1024: v3 ITL at batch 1024 (217 ms) is far from the logistic
-        # trend of the other batches — almost certainly a PD-disagg /
-        # serving-engine artefact. Keeping it poisons the logistic fit.
-        batch_sizes=(8, 16, 32, 64, 128, 256, 384, 512),
-        feasible_batch_sizes=(8, 16, 32, 64, 128, 256, 384, 512),
-    ),
-    # Qwen 3 14B on B200 — Experiment A (B200 ladder)
-    "Qwen3-14B-B200": _spec(
-        "Qwen3-14B-B200",
-        "Qwen/Qwen3-14B",
-        gpu_model="B200",
-        task="lm-arena-chat",
-        gpus_per_replica=1,
-        itl_deadline_s=0.09,
-        batch_sizes=(8, 16, 32, 64, 128, 256, 512, 1024, 2048),
-        feasible_batch_sizes=(8, 16, 32, 64, 128, 256, 512, 1024),
-    ),
-    # GPT-OSS 120B on B200 at 2 GPU — Experiment A (B200 ladder)
-    "GPT-OSS-120B-B200-2GPU": _spec(
-        "GPT-OSS-120B-B200-2GPU",
-        "openai/gpt-oss-120b",
-        gpu_model="B200",
-        task="gpqa",
-        precision="mxfp4",
-        gpus_per_replica=2,
-        itl_deadline_s=0.10,
-        batch_sizes=(8, 16, 32, 64, 128, 256, 512, 1024, 2048, 3072, 4096),
-        feasible_batch_sizes=(8, 16, 32, 64, 128, 256, 512, 1024),
-    ),
-    # GPT-OSS 120B on B200 at 1 GPU — Experiment C (parallelism on B200)
-    "GPT-OSS-120B-B200-1GPU": _spec(
-        "GPT-OSS-120B-B200-1GPU",
-        "openai/gpt-oss-120b",
-        gpu_model="B200",
-        task="gpqa",
-        precision="mxfp4",
-        gpus_per_replica=1,
-        itl_deadline_s=0.10,
-        batch_sizes=(8, 16, 32, 64, 128, 256, 512, 1024, 2048, 3072),
-        feasible_batch_sizes=(8, 16, 32, 64, 128, 256, 512, 1024),
-    ),
-    # Qwen 3 Coder 30B A3B on B200 sourcegraph-fim — Experiment B (deadline sweep)
-    "Qwen3-Coder-30B-A3B-B200": _spec(
-        "Qwen3-Coder-30B-A3B-B200",
-        "Qwen/Qwen3-Coder-30B-A3B-Instruct",
-        gpu_model="B200",
-        task="sourcegraph-fim",
-        gpus_per_replica=1,
-        itl_deadline_s=0.10,
-        batch_sizes=(8, 16, 32, 64, 128, 256, 512, 1024),
-        feasible_batch_sizes=(8, 16, 32, 64, 128, 256, 512, 1024),
-    ),
-    # Qwen 3 235B A22B Thinking on B200 gpqa — Experiment C second pair
-    "Qwen3-235B-A22B-Thinking-4GPU-B200": _spec(
-        "Qwen3-235B-A22B-Thinking-4GPU-B200",
-        "Qwen/Qwen3-235B-A22B-Thinking-2507",
-        gpu_model="B200",
-        task="gpqa",
-        gpus_per_replica=4,
-        itl_deadline_s=0.20,
-        batch_sizes=(8, 16, 32, 64, 128, 256),
-        feasible_batch_sizes=(8, 16, 32, 64, 128, 256),
-    ),
-    "Qwen3-235B-A22B-Thinking-8GPU-B200": _spec(
-        "Qwen3-235B-A22B-Thinking-8GPU-B200",
-        "Qwen/Qwen3-235B-A22B-Thinking-2507",
-        gpu_model="B200",
-        task="gpqa",
-        gpus_per_replica=8,
-        itl_deadline_s=0.20,
-        batch_sizes=(8, 16, 32, 64, 128, 256, 384, 512, 768),
-        feasible_batch_sizes=(8, 16, 32, 64, 128, 256, 384, 512, 768),
-    ),
-    # H100 → B200 hardware-upgrade pairs (Exp D). Same model_id, same
-    # parallelism, both GPUs measured; B200 typically unlocks much wider
-    # batch ranges. Batch lists are restricted to the monotonic-power
-    # subset of the raw measurements (some models have a power dip at
-    # very high batches that distorts the logistic fit).
     "Qwen3-8B-B200": _spec(
         "Qwen3-8B-B200",
         "Qwen/Qwen3-8B",
@@ -367,16 +139,6 @@ SPECS: dict[str, InferenceModelSpec] = {
         itl_deadline_s=0.08,
         batch_sizes=(8, 16, 32, 64, 128, 256, 512, 1024, 1536),
         feasible_batch_sizes=(8, 16, 32, 64, 128, 256, 512, 1024, 1536),
-    ),
-    "Qwen3-30B-A3B-Instruct-1GPU-B200": _spec(
-        "Qwen3-30B-A3B-Instruct-1GPU-B200",
-        "Qwen/Qwen3-30B-A3B-Instruct-2507",
-        gpu_model="B200",
-        task="lm-arena-chat",
-        gpus_per_replica=1,
-        itl_deadline_s=0.10,
-        batch_sizes=(8, 16, 32, 64, 96, 128, 192, 256),
-        feasible_batch_sizes=(8, 16, 32, 64, 128, 256),
     ),
     "Qwen3-32B-1GPU-H100": _spec(
         "Qwen3-32B-1GPU-H100",
@@ -398,8 +160,123 @@ SPECS: dict[str, InferenceModelSpec] = {
         batch_sizes=(8, 16, 32, 64, 96, 128, 192, 256, 384, 512),
         feasible_batch_sizes=(8, 16, 32, 64, 128, 256, 512),
     ),
-    # Frontier MoE single-config additions. Batch ranges restricted to the
-    # monotonic-power region of each raw measurement.
+    # Qwen 3 30B A3B Instruct (MoE)
+    "Qwen3-30B-A3B-Instruct-1GPU": _spec(
+        "Qwen3-30B-A3B-Instruct-1GPU",
+        "Qwen/Qwen3-30B-A3B-Instruct-2507",
+        gpu_model="H100",
+        task="lm-arena-chat",
+        gpus_per_replica=1,
+        itl_deadline_s=0.10,
+        batch_sizes=(8, 16, 32, 64, 96),
+        feasible_batch_sizes=(8, 16, 32, 64, 96),
+    ),
+    "Qwen3-30B-A3B-Instruct-2GPU": _spec(
+        "Qwen3-30B-A3B-Instruct-2GPU",
+        "Qwen/Qwen3-30B-A3B-Instruct-2507",
+        gpu_model="H100",
+        task="lm-arena-chat",
+        gpus_per_replica=2,
+        itl_deadline_s=0.10,
+        batch_sizes=(8, 16, 32, 64, 96, 128, 192, 256, 384, 512, 768, 1024),
+        feasible_batch_sizes=(8, 16, 32, 64, 128, 256, 512, 1024),
+    ),
+    "Qwen3-30B-A3B-Instruct-1GPU-B200": _spec(
+        "Qwen3-30B-A3B-Instruct-1GPU-B200",
+        "Qwen/Qwen3-30B-A3B-Instruct-2507",
+        gpu_model="B200",
+        task="lm-arena-chat",
+        gpus_per_replica=1,
+        itl_deadline_s=0.10,
+        batch_sizes=(8, 16, 32, 64, 96, 128, 192, 256),
+        feasible_batch_sizes=(8, 16, 32, 64, 128, 256),
+    ),
+    # Qwen 3 235B A22B Instruct (MoE)
+    "Qwen3-235B-A22B-Instruct-FP8-8GPU": _spec(
+        "Qwen3-235B-A22B-Instruct-FP8-8GPU",
+        "Qwen/Qwen3-235B-A22B-Instruct-2507-FP8",
+        gpu_model="H100",
+        task="lm-arena-chat",
+        precision="fp8",
+        gpus_per_replica=8,
+        itl_deadline_s=0.14,
+        batch_sizes=(8, 16, 32, 64, 96, 128, 192, 256, 384, 512),
+        feasible_batch_sizes=(8, 16, 32, 64, 128, 256, 512),
+    ),
+    "Qwen3-235B-A22B-Instruct-8GPU": _spec(
+        "Qwen3-235B-A22B-Instruct-8GPU",
+        "Qwen/Qwen3-235B-A22B-Instruct-2507",
+        gpu_model="H100",
+        task="lm-arena-chat",
+        gpus_per_replica=8,
+        itl_deadline_s=0.14,
+        batch_sizes=(8, 16, 32, 64, 96, 128, 192, 256),
+        feasible_batch_sizes=(8, 16, 32, 64, 128, 256),
+    ),
+    "Qwen3-235B-A22B-Instruct-8GPU-B200": _spec(
+        "Qwen3-235B-A22B-Instruct-8GPU-B200",
+        "Qwen/Qwen3-235B-A22B-Instruct-2507",
+        gpu_model="B200",
+        task="lm-arena-chat",
+        gpus_per_replica=8,
+        itl_deadline_s=0.14,
+        batch_sizes=(8, 16, 32, 64, 128, 256, 512, 1024, 1536, 2048, 4096),
+        feasible_batch_sizes=(8, 16, 32, 64, 128, 256, 512, 1024, 1536, 2048),
+    ),
+    # Qwen 3 235B A22B Thinking (MoE, reasoning)
+    "Qwen3-235B-A22B-Thinking-8GPU": _spec(
+        "Qwen3-235B-A22B-Thinking-8GPU",
+        "Qwen/Qwen3-235B-A22B-Thinking-2507",
+        gpu_model="H100",
+        task="gpqa",
+        gpus_per_replica=8,
+        itl_deadline_s=0.14,
+        batch_sizes=(8, 16, 32),
+        feasible_batch_sizes=(8, 16, 32),
+    ),
+    "Qwen3-235B-A22B-Thinking-FP8-8GPU": _spec(
+        "Qwen3-235B-A22B-Thinking-FP8-8GPU",
+        "Qwen/Qwen3-235B-A22B-Thinking-2507-FP8",
+        gpu_model="H100",
+        task="gpqa",
+        precision="fp8",
+        gpus_per_replica=8,
+        itl_deadline_s=0.14,
+        batch_sizes=(8, 16, 32, 64, 96, 128),
+        feasible_batch_sizes=(8, 16, 32, 64, 96, 128),
+    ),
+    "Qwen3-235B-A22B-Thinking-4GPU-B200": _spec(
+        "Qwen3-235B-A22B-Thinking-4GPU-B200",
+        "Qwen/Qwen3-235B-A22B-Thinking-2507",
+        gpu_model="B200",
+        task="gpqa",
+        gpus_per_replica=4,
+        itl_deadline_s=0.20,
+        batch_sizes=(8, 16, 32, 64, 128, 256),
+        feasible_batch_sizes=(8, 16, 32, 64, 128, 256),
+    ),
+    "Qwen3-235B-A22B-Thinking-8GPU-B200": _spec(
+        "Qwen3-235B-A22B-Thinking-8GPU-B200",
+        "Qwen/Qwen3-235B-A22B-Thinking-2507",
+        gpu_model="B200",
+        task="gpqa",
+        gpus_per_replica=8,
+        itl_deadline_s=0.20,
+        batch_sizes=(8, 16, 32, 64, 128, 256, 384, 512, 768),
+        feasible_batch_sizes=(8, 16, 32, 64, 128, 256, 384, 512, 768),
+    ),
+    "Qwen3-235B-A22B-Thinking-FP8-4GPU-B200": _spec(
+        "Qwen3-235B-A22B-Thinking-FP8-4GPU-B200",
+        "Qwen/Qwen3-235B-A22B-Thinking-2507-FP8",
+        gpu_model="B200",
+        task="gpqa",
+        precision="fp8",
+        gpus_per_replica=4,
+        itl_deadline_s=0.14,
+        batch_sizes=(8, 16, 32, 64, 128, 256, 384, 512),
+        feasible_batch_sizes=(8, 16, 32, 64, 128, 256, 384, 512),
+    ),
+    # GPT-OSS 120B (MoE, mxfp4)
     "GPT-OSS-120B-H100-2GPU": _spec(
         "GPT-OSS-120B-H100-2GPU",
         "openai/gpt-oss-120b",
@@ -411,27 +288,27 @@ SPECS: dict[str, InferenceModelSpec] = {
         batch_sizes=(8, 16, 32, 64, 96, 128, 192, 256),
         feasible_batch_sizes=(8, 16, 32, 64, 128, 256),
     ),
-    "DeepSeek-V3.1-B200-8GPU": _spec(
-        "DeepSeek-V3.1-B200-8GPU",
-        "deepseek-ai/DeepSeek-V3.1",
-        gpu_model="B200",
-        task="lm-arena-chat",
-        precision="fp8",
-        gpus_per_replica=8,
-        itl_deadline_s=0.14,
-        batch_sizes=(8, 16, 32, 64, 128, 256),
-        feasible_batch_sizes=(8, 16, 32, 64, 128, 256),
-    ),
-    "DeepSeek-R1-B200-8GPU": _spec(
-        "DeepSeek-R1-B200-8GPU",
-        "deepseek-ai/DeepSeek-R1-0528",
+    "GPT-OSS-120B-B200-1GPU": _spec(
+        "GPT-OSS-120B-B200-1GPU",
+        "openai/gpt-oss-120b",
         gpu_model="B200",
         task="gpqa",
-        precision="fp8",
-        gpus_per_replica=8,
-        itl_deadline_s=0.14,
-        batch_sizes=(8, 16, 32, 64, 128),
-        feasible_batch_sizes=(8, 16, 32, 64, 128),
+        precision="mxfp4",
+        gpus_per_replica=1,
+        itl_deadline_s=0.10,
+        batch_sizes=(8, 16, 32, 64, 128, 256, 512, 1024, 2048, 3072),
+        feasible_batch_sizes=(8, 16, 32, 64, 128, 256, 512, 1024),
+    ),
+    "GPT-OSS-120B-B200-2GPU": _spec(
+        "GPT-OSS-120B-B200-2GPU",
+        "openai/gpt-oss-120b",
+        gpu_model="B200",
+        task="gpqa",
+        precision="mxfp4",
+        gpus_per_replica=2,
+        itl_deadline_s=0.10,
+        batch_sizes=(8, 16, 32, 64, 128, 256, 512, 1024, 2048, 3072, 4096),
+        feasible_batch_sizes=(8, 16, 32, 64, 128, 256, 512, 1024),
     ),
 }
 
@@ -451,16 +328,14 @@ class SharedData:
 
 
 def load_shared_data(*, specs_used: tuple[InferenceModelSpec, ...] | None = None) -> SharedData:
-    """Load / generate the data backing all Model-insights experiments.
+    """Load / generate the data backing all model-insights experiments.
 
-    Triggers the large ML.ENERGY download the first time it runs.
-    Subsequent calls hit the cache. Cache is per-spec (content-addressed);
-    two scripts referencing the same spec share one directory.
+    Triggers the ML.ENERGY download the first time it runs; subsequent calls
+    hit the per-spec content-addressed cache.
 
     Args:
         specs_used: Subset of specs to materialize. When `None`, loads the
-            full SPECS catalog (so subsequent per-experiment calls can
-            `filter_models(...)` cheaply).
+            full SPECS catalog.
     """
     if specs_used is None:
         specs_used = tuple(SPECS.values())
@@ -499,11 +374,9 @@ _IEEE13_TAP_SCHEDULE = TapSchedule(
 
 @dataclass
 class ScenarioOverrides:
-    """Per-experiment deviations from the master preset.
+    """Per-experiment deviations from the IEEE 13 preset.
 
-    Every field defaulting to None means "inherit the master preset". Set
-    a field to deviate — the result is logged verbatim into the results CSV
-    so deviations are visible to reviewers.
+    Each `None` field inherits the preset; set a field to deviate.
     """
 
     ofo_config: OFOConfig | None = None
@@ -521,10 +394,7 @@ def build_scenario(
     shared: SharedData,
     overrides: ScenarioOverrides | None = None,
 ) -> dict:
-    """Build the master-preset scenario around a custom model deployment.
-
-    Returns a dict with the same keys as `run_ofo.setup_ieee13`'s return.
-    """
+    """Build the IEEE 13 scenario around a custom model deployment."""
     overrides = overrides or ScenarioOverrides()
     sys = SYSTEMS["ieee13"]()
 
@@ -684,17 +554,15 @@ def compute_achievable_power_range(
 ) -> float:
     """Per-variant controller-free power-flexibility metric (MW).
 
-    For each model's deployment, evaluate the per-replica power fit at the
-    min and max feasible batch sizes, scale by GPUs-per-replica and by the
-    number of active replicas at `at_t_s` (defaults to initial replica
-    count), and sum across models. Returns the difference between max and
-    min total DC power.
+    For each deployment, evaluates the per-replica power fit at the min and
+    max feasible batch sizes, scales by the active replica count at
+    `at_t_s` (defaults to the initial replica count), and sums across
+    models. Returns the difference between the resulting max and min total
+    DC power.
 
-    Note: the logistic is fit to `avg_power_watts` — which in the
-    ML.ENERGY Benchmark is the per-run average GPU-group power (watts for
-    the full `num_gpus` bench configuration). So `model.eval(batch)`
-    already includes the full replica's worth of GPUs; do NOT multiply by
-    `gpus_per_replica` here.
+    The logistic is fit to `avg_power_watts`, the per-run average power for
+    the full `num_gpus` bench configuration — `model.eval(batch)` already
+    covers the whole replica, so do NOT multiply by `gpus_per_replica`.
     """
     total_max_w = 0.0
     total_min_w = 0.0
@@ -719,17 +587,17 @@ def compute_matched_peak_replicas(
     """Replica count whose peak inference power matches `target_peak_kw`.
 
     Peak is evaluated at `max(spec.feasible_batch_sizes)` using the logistic
-    power fit. Returns `ceil(target_peak_kw * 1e3 / per-replica-peak-w)`
-    with a floor of 1. Use this to compare variants on a fixed peak
-    datacenter-footprint budget when GPU counts per replica differ (e.g.,
-    H100 vs. B200, or different parallelism degrees).
+    power fit. Returns `ceil(target_peak_kw * 1e3 / per-replica-peak-w)`,
+    floored at 1. Use this to compare variants on a fixed peak DC-footprint
+    budget when GPU counts per replica differ.
 
     Args:
-        spec: The model spec — its `feasible_batch_sizes` must already be
-            capped to batches that meet the SLO; pass the output of
+        spec: The model spec — `feasible_batch_sizes` must already be capped
+            to batches that meet the SLO; pass the output of
             `restrict_spec_by_deadline` if an SLO is in play.
-        target_peak_kw: Target peak inference power for the variant in kW.
-        logistic_models: Populated `LogisticModelStore` covering `spec.model_label`.
+        target_peak_kw: Target peak inference power in kW.
+        logistic_models: Populated `LogisticModelStore` covering
+            `spec.model_label`.
     """
     per_rep_w = float(logistic_models.power(spec.model_label).eval(max(spec.feasible_batch_sizes)))
     if per_rep_w <= 0:
@@ -743,20 +611,9 @@ def compute_pareto_curve(
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Return `(batches, power_MW, throughput_Mtps)` for one deployment.
 
-    The Pareto frontier is evaluated at every batch in
-    `spec.feasible_batch_sizes`. Power and throughput come from the logistic
-    fits, scaled by the initial replica count. This is the controller-free
-    characterisation of the (DC power, token throughput) trade-off for a
-    given (model, deployment, SLO, hardware).
-
-    Args:
-        deployment: A `(ModelDeployment, ReplicaSchedule)` pair. Uses the
-            schedule's `initial` replica count.
-        logistic_models: Populated `LogisticModelStore` covering
-            `deployment.spec.model_label`.
-
-    Returns:
-        Three numpy arrays of equal length, in sorted batch order.
+    Power and throughput come from the logistic fits, evaluated at every
+    `spec.feasible_batch_sizes` and scaled by the schedule's initial replica
+    count.
     """
     spec = deployment[0].spec
     n = deployment[1].initial
@@ -779,23 +636,14 @@ def deploy(
 ) -> tuple[ModelDeployment, ReplicaSchedule]:
     """Shorthand for `(ModelDeployment, ReplicaSchedule(initial=...))`.
 
+    `initial_batch_size=None` (the default) starts the scenario at the
+    largest feasible batch — i.e., maximum DC power stress, leaving the
+    controller full downward range.
+
     Args:
         label: Key into `SPECS`.
         num_replicas: Initial replica count for the schedule.
-        initial_batch_size: Starting batch. `None` (default) ⇒ start at the
-            *max* feasible batch size.
-
-    The `initial_batch_size=None` default is load-bearing. It starts the
-    scenario at maximum DC power stress, giving OFO room to reduce power
-    during voltage events — this is what exposes the "larger batch range ⇒
-    more achievable power range ⇒ better grid outcome" signal cleanly. It
-    is also what makes the *baseline* variant (no controller, batch held
-    fixed throughout the run) draw power proportional to `max_feasible_batch`
-    for the whole 3,600 s simulation. One consequence, observed in the
-    ITL-deadline sweep: loosening the SLO raises `max_feasible_batch` and
-    therefore raises baseline integral voltage violation monotonically,
-    even though OFO's residual stays flat because the wider batch range
-    gives it more swing to absorb the extra stress.
+        initial_batch_size: Starting batch.
     """
     spec = SPECS[label]
     feasible_batch_sizes = spec.feasible_batch_sizes
@@ -820,7 +668,7 @@ def max_feasible_batch_under_deadline(
     deadline_s: float,
 ) -> int:
     """Largest element of `spec.feasible_batch_sizes` whose predicted ITL
-    (from the logistic latency fit) stays at/under `deadline_s`.
+    (from the logistic latency fit) stays at or under `deadline_s`.
 
     Returns the smallest feasible batch if no batch meets the deadline.
     """

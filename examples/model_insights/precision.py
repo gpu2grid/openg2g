@@ -1,21 +1,16 @@
-"""Experiment E — weight-precision sweep on the IEEE 13 scenario.
+"""Weight-precision sweep on the IEEE 13 scenario.
 
 Sweeps bf16 vs FP8 on three matched-hardware pairs of the Qwen 3 235B
-A22B family (all available bf16↔FP8 LLM-inference pairs in v3 as of
-2026-04):
+A22B family:
 
-- Instruct, H100 8 GPU, `lm-arena-chat` (the original Exp E pair).
-- Thinking, H100 8 GPU, `gpqa` (reasoning task on the same hardware).
-- Thinking, B200 4 GPU, `gpqa` (reasoning task on newer hardware).
+- Instruct, H100 8 GPU, `lm-arena-chat`.
+- Thinking, H100 8 GPU, `gpqa`.
+- Thinking, B200 4 GPU, `gpqa`.
 
-Within each pair, we use match-peak replica sizing: replica count is
-chosen so that the bf16 variant's peak inference power at its largest
-feasible batch matches a shared 3.12 MW anchor (the same anchor Exp A
-and Exp D use). The FP8 variant runs at the same replica count as its
-bf16 sibling, so the "DC footprint" is identical within a pair and only
-precision varies. Cross-pair comparisons show whether the
-bf16-wider-flexibility mechanism generalizes across task, hardware, and
-parallelism.
+Within each pair, replica count is match-peak sized so the bf16 variant's
+peak inference power at its largest feasible batch matches the shared
+3.12 MW anchor; the FP8 sibling runs at the same replica count, so the
+DC footprint is identical within the pair.
 """
 
 from __future__ import annotations
@@ -113,9 +108,9 @@ def run_variant(
 
     apr_mw = aic.compute_achievable_power_range(deployments=deployments, logistic_models=shared.logistic_models)
 
-    # Match-peak sizing at 3.12 MW can push replica × GPU count past the
-    # master preset's 7,200 GPU cap for some Thinking variants; provision
-    # the DC with the exact GPU budget this deployment needs plus headroom.
+    # Match-peak sizing can push replica × GPU count past the preset's
+    # 7,200 GPU cap; provision the GPU budget for this deployment plus
+    # headroom.
     gpu_budget = max(7200, num_replicas * spec.gpus_per_replica + 200)
     scenario = aic.build_scenario(
         deployments,
@@ -195,9 +190,8 @@ def main(
 
     all_rows: list[Row] = []
     for pair, bf16_label, fp8_label, hw, deadline_ms in PAIRS:
-        # Match-peak replica sizing from the bf16 variant (both precisions
-        # run at the same replica count so DC footprint is identical within
-        # the pair).
+        # Match-peak sizing uses the bf16 variant; FP8 runs at the same
+        # replica count so DC footprint is identical within the pair.
         bf16_spec = aic.restrict_spec_by_deadline(aic.SPECS[bf16_label], shared.logistic_models, deadline_ms / 1000.0)
         n_replicas = aic.compute_matched_peak_replicas(bf16_spec, ANCHOR_PEAK_KW, shared.logistic_models)
         logger.info("=== pair=%s (%s)  n_replicas=%d (match-peak @ %.0f kW) ===", pair, hw, n_replicas, ANCHOR_PEAK_KW)
