@@ -10,6 +10,7 @@ so that application scripts never become implicit libraries.
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 from dataclasses import dataclass
 from fractions import Fraction
 from pathlib import Path
@@ -1448,7 +1449,7 @@ def ieee123_experiment(training_trace: TrainingTrace | None = None) -> dict:
     )
 
 
-EXPERIMENTS: dict[str, object] = {
+EXPERIMENTS: dict[str, Callable[..., dict]] = {
     "ieee13": ieee13_experiment,
     "ieee34": ieee34_experiment,
     "ieee123": ieee123_experiment,

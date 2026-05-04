@@ -1097,7 +1097,7 @@ def main_1d(
             ("ofo_tap_change", True, True),
         ]
 
-        bus_results = {"dc_bus": dc_bus}
+        bus_results: dict[str, str | float] = {"dc_bus": dc_bus}
 
         for case_name, use_ofo, use_tap_change in cases:
             case_idx += 1

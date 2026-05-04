@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import math
-import typing
 from collections.abc import Callable
 from dataclasses import dataclass
 from fractions import Fraction
@@ -533,7 +532,7 @@ class BatchSizeEnv(gymnasium.Env):
     first baseline violation) and terminates after the last violation clears.
     """
 
-    metadata: typing.ClassVar[dict[str, list]] = {"render_modes": []}
+    metadata = {"render_modes": []}  # noqa: RUF012  # gym Env.metadata override; not annotated to avoid ty's invalid-attribute-override
 
     def __init__(
         self,
