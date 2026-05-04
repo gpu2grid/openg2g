@@ -1,0 +1,42 @@
+
+### Fonts
+font.size : 9
+axes.labelsize : 10
+axes.titlesize : 10
+xtick.labelsize : 8.5
+ytick.labelsize : 8.5
+legend.fontsize : 8
+
+# San-serif font use Arial
+font.family: sans-serif
+#font.sans-serif: Helvetica
+font.sans-serif: Arial
+
+### Axes / grid defaults
+axes.grid : False
+grid.alpha : 0.25
+grid.linewidth : 0.5
+axes.spines.top : False
+axes.spines.right : False
+
+# Serif font use TMR
+#font.family: serif
+#font.serif: Times New Roman 
+#mathtext.fontset : stix
+
+
+### Plotting
+# lines.linewidth : 2
+
+### Saving figures
+path.simplify : True
+
+# SVG export now don't render font as path, but save font as text object.
+# This allows for easy integration with MS Office
+svg.fonttype : none
+# Make SVG generation deterministic
+svg.hashsalt : 42
+
+# Enforce Type 1 font usage
+pdf.fonttype : 42
+ps.fonttype : 42

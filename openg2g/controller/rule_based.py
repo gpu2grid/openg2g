@@ -54,7 +54,7 @@ class RuleBasedConfig(BaseModel):
     step_size: float = 10.0
     v_min: float = 0.95
     v_max: float = 1.05
-    deadband: float = 0.001
+    deadband: float = 0.0001
     latency_guard: bool = True
 
 
@@ -77,6 +77,7 @@ class RuleBasedBatchSizeController(
         config: RuleBasedConfig,
         dt_s: Fraction = Fraction(1),
         exclude_buses: tuple[str, ...] = (),
+        zone_buses: tuple[str, ...] | None = None,
         initial_batch_sizes: dict[str, int] | None = None,
     ) -> None:
         model_specs = list(inference_models)
@@ -86,6 +87,13 @@ class RuleBasedBatchSizeController(
         self._config = config
         self._models = model_specs
         self._exclude_lower = {b.lower() for b in exclude_buses}
+        # Zone-local observation: when set, only buses in this set contribute
+        # to the worst-violation scan. Used in multi-DC topologies (ieee123)
+        # to give each site credit only for the part of the network it can
+        # actually move. None preserves the original global-scan behavior.
+        self._zone_lower: set[str] | None = (
+            {b.lower() for b in zone_buses} if zone_buses is not None else None
+        )
         self._initial_batch_sizes = initial_batch_sizes or {}
 
         # Build per-model feasible batch list (sorted ascending)
@@ -102,13 +110,15 @@ class RuleBasedBatchSizeController(
         }
 
         logger.info(
-            "RuleBasedBatchSizeController: %d models, dt=%s s, step_size=%.2f, deadband=%.4f, v=[%.2f, %.2f]",
+            "RuleBasedBatchSizeController: %d models, dt=%s s, step_size=%.2f, deadband=%.4f, v=[%.2f, %.2f], zone_local=%s (n_zone_buses=%d)",
             len(model_specs),
             dt_s,
             config.step_size,
             config.deadband,
             config.v_min,
             config.v_max,
+            self._zone_lower is not None,
+            len(self._zone_lower) if self._zone_lower is not None else 0,
         )
 
     @property
@@ -136,7 +146,10 @@ class RuleBasedBatchSizeController(
         worst_over = 0.0  # magnitude of worst overvoltage (positive)
 
         for bus in voltages.buses():
-            if bus.lower() in self._exclude_lower:
+            blow = bus.lower()
+            if blow in self._exclude_lower:
+                continue
+            if self._zone_lower is not None and blow not in self._zone_lower:
                 continue
             pv = voltages[bus]
             for v in (pv.a, pv.b, pv.c):

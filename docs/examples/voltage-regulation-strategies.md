@@ -8,11 +8,12 @@ How does datacenter-side batch-size control compare with grid-side regulator tap
 
 Distribution feeders traditionally regulate voltage using regulator tap changers: mechanical devices that adjust transformer turns ratios. Datacenter batch-size control offers a complementary demand-side approach: adjusting GPU workload parameters to modulate power consumption in real time.
 
-This analysis compares three control strategies:
+This analysis compares four control strategies:
 
 1. **Baseline with tap changes**: Traditional grid-side control only (regulator tap schedule, no batch adjustment)
 2. **Rule-based batch control**: Simple proportional controller that reduces batch on undervoltage and increases on overvoltage; no sensitivity matrix or model fits required
 3. **OFO batch control**: Primal-dual optimization using voltage sensitivity matrices and logistic curve fits for gradient-based batch adjustment
+4. **PPO batch control**: A reinforcement-learning policy (Proximal Policy Optimization) that maps a structured observation of grid + datacenter state to per-model batch-size actions. Requires a separate training run; see [Reinforcement Learning Controller (PPO)](rl-controller.md) for the end-to-end workflow.
 
 ## Scripts
 
@@ -23,6 +24,7 @@ This analysis compares three control strategies:
 | `run_ofo.py --mode ofo-no-tap` | OFO without tap schedule |
 | `run_ofo.py --mode ofo-tap-change` | OFO with tap schedule |
 | `analyze_different_controllers.py` | Side-by-side comparison of baseline, rule-based, and OFO |
+| `evaluate_controllers.py` | Held-out scenario evaluation that also accepts trained PPO models via `--ppo-models` (see [Reinforcement Learning Controller (PPO)](rl-controller.md)) |
 
 ## Usage
 
