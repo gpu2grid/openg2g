@@ -30,67 +30,81 @@ The library code lives in [`openg2g.rl.env`][openg2g.rl.env] (Gymnasium environm
 
 ## Usage
 
-### One-time setup: per-spec inference data cache
+The first run of any script below also triggers a one-time download + extraction of LLM benchmark data from the HuggingFace `ml-energy-data` repo, populating a per-spec content-addressed cache under `data/specs/<spec-hash>/`. Subsequent calls reuse the cache.
 
-The first run of any of these scripts triggers a one-time download + extraction of LLM benchmark data from the HuggingFace `ml-energy-data` repo, populating a per-spec content-addressed cache under `data/specs/<spec-hash>/`. This step needs roughly **32–64 GB of RAM** during extraction; it will OOM on a typical login node. Run it on a compute node (or via slurm) once, after which all subsequent calls reuse the cache. A turnkey end-to-end smoke is provided in `scripts/verify_post_merge_migration.sh`.
+### IEEE 13 — end-to-end example
 
-### Stage 1: Build a scenario library
+#### 1. Dataset generation
+
+**1a. Build training library**
 
 ```bash
-# IEEE 13-bus, 200 candidate scenarios, default screening filter
 python examples/offline/build_scenario_library.py \
     --system ieee13 \
-    --n-candidates 200 \
-    --output-dir examples/offline/outputs/ieee13/scenario_library/n200
+    --n-candidates 500 --seed-start 0 \
+    --output-dir outputs/ieee13/scenario_library/train_n500
 ```
 
-This produces a `library.pkl` containing accepted scenarios (those where OFO meaningfully reduces voltage violation versus baseline, controlled by `--min-baseline-integral` and `--min-recovery-frac`), per-scenario voltage-envelope plots, and a CSV of metrics.
+**1b. Build test library** (use a different `--seed-start` so train and test seeds don't overlap)
 
-### Stage 2: Train PPO
+```bash
+python examples/offline/build_scenario_library.py \
+    --system ieee13 \
+    --n-candidates 150 --seed-start 1000 \
+    --output-dir outputs/ieee13/scenario_library/test_n150
+```
+
+Each call writes a `library.pkl` of accepted scenarios (those where OFO meaningfully recovers a baseline voltage violation, controlled by `--min-baseline-integral` and `--min-recovery-frac`), per-scenario voltage-envelope plots, and a CSV of metrics.
+
+#### 2. PPO training
 
 ```bash
 python examples/offline/train_ppo.py \
     --system ieee13 \
     --total-timesteps 2000000 \
-    --learning-rate 1e-4 \
+    --total-duration-s 3600 \
     --n-steps 3600 \
-    --hidden-dims 128 128 \
-    --w-voltage 1000 --w-throughput 0 --w-switch 0.01 \
-    --scenario-library examples/offline/outputs/ieee13/scenario_library/n200/library.pkl \
-    --output-dir examples/offline/outputs/ieee13/ppo
+    --hidden-dims 128 128 128 \
+    --learning-rate 1e-4 \
+    --ent-coef 0.01 \
+    --action-mode delta \
+    --w-voltage 5000 --w-throughput 0.05 --w-latency 0.01 --w-switch 0.5 \
+    --n-envs 8 --seed 1 \
+    --scenario-library outputs/ieee13/scenario_library/train_n500/library.pkl \
+    --no-ofo-baseline --truncate-episode \
+    --output-dir outputs/ieee13/ppo
 ```
 
-Key flags (see `train_ppo.py --help` for the full list):
+Output: `ppo_model.zip`, `ppo_model_vecnormalize.pkl`, per-checkpoint snapshots under `checkpoints/`, TensorBoard logs in `tb/`, and a training-progress plot. See `train_ppo.py --help` for the full flag set (`--obs-mode`, alternate reward weights, action-mode variants, etc.).
 
-- `--system`: `ieee13`, `ieee34`, or `ieee123`.
-- `--total-timesteps`: cumulative environment steps across all parallel envs. ~2M is enough for IEEE 13; IEEE 34 / IEEE 123 typically need ~5M.
-- `--obs-mode`: `full-voltage` (default), `per-zone-summary`, `per-bus-summary`, or `system-summary-only`. Lower-dimensional observations help generalization on larger feeders.
-- `--w-voltage / --w-throughput / --w-latency / --w-switch`: reward weights. Setting `w-throughput=0` keeps the policy focused on voltage; the resulting throughput is reported but not optimized.
-- `--n-envs`: parallel rollout envs (default 1). Increase for wall-clock speed.
-- `--scenario-library`: path to the `.pkl` from Stage 1. Without it, the env synthesizes scenarios on the fly with the `randomize_scenario` defaults.
-- `--ofo-baseline`: include OFO action as a reward-shaping baseline (advanced).
+#### 3. Controller evaluation
 
-The output directory holds the saved model (`ppo_model.zip`), VecNormalize statistics (`ppo_model_vecnormalize.pkl`), TensorBoard logs (`tb/`), per-checkpoint copies (`checkpoints/`), and a training-progress plot.
-
-### Stage 3: Evaluate
+Compares no-coordination baseline, droop (rule-based) control, OFO control, and the trained PPO on the held-out test library:
 
 ```bash
+MODELS=(outputs/ieee13/ppo/ppo_model.zip)
+
 python examples/offline/evaluate_controllers.py \
     --system ieee13 \
+    --ppo-models "${MODELS[@]}" \
+    --scenario-library outputs/ieee13/scenario_library/test_n150/library.pkl \
     --n-scenarios 50 \
-    --ppo-models examples/offline/outputs/ieee13/ppo/ppo_model.zip \
-    --ppo-labels champion \
+    --obs-mode full-voltage \
     --include-rule-based \
-    --output-dir examples/offline/outputs/ieee13/eval_n50
+    --use-display-names \
+    --output-dir outputs/ieee13/eval_4ctrl_ieee13 \
+    --log-level INFO
 ```
-
-The evaluator filters held-out seeds to keep only scenarios that exhibit a baseline violation and where OFO recovers most of it (controllable by `--min-baseline-integral` and `--min-recovery-frac`), then runs each controller on the same scenario set.
 
 Outputs:
 
 - `results.csv` — per-scenario metrics for every controller: violation time, integral violation, worst Vmin/Vmax, mean throughput, p99 latency, mean power, batch-change count.
 - `aggregate_*.png` — bar charts comparing voltage / throughput / batch-switching across controllers.
 - `scenario_<seed>/` — per-scenario voltage envelopes and batch-size traces.
+
+Multiple PPO checkpoints (e.g., from a multi-seed sweep) can be passed in `MODELS=(...)` and labelled via `--ppo-labels`.
+
+(Repeat the same three stages for `ieee34` / `ieee123` with appropriate `--system`, `--obs-mode`, and `--no-randomize-ramps` flags.)
 
 ### Inference: using a trained PPO inside other scripts
 
@@ -100,7 +114,7 @@ A trained PPO checkpoint can also be loaded inside `build_scenario_library.py --
 python examples/offline/build_scenario_library.py \
     --system ieee13 \
     --mode ppo \
-    --ppo-model examples/offline/outputs/ieee13/ppo/ppo_model.zip
+    --ppo-model outputs/ieee13/ppo/ppo_model.zip
 ```
 
 ## What to Look For
