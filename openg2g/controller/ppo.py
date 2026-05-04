@@ -221,20 +221,26 @@ class SharedPPOBatchSizeController(
         self._action_mode = _detect_action_mode(self._sb3_model.action_space, n_models_total)
         n_feasible = min(len(f) for f in self._feasible.values())
         self._coupled_max_shift = n_feasible - 1
-        # Optional list of all datacenters (set by attach_datacenters() before
-        # coord.run()). The Coordinator's step loop only passes ONE DC per
-        # controller (resolved by _site_id), but a shared policy trained on
-        # observations from ALL sites needs every DC's batch/itl/replicas/power
-        # state. When set, step() uses this list and ignores the single DC the
-        # coordinator hands in.
+        # Per-site datacenter routing (set by attach_datacenters() before
+        # coord.run()). The shared policy needs every DC's
+        # batch/itl/replicas/power state to build the joint observation; the
+        # site-id → DC mapping additionally lets step() route each per-site
+        # SetBatchSize command back to its specific DC.
+        self._dcs_by_sid: dict[str, LLMBatchSizeControlledDatacenter[LLMDatacenterState]] = {}
         self._all_datacenters: list = []
         self._init_prev_batch()
 
-    def attach_datacenters(self, datacenters: list) -> None:
-        """Register all datacenter backends so the shared policy sees the
-        joint multi-site observation. Call once after the Coordinator is
-        constructed and before ``coord.run()``."""
-        self._all_datacenters = list(datacenters)
+    def attach_datacenters(
+        self,
+        datacenters: dict[str, LLMBatchSizeControlledDatacenter[LLMDatacenterState]],
+    ) -> None:
+        """Register the site-id → DC mapping so the shared policy can both
+        observe the joint multi-site state and route per-site
+        ``SetBatchSize`` commands to the correct DC. Call once after the
+        Coordinator is constructed and before ``coord.run()``.
+        """
+        self._dcs_by_sid = dict(datacenters)
+        self._all_datacenters = list(datacenters.values())
 
     def _init_prev_batch(self) -> None:
         self._prev_batch = {label: self._obs_config.get_initial_batch(label) for label in self._obs_config.model_labels}
@@ -282,23 +288,17 @@ class SharedPPOBatchSizeController(
         self._prev_batch = all_batch
         events.emit("controller.ppo.step", {"batch_size_by_model": all_batch})
 
-        # Emit one SetBatchSize per site. Master's command-routing requires a
-        # target= DC object per command. SharedPPOBatchSizeController is a
-        # multi-DC controller; routing each site's command to the right DC
-        # needs the controller to track per-sid DC references (added below
-        # only if/when the shared-PPO inference path is exercised). For now
-        # this raises so callers see a clear migration boundary instead of
-        # silently routing every site to the same DC.
-        if len(self._site_model_mapping) > 1:
-            raise NotImplementedError(
-                "SharedPPOBatchSizeController multi-DC routing needs migration: "
-                "the controller must accept a dict[str, DatacenterBackend] in "
-                "__init__ to route per-site SetBatchSize commands. Single-site "
-                "shared mode still works."
-            )
+        # Emit one SetBatchSize per site, routed to the correct DC via the
+        # sid → DC mapping registered by attach_datacenters(). For multi-site
+        # use the caller MUST call attach_datacenters() with a dict before
+        # coord.run(); otherwise we fall back to routing every command to
+        # self._datacenter (the single agent DC), which is only correct in
+        # the single-site case.
         commands: list[DatacenterCommand | GridCommand] = []
-        for _sid, labels in self._site_model_mapping.items():
+        for sid, labels in self._site_model_mapping.items():
             site_batch = {label: all_batch[label] for label in labels if label in all_batch}
-            if site_batch:
-                commands.append(SetBatchSize(batch_size_by_model=site_batch, target=datacenter))
+            if not site_batch:
+                continue
+            target_dc = self._dcs_by_sid.get(sid, datacenter)
+            commands.append(SetBatchSize(batch_size_by_model=site_batch, target=target_dc))
         return commands

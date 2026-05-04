@@ -383,7 +383,7 @@ def run_simulation(
 
     for ctrl in controllers:
         if isinstance(ctrl, SharedPPOBatchSizeController):
-            ctrl.attach_datacenters(list(datacenters.values()))
+            ctrl.attach_datacenters(datacenters)
 
     logger.info("Running %s...", mode)
     log = coord.run()
@@ -1445,6 +1445,87 @@ def main(
         logger.info("  baseline integral (mean ± std): %.2f ± %.2f", bls.mean(), bls.std())
 
 
+# ── Optional supplement-phase helpers (used by the CLI when --n-supplement-candidates > 0) ──
+
+
+def _is_pure_overvoltage(rec) -> bool:
+    """Classify a ScenarioRecord as pure-overvoltage (over > 0, under == 0).
+
+    Uses the saved per-record fields when present (newer builds); falls back to
+    the load_scale heuristic for old builds where the fields weren't written.
+    """
+    if "bl_overvoltage_time_s" in rec.__dict__:
+        return rec.bl_overvoltage_time_s > 0 and rec.bl_undervoltage_time_s == 0
+    return getattr(rec, "load_scale", 99.0) <= 1.0  # rough proxy: low load implies overvoltage
+
+
+def _merge_supplement_into_base(
+    base_pkl: Path,
+    supp_pkl: Path,
+    swap_undervoltage_for_overvoltage: int = 0,
+) -> None:
+    """Merge pure-overvoltage scenarios from a supplement library into a base library.
+
+    Train mode (swap_undervoltage_for_overvoltage = 0): append ALL pure-overvoltage
+    scenarios from the supplement to the base. Library size grows.
+
+    Test mode (swap_undervoltage_for_overvoltage > 0): take up to N pure-overvoltage
+    from the supplement, remove the same number of undervoltage-only scenarios
+    (highest load_scale first) from the base. Library size unchanged.
+    """
+    if not base_pkl.exists():
+        raise FileNotFoundError(f"--n-supplement-candidates set but base library missing: {base_pkl}")
+    if not supp_pkl.exists():
+        raise FileNotFoundError(f"supplement library missing: {supp_pkl}")
+
+    with open(base_pkl, "rb") as f:
+        base_lib = pickle.load(f)
+    with open(supp_pkl, "rb") as f:
+        supp_lib = pickle.load(f)
+
+    pure_over = [r for r in supp_lib["scenarios"] if _is_pure_overvoltage(r)]
+    base_seeds = {r.seed for r in base_lib["scenarios"]}
+    pure_over_new = [r for r in pure_over if r.seed not in base_seeds]
+    logger.info(
+        "Supplement merge: %d/%d supplement scenarios are pure-overvoltage (%d new vs base)",
+        len(pure_over),
+        len(supp_lib["scenarios"]),
+        len(pure_over_new),
+    )
+
+    if swap_undervoltage_for_overvoltage <= 0:
+        new_scenarios = list(base_lib["scenarios"]) + pure_over_new
+    else:
+        n_take = min(swap_undervoltage_for_overvoltage, len(pure_over_new))
+        recs = list(base_lib["scenarios"])
+        under_only_idx = [
+            i
+            for i, r in enumerate(recs)
+            if getattr(r, "bl_undervoltage_time_s", None) is not None
+            and r.bl_undervoltage_time_s > 0
+            and getattr(r, "bl_overvoltage_time_s", 0) == 0
+        ]
+        if not under_only_idx:
+            under_only_idx = [i for i, r in enumerate(recs) if getattr(r, "load_scale", 0) > 2.0]
+        under_only_idx.sort(key=lambda i: getattr(recs[i], "load_scale", 0), reverse=True)
+        remove_idx = set(under_only_idx[:n_take])
+        if remove_idx:
+            ls_min = min(getattr(recs[i], "load_scale", 0) for i in remove_idx)
+            ls_max = max(getattr(recs[i], "load_scale", 0) for i in remove_idx)
+            logger.info(
+                "  test-set swap: removing %d undervoltage-only scenarios (load_scale %.2f-%.2f)",
+                len(remove_idx),
+                ls_min,
+                ls_max,
+            )
+        new_scenarios = [r for i, r in enumerate(recs) if i not in remove_idx] + pure_over_new[:n_take]
+
+    base_lib["scenarios"] = new_scenarios
+    with open(base_pkl, "wb") as f:
+        pickle.dump(base_lib, f)
+    logger.info("Wrote merged library to %s (%d scenarios total)", base_pkl, len(new_scenarios))
+
+
 if __name__ == "__main__":
     from dataclasses import dataclass
     from typing import Annotated
@@ -1551,6 +1632,21 @@ if __name__ == "__main__":
         log_level: str = "INFO"
         append_to: Path | None = None
         """If set, merge newly accepted scenarios into this existing library.pkl (deduplicates by seed). The new run is still saved under --tag for diagnostic plots."""  # noqa: E501
+        # ── Optional supplement phase (paper-balanced library workflow) ──
+        n_supplement_candidates: int = 0
+        """If > 0, after the main build run a second pass with overvoltage-favouring params (high PV, low load) and merge pure-overvoltage scenarios into the base library. Replaces the standalone build_balanced_library_ieee13.py orchestrator."""  # noqa: E501
+        supplement_seed_start: int = -1
+        """Starting candidate index for the supplement pass. Default -1 means seed_start + 4000 (prevents seed overlap)."""  # noqa: E501
+        supplement_pv_scale_min: float = 2.0
+        supplement_pv_scale_max: float = 5.0
+        supplement_load_scale_min: float = 0.5
+        supplement_load_scale_max: float = 1.0
+        supplement_min_baseline_integral_over: float = 1.0
+        """Tighter overvoltage-integral floor for the supplement pass (we want real overvoltage scenarios, not borderline ones)."""  # noqa: E501
+        supplement_tag: str = ""
+        """Subdirectory for the supplement build artifacts. Default empty means f'{tag}_over_supp'."""
+        swap_undervoltage_for_overvoltage: int = 0
+        """If > 0, after the supplement merge swap N undervoltage-only scenarios out of the base for N pure-overvoltage scenarios from the supplement (test-set mode that keeps library size constant). Default 0 = train mode (append all pure-over)."""  # noqa: E501
 
     args = tyro.cli(Args)
     main(
@@ -1613,3 +1709,93 @@ if __name__ == "__main__":
         log_level=args.log_level,
         append_to=args.append_to,
     )
+
+    # ── Optional supplement phase: second pass with overvoltage-favouring params + merge ──
+    if args.n_supplement_candidates > 0:
+        supp_tag = args.supplement_tag or f"{args.tag}_over_supp"
+        supp_seed_start = args.supplement_seed_start if args.supplement_seed_start >= 0 else args.seed_start + 4000
+
+        logger.info("")
+        logger.info("=" * 60)
+        logger.info(
+            "Supplement phase: %d candidates, seed_start=%d, tag=%s",
+            args.n_supplement_candidates,
+            supp_seed_start,
+            supp_tag,
+        )
+        logger.info(
+            "  PV scale [%.2f-%.2f], load scale [%.2f-%.2f] (overvoltage-favouring)",
+            args.supplement_pv_scale_min,
+            args.supplement_pv_scale_max,
+            args.supplement_load_scale_min,
+            args.supplement_load_scale_max,
+        )
+        logger.info("=" * 60)
+
+        main(
+            system=args.system,
+            n_candidates=args.n_supplement_candidates,
+            min_recovery_frac=args.min_recovery_frac,
+            max_recovery_frac=args.max_recovery_frac,
+            min_baseline_integral=args.min_baseline_integral,
+            min_baseline_integral_over=args.supplement_min_baseline_integral_over,
+            max_baseline_integral=args.max_baseline_integral,
+            pv_base_kw=args.pv_base_kw,
+            tvl_base_kw=args.tvl_base_kw,
+            sensitivity_update_interval=args.sensitivity_update_interval,
+            ofo_w_throughput=args.ofo_w_throughput,
+            tag=supp_tag,
+            seed_start=supp_seed_start,
+            seeds=(),
+            use_training_overlay=args.use_training_overlay,
+            randomize_ramps=args.randomize_ramps,
+            randomization_profile=args.randomization_profile,
+            pv_scale_min=args.supplement_pv_scale_min,
+            pv_scale_max=args.supplement_pv_scale_max,
+            load_scale_min=args.supplement_load_scale_min,
+            load_scale_max=args.supplement_load_scale_max,
+            pv_t_shift_max_s=args.pv_t_shift_max_s,
+            tvl_t_shift_max_s=args.tvl_t_shift_max_s,
+            pv_warp_min=args.pv_warp_min,
+            pv_warp_max=args.pv_warp_max,
+            tvl_warp_min=args.tvl_warp_min,
+            tvl_warp_max=args.tvl_warp_max,
+            overlay_prob=args.overlay_prob,
+            overlay_intensity_min=args.overlay_intensity_min,
+            overlay_intensity_max=args.overlay_intensity_max,
+            overlay_gpu_frac_min=args.overlay_gpu_frac_min,
+            overlay_gpu_frac_max=args.overlay_gpu_frac_max,
+            n_ramps_per_site_choices=args.n_ramps_per_site_choices,
+            ramp_up_prob=args.ramp_up_prob,
+            ramp_down_frac_min=args.ramp_down_frac_min,
+            ramp_down_frac_max=args.ramp_down_frac_max,
+            ramp_up_frac_min=args.ramp_up_frac_min,
+            ramp_up_frac_max=args.ramp_up_frac_max,
+            ramp_start_min=args.ramp_start_min,
+            ramp_start_max=args.ramp_start_max,
+            ramp_dur_min=args.ramp_dur_min,
+            ramp_dur_max=args.ramp_dur_max,
+            randomize_pv_profile=args.randomize_pv_profile,
+            pv_shape_choices=args.pv_shape_choices,
+            pv_baseline_min=args.pv_baseline_min,
+            pv_baseline_max=args.pv_baseline_max,
+            pv_cloud_count_max=args.pv_cloud_count_max,
+            pv_cloud_depth_min=args.pv_cloud_depth_min,
+            pv_cloud_depth_max=args.pv_cloud_depth_max,
+            pv_cloud_width_min=args.pv_cloud_width_min,
+            pv_cloud_width_max=args.pv_cloud_width_max,
+            randomize_tvl_profile=args.randomize_tvl_profile,
+            tvl_shape_choices=args.tvl_shape_choices,
+            max_always_min=args.max_always_min,
+            t_control_start_buffer=args.t_control_start_buffer,
+            t_control_end_buffer=args.t_control_end_buffer,
+            log_level=args.log_level,
+            append_to=None,  # we run a separate merge below (with the pure-over filter)
+        )
+
+        scenario_root = Path(__file__).resolve().parent / "outputs" / args.system / "scenario_library"
+        _merge_supplement_into_base(
+            base_pkl=scenario_root / args.tag / "library.pkl",
+            supp_pkl=scenario_root / supp_tag / "library.pkl",
+            swap_undervoltage_for_overvoltage=args.swap_undervoltage_for_overvoltage,
+        )
