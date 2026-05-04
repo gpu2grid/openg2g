@@ -162,7 +162,7 @@ def _save_legend(handles, stem: Path, *, ncol: int, width: float, tight: bool = 
         kw = {"bbox_inches": "tight", "pad_inches": 0.02}
     else:
         kw = {"bbox_inches": None, "pad_inches": 0.0}
-    fig.savefig(stem.with_suffix(".pdf"), metadata={"CreationDate": None}, **kw)
+    fig.savefig(stem.with_suffix(".pdf"), metadata={"CreationDate": None, "Creator": None, "Producer": None}, **kw)
     fig.savefig(stem.with_suffix(".svg"), metadata={"Date": None}, **kw)
     fig.savefig(stem.with_suffix(".png"), dpi=200, metadata={"Creation Time": None}, **kw)
     plt.close(fig)
@@ -239,7 +239,7 @@ def _save(fig: plt.Figure, stem: Path) -> None:
     # No tight_layout — it overrides set_position. bbox_inches=None
     # preserves the exact figsize, guaranteeing matched dimensions.
     kwargs = {"bbox_inches": None, "pad_inches": 0.0}
-    fig.savefig(stem.with_suffix(".pdf"), metadata={"CreationDate": None}, **kwargs)
+    fig.savefig(stem.with_suffix(".pdf"), metadata={"CreationDate": None, "Creator": None, "Producer": None}, **kwargs)
     fig.savefig(stem.with_suffix(".svg"), metadata={"Date": None}, **kwargs)
     fig.savefig(stem.with_suffix(".png"), dpi=200, metadata={"Creation Time": None}, **kwargs)
     plt.close(fig)
