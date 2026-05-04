@@ -42,7 +42,7 @@ def _load_vecnormalize(vecnormalize_path: str | Path, observation_space, action_
     from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 
     class _DummyEnv(gym.Env):
-        metadata = {"render_modes": []}
+        metadata = {"render_modes": []}  # noqa: RUF012
 
         def __init__(self, obs_space, act_space):
             super().__init__()
@@ -76,7 +76,9 @@ def _detect_action_mode(action_space, n_models: int) -> str:
         nvec = tuple(int(d) for d in action_space.nvec)
         if all(d == 3 for d in nvec):
             return "delta"
-    raise ValueError(f"Unrecognised action space {action_space!r} — expected Discrete (coupled) or MultiDiscrete([3]*N) (delta)")
+    raise ValueError(
+        f"Unrecognised action space {action_space!r} — expected Discrete (coupled) or MultiDiscrete([3]*N) (delta)"
+    )
 
 
 class PPOBatchSizeController(
@@ -130,9 +132,7 @@ class PPOBatchSizeController(
         self._init_prev_batch()
 
     def _init_prev_batch(self) -> None:
-        self._prev_batch = {
-            s.model_label: self._obs_config.get_initial_batch(s.model_label) for s in self._models
-        }
+        self._prev_batch = {s.model_label: self._obs_config.get_initial_batch(s.model_label) for s in self._models}
 
     @property
     def dt_s(self) -> Fraction:

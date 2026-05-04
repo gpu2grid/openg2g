@@ -36,26 +36,6 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from systems import (
-    DT_CTRL,
-    DT_DC,
-    DT_GRID,
-    POWER_AUG,
-    SYSTEMS,
-    TAP_STEP,
-    TOTAL_DURATION_S,
-    V_MAX,
-    V_MIN,
-    DCSite,
-    PVSystemSpec,
-    SPECS_CACHE_DIR,
-    TRAINING_TRACE_PATH,
-    TimeVaryingLoadSpec,
-    all_model_specs,
-    deploy,
-    tap,
-    with_ramp,
-)
 
 from openg2g.controller.ofo import (
     LogisticModelStore,
@@ -77,6 +57,27 @@ from openg2g.datacenter.workloads.training import TrainingTrace
 from openg2g.grid.config import TapPosition, TapSchedule
 from openg2g.grid.opendss import OpenDSSGrid
 from openg2g.metrics.voltage import compute_allbus_voltage_stats
+
+from systems import (
+    DT_CTRL,
+    DT_DC,
+    DT_GRID,
+    POWER_AUG,
+    SPECS_CACHE_DIR,
+    SYSTEMS,
+    TAP_STEP,
+    TOTAL_DURATION_S,
+    TRAINING_TRACE_PATH,
+    V_MAX,
+    V_MIN,
+    DCSite,
+    PVSystemSpec,
+    TimeVaryingLoadSpec,
+    all_model_specs,
+    deploy,
+    tap,
+    with_ramp,
+)
 
 logger = logging.getLogger("sweep_dc_locations")
 
@@ -1384,8 +1385,12 @@ def main_2d(
                 initial_tap_position=initial_taps,
                 exclude_buses=exclude_buses,
             )
-            grid.attach_dc(dc_A, bus=bus_A, connection_type=site_A.connection_type, power_factor=dc_config_A.power_factor)
-            grid.attach_dc(dc_B, bus=bus_B, connection_type=site_B.connection_type, power_factor=dc_config_B.power_factor)
+            grid.attach_dc(
+                dc_A, bus=bus_A, connection_type=site_A.connection_type, power_factor=dc_config_A.power_factor
+            )
+            grid.attach_dc(
+                dc_B, bus=bus_B, connection_type=site_B.connection_type, power_factor=dc_config_B.power_factor
+            )
 
             ofo_A = OFOBatchSizeController(
                 specs_A,
@@ -1504,9 +1509,7 @@ def _run_multi_dc_case(
             base_kw_per_phase=site.base_kw_per_phase,
         )
         # Schedules combine the (initial, ramps) pair on each (md, sched).
-        replica_schedules: dict[str, ReplicaSchedule] = {
-            md.spec.model_label: sched for md, sched in site.models
-        }
+        replica_schedules: dict[str, ReplicaSchedule] = {md.spec.model_label: sched for md, sched in site.models}
         if stress_test:
             # Immediate per-model ramps to fill total GPU capacity
             current_gpus = sum(sched.initial * md.spec.gpus_per_replica for md, sched in site.models)
@@ -1515,7 +1518,9 @@ def _run_multi_dc_case(
             if scale > 1.0:
                 replica_schedules = {
                     md.spec.model_label: ReplicaSchedule(initial=sched.initial).ramp_to(
-                        round(scale * sched.initial), t_start=0, t_end=1,
+                        round(scale * sched.initial),
+                        t_start=0,
+                        t_end=1,
                     )
                     for md, sched in site.models
                 }
@@ -2293,8 +2298,7 @@ def _experiment_ieee13(sys_const, training_trace):
         "Qwen3-235B-A22B": 42,
     }
     models = tuple(
-        with_ramp((md, sched), ramp_targets[md.spec.model_label], t_start=2500, t_end=3000)
-        for md, sched in models
+        with_ramp((md, sched), ramp_targets[md.spec.model_label], t_start=2500, t_end=3000) for md, sched in models
     )
 
     dc_sites = {

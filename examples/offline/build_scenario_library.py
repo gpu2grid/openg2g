@@ -37,7 +37,7 @@ import logging
 import math
 import pickle
 import sys
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import matplotlib
@@ -45,24 +45,6 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
-
-from systems import (
-    DT_CTRL,
-    DT_DC,
-    DT_GRID,
-    EXPERIMENTS,
-    POWER_AUG,
-    TOTAL_DURATION_S,
-    V_MAX,
-    V_MIN,
-    DCSite,
-    PVSystemSpec,
-    SPECS_CACHE_DIR,
-    ScenarioOpenDSSGrid,
-    TRAINING_TRACE_PATH,
-    TimeVaryingLoadSpec,
-    randomize_scenario,
-)
 
 from openg2g.controller.ofo import LogisticModelStore, OFOConfig
 from openg2g.controller.rule_based import RuleBasedBatchSizeController, RuleBasedConfig
@@ -74,6 +56,24 @@ from openg2g.datacenter.workloads.inference import InferenceData
 from openg2g.datacenter.workloads.training import TrainingTrace
 from openg2g.grid.config import TapSchedule
 from openg2g.metrics.voltage import VoltageStats, compute_allbus_voltage_stats
+
+from systems import (
+    DT_CTRL,
+    DT_DC,
+    DT_GRID,
+    EXPERIMENTS,
+    POWER_AUG,
+    SPECS_CACHE_DIR,
+    TOTAL_DURATION_S,
+    TRAINING_TRACE_PATH,
+    V_MAX,
+    V_MIN,
+    DCSite,
+    PVSystemSpec,
+    ScenarioOpenDSSGrid,
+    TimeVaryingLoadSpec,
+    randomize_scenario,
+)
 
 logger = logging.getLogger("scenario_library")
 
@@ -135,9 +135,7 @@ def run_simulation(
         site_specs_map[site_id] = site_specs
         site_inference = inference_data.filter_models(site_specs)
 
-        replica_schedules: dict[str, ReplicaSchedule] = {
-            md.spec.model_label: sched for md, sched in site.models
-        }
+        replica_schedules: dict[str, ReplicaSchedule] = {md.spec.model_label: sched for md, sched in site.models}
         initial_batch_sizes = {md.spec.model_label: md.initial_batch_size for md, _ in site.models}
 
         dc_config = DatacenterConfig(
@@ -193,9 +191,7 @@ def run_simulation(
         from openg2g.controller.ofo import OFOBatchSizeController
 
         for site_id in site_ids:
-            site_initial_bs = {
-                md.spec.model_label: md.initial_batch_size for md, _ in dc_sites[site_id].models
-            }
+            site_initial_bs = {md.spec.model_label: md.initial_batch_size for md, _ in dc_sites[site_id].models}
             ofo_ctrl = OFOBatchSizeController(
                 site_specs_map[site_id],
                 datacenter=datacenters[site_id],
@@ -211,9 +207,7 @@ def run_simulation(
         rb_config = rule_based_config or RuleBasedConfig(v_min=V_MIN, v_max=V_MAX)
         zones = sys.get("zones") if rule_zone_local else None
         for site_id in site_ids:
-            site_initial_bs = {
-                md.spec.model_label: md.initial_batch_size for md, _ in dc_sites[site_id].models
-            }
+            site_initial_bs = {md.spec.model_label: md.initial_batch_size for md, _ in dc_sites[site_id].models}
             zone_buses = None
             if zones is not None and len(site_ids) > 1 and site_id in zones:
                 zone_buses = tuple(zones[site_id])
@@ -243,7 +237,7 @@ def run_simulation(
                 mf.parent / "vecnormalize.pkl",
             ]
             if stem.startswith("ppo_") and stem.endswith("_steps"):
-                candidates.append(mf.parent / f"ppo_vecnormalize_{stem[len('ppo_'):]}.pkl")
+                candidates.append(mf.parent / f"ppo_vecnormalize_{stem[len('ppo_') :]}.pkl")
             for parent in [mf.parent, *mf.parent.parents][:4]:
                 candidates.extend(sorted(parent.glob("ppo_model_*_vecnormalize.pkl")))
             for c in candidates:
@@ -258,9 +252,7 @@ def run_simulation(
                 shared_model = cand
         elif ppo_path.suffix == ".zip":
             looks_shared = (
-                len(site_ids) > 1
-                or "shared" in ppo_path.parts
-                or ppo_path.stem.startswith("ppo_model_shared")
+                len(site_ids) > 1 or "shared" in ppo_path.parts or ppo_path.stem.startswith("ppo_model_shared")
             )
             if looks_shared and ppo_path.exists():
                 shared_model = ppo_path
@@ -282,6 +274,7 @@ def run_simulation(
                 bus_phase_groups = None
             elif obs_mode == "per-bus-summary":
                 from openg2g.rl.env import compute_bus_phase_groups
+
                 grid.do_reset()
                 grid.start()
                 _v_index = grid.v_index
@@ -295,7 +288,9 @@ def run_simulation(
                 bus_phase_groups = None
 
             site_model_mapping = {sid: [md.spec.model_label for md, _ in dc_sites[sid].models] for sid in site_ids}
-            all_init_bs = {md.spec.model_label: md.initial_batch_size for sid in site_ids for md, _ in dc_sites[sid].models}
+            all_init_bs = {
+                md.spec.model_label: md.initial_batch_size for sid in site_ids for md, _ in dc_sites[sid].models
+            }
             obs_config = ObservationConfig.from_multi_site(
                 site_specs_map,
                 {sid: {md.spec.model_label: sched.initial for md, sched in dc_sites[sid].models} for sid in site_ids},
@@ -349,7 +344,13 @@ def run_simulation(
                 replica_counts = {md.spec.model_label: sched.initial for md, sched in dc_sites[site_id].models}
                 site_init_bs = {md.spec.model_label: md.initial_batch_size for md, _ in dc_sites[site_id].models}
                 obs_config = ObservationConfig.from_model_specs(
-                    specs, replica_counts, n_bus_phases=n_bus_phases, initial_batch_sizes=site_init_bs, zone_buses=zone_buses, v_min=V_MIN, v_max=V_MAX
+                    specs,
+                    replica_counts,
+                    n_bus_phases=n_bus_phases,
+                    initial_batch_sizes=site_init_bs,
+                    zone_buses=zone_buses,
+                    v_min=V_MIN,
+                    v_max=V_MAX,
                 )
                 vn_path = _find_vecnormalize(Path(site_model))
                 if vn_path is not None:
@@ -494,7 +495,9 @@ def _per_step_voltage_pen(grid_states, *, v_min: float, v_max: float, exclude_bu
     return out
 
 
-def _under_over_voltage_time(grid_states, *, v_min: float, v_max: float, exclude_buses: tuple[str, ...]) -> tuple[float, float]:
+def _under_over_voltage_time(
+    grid_states, *, v_min: float, v_max: float, exclude_buses: tuple[str, ...]
+) -> tuple[float, float]:
     """Return (undervoltage_time_s, overvoltage_time_s).
 
     A step counts as 'undervoltage' if ANY non-excluded bus-phase is below
@@ -670,7 +673,7 @@ def _plot_batch_sizes(
     ofo_by_site = batch_data[first_seed]["ofo"]
     cols_meta: list[tuple[str, str]] = []
     for site_id, sdata in ofo_by_site.items():
-        for label in sdata["batch_by_model"].keys():
+        for label in sdata["batch_by_model"]:
             cols_meta.append((site_id, label))
     n_cols = len(cols_meta)
 
@@ -682,10 +685,22 @@ def _plot_batch_sizes(
             ax = axes[row][col]
             bl_site = bd["baseline"][site_id]
             ofo_site = bd["ofo"][site_id]
-            ax.plot(bl_site["time_s"], bl_site["batch_by_model"][label],
-                    color="#888", linewidth=0.7, alpha=0.7, label="baseline")
-            ax.plot(ofo_site["time_s"], ofo_site["batch_by_model"][label],
-                    color="#2196F3", linewidth=0.7, alpha=0.9, label="OFO")
+            ax.plot(
+                bl_site["time_s"],
+                bl_site["batch_by_model"][label],
+                color="#888",
+                linewidth=0.7,
+                alpha=0.7,
+                label="baseline",
+            )
+            ax.plot(
+                ofo_site["time_s"],
+                ofo_site["batch_by_model"][label],
+                color="#2196F3",
+                linewidth=0.7,
+                alpha=0.9,
+                label="OFO",
+            )
             if row == 0:
                 short = label.split("/")[-1] if "/" in label else label
                 title = f"{site_id}:{short}" if len(ofo_by_site) > 1 else short
@@ -719,9 +734,7 @@ def _extract_batch_data(log) -> dict:
             for m in states[0].batch_size_by_model:
                 if m not in labels:
                     labels.append(m)
-        batch_by_model = {
-            m: [s.batch_size_by_model.get(m, 0) for s in states] for m in labels
-        }
+        batch_by_model = {m: [s.batch_size_by_model.get(m, 0) for s in states] for m in labels}
         per_site[site_id] = {"time_s": time_s, "batch_by_model": batch_by_model}
     return per_site
 
@@ -807,7 +820,8 @@ def _plot_envelopes(
             axes[-1][col].set_xlabel("Time (s)", fontsize=8)
         fig.suptitle(
             "Accepted scenarios — per-zone voltage envelope (baseline vs OFO)",
-            fontsize=13, fontweight="bold",
+            fontsize=13,
+            fontweight="bold",
         )
     else:
         cap = max_rows * 2
@@ -931,7 +945,11 @@ def main(
     ramp_dur_max: float = 800.0,
     randomize_pv_profile: bool = False,
     pv_shape_choices: tuple[str, ...] = (
-        "flat", "rising_falling", "morning_ramp", "afternoon_decline", "midday_dip",
+        "flat",
+        "rising_falling",
+        "morning_ramp",
+        "afternoon_decline",
+        "midday_dip",
     ),
     pv_baseline_min: float = 0.75,
     pv_baseline_max: float = 0.95,
@@ -966,7 +984,9 @@ def main(
     logger.info("Writing scenario library to %s", out_dir)
     logger.info(
         "system=%s  use_training_overlay=%s  randomize_ramps=%s",
-        system, use_training_overlay, randomize_ramps,
+        system,
+        use_training_overlay,
+        randomize_ramps,
     )
 
     # ── Load data once (per-spec content-addressed cache under SPECS_CACHE_DIR) ──
@@ -1009,9 +1029,11 @@ def main(
         for t in base_exp["time_varying_loads"]
     ]
     logger.info(
-        "PV base total=%.0f kW across %d systems, TVL base total=%.0f kW across %d loads (× scale ∈ [0.5, 2.0] per scenario)",
-        sum(p.peak_kw for p in pv_systems_base), len(pv_systems_base),
-        sum(t.peak_kw for t in tvl_base), len(tvl_base),
+        "PV base total=%.0f kW across %d systems, TVL base total=%.0f kW across %d loads (× scale ∈ [0.5, 2.0] per scenario)",  # noqa: E501
+        sum(p.peak_kw for p in pv_systems_base),
+        len(pv_systems_base),
+        sum(t.peak_kw for t in tvl_base),
+        len(tvl_base),
     )
 
     # All model specs across the single DC site
@@ -1189,7 +1211,11 @@ def main(
         # (especially useful for diagnosing rejected scenarios in multi-zone feeders).
         if zones:
             bl_zone_phase = _zone_phase_integral(
-                bl_log.grid_states, zones=zones, exclude_buses=exclude_buses, v_min=V_MIN, v_max=V_MAX,
+                bl_log.grid_states,
+                zones=zones,
+                exclude_buses=exclude_buses,
+                v_min=V_MIN,
+                v_max=V_MAX,
             )
             zone_summary = "  baseline zone/phase integral: " + " | ".join(
                 f"{z}: A={bl_zone_phase[z]['a']:.1f} B={bl_zone_phase[z]['b']:.1f} C={bl_zone_phase[z]['c']:.1f}"
@@ -1203,14 +1229,18 @@ def main(
                 if n_always_min_accepted >= MAX_ALWAYS_MIN:
                     logger.info(
                         "  seed=%d: OFO always at min batch — cap reached (%d/%d), skipping",
-                        effective_seed, n_always_min_accepted, MAX_ALWAYS_MIN,
+                        effective_seed,
+                        n_always_min_accepted,
+                        MAX_ALWAYS_MIN,
                     )
                     passes = False
                 else:
                     n_always_min_accepted += 1
                     logger.info(
                         "  seed=%d: OFO always at min batch — accepting (%d/%d)",
-                        effective_seed, n_always_min_accepted, MAX_ALWAYS_MIN,
+                        effective_seed,
+                        n_always_min_accepted,
+                        MAX_ALWAYS_MIN,
                     )
         if passes:
             nonzero_steps = np.nonzero(baseline_pen > 0)[0]
@@ -1224,7 +1254,10 @@ def main(
             t_ctrl_end = min(len(baseline_pen), t_last + t_control_end_buffer)
             logger.info(
                 "  control window: violation [%d, %d] → [%d, %d] (%d steps, saves %d%%)",
-                t_first, t_last, t_ctrl_start, t_ctrl_end,
+                t_first,
+                t_last,
+                t_ctrl_start,
+                t_ctrl_end,
                 t_ctrl_end - t_ctrl_start,
                 100 * (len(baseline_pen) - (t_ctrl_end - t_ctrl_start)) // len(baseline_pen),
             )
@@ -1255,10 +1288,14 @@ def main(
             }
             if zones:
                 env_entry["baseline_zones"] = _voltage_envelope_by_zone(
-                    bl_log.grid_states, zones=zones, exclude_buses=exclude_buses,
+                    bl_log.grid_states,
+                    zones=zones,
+                    exclude_buses=exclude_buses,
                 )
                 env_entry["ofo_zones"] = _voltage_envelope_by_zone(
-                    ofo_log.grid_states, zones=zones, exclude_buses=exclude_buses,
+                    ofo_log.grid_states,
+                    zones=zones,
+                    exclude_buses=exclude_buses,
                 )
             envelopes[effective_seed] = env_entry
             batch_data[effective_seed] = {
@@ -1325,13 +1362,9 @@ def main(
                     "randomize_ramps": randomize_ramps,
                     "randomize_kwargs": randomize_kwargs,
                     "pv_systems_base": [
-                        {"bus": p.bus, "bus_kv": p.bus_kv, "peak_kw": p.peak_kw}
-                        for p in pv_systems_base
+                        {"bus": p.bus, "bus_kv": p.bus_kv, "peak_kw": p.peak_kw} for p in pv_systems_base
                     ],
-                    "tvl_base": [
-                        {"bus": t.bus, "bus_kv": t.bus_kv, "peak_kw": t.peak_kw}
-                        for t in tvl_base
-                    ],
+                    "tvl_base": [{"bus": t.bus, "bus_kv": t.bus_kv, "peak_kw": t.peak_kw} for t in tvl_base],
                     "v_min": V_MIN,
                     "v_max": V_MAX,
                 },
@@ -1354,7 +1387,9 @@ def main(
                 pickle.dump(existing, f)
             logger.info(
                 "Appended %d new scenario(s) to %s (total now: %d)",
-                len(new_scenarios), append_to, len(existing["scenarios"]),
+                len(new_scenarios),
+                append_to,
+                len(existing["scenarios"]),
             )
         else:
             logger.info("No new scenarios to append — all seeds already present in %s", append_to)
@@ -1385,7 +1420,9 @@ def main(
     # Plots
     if accepted:
         _plot_envelopes(
-            accepted, envelopes, out_dir / "scenario_envelopes.png",
+            accepted,
+            envelopes,
+            out_dir / "scenario_envelopes.png",
             total_duration_s=len(accepted[0].ofo_voltage_pen_per_step),
             zones=zones,
         )
@@ -1423,34 +1460,34 @@ if __name__ == "__main__":
         min_recovery_frac: float = 0.7
         """Reject scenarios where OFO recovers less than this fraction of the baseline integral violation."""
         max_recovery_frac: float = 1.0
-        """Reject scenarios where OFO recovers more than this fraction (use with min to select a recovery band, e.g. 0.4-0.6)."""
+        """Reject scenarios where OFO recovers more than this fraction (use with min to select a recovery band, e.g. 0.4-0.6)."""  # noqa: E501
         min_baseline_integral: float = 0.2
         """Reject scenarios where the baseline undervoltage integral is below this threshold (no learning signal)."""
         min_baseline_integral_over: float = 0.01
-        """Reject pure-overvoltage scenarios where the baseline integral is below this threshold. Lower than min_baseline_integral since OFO recovers overvoltage less aggressively."""
+        """Reject pure-overvoltage scenarios where the baseline integral is below this threshold. Lower than min_baseline_integral since OFO recovers overvoltage less aggressively."""  # noqa: E501
         max_baseline_integral: float = 1e9
-        """Reject scenarios where the baseline integral violation exceeds this threshold (saturated, dominate gradients). Default = no upper bound."""
+        """Reject scenarios where the baseline integral violation exceeds this threshold (saturated, dominate gradients). Default = no upper bound."""  # noqa: E501
         pv_base_kw: float | None = None
-        """Base PV peak power per system (kW) before per-scenario scaling. If unset, use the per-bus defaults from the experiment definition (recommended for ieee34 where each PV has a distinct peak_kw)."""
+        """Base PV peak power per system (kW) before per-scenario scaling. If unset, use the per-bus defaults from the experiment definition (recommended for ieee34 where each PV has a distinct peak_kw)."""  # noqa: E501
         tvl_base_kw: float | None = None
-        """Base time-varying load peak power per load (kW) before per-scenario scaling. If unset, use the per-bus defaults from the experiment definition."""
+        """Base time-varying load peak power per load (kW) before per-scenario scaling. If unset, use the per-bus defaults from the experiment definition."""  # noqa: E501
         sensitivity_update_interval: int = 300
         """OFO H-matrix re-estimation interval in control steps. 300 = every 5 simulated minutes."""
         ofo_w_throughput: float = 0.0001
-        """OFO throughput weight in the primal objective. 0 = pure voltage focus (the screening only cares how much violation OFO can recover)."""
+        """OFO throughput weight in the primal objective. 0 = pure voltage focus (the screening only cares how much violation OFO can recover)."""  # noqa: E501
         tag: str = "v3"
         """Subdirectory under outputs/<system>/scenario_library/ to write artifacts to."""
         seed_start: int = 0
-        """Starting candidate index. Effective seed = (seed_start + cand_idx) * 1000 + 7. Use to generate non-overlapping scenario sets (e.g., seed-start=400 for eval set when training used 0-349)."""
+        """Starting candidate index. Effective seed = (seed_start + cand_idx) * 1000 + 7. Use to generate non-overlapping scenario sets (e.g., seed-start=400 for eval set when training used 0-349)."""  # noqa: E501
         seeds: tuple[int, ...] = ()
-        """Explicit list of effective seeds to run (overrides seed_start + n_candidates). Use to re-run only known-accepted seeds from a prior build log."""
+        """Explicit list of effective seeds to run (overrides seed_start + n_candidates). Use to re-run only known-accepted seeds from a prior build log."""  # noqa: E501
         use_training_overlay: bool = True
-        """Whether to add the training overlay (a few-hundred-kW training GPU spike) to in-distribution scenarios. Default True (ieee13 behavior). Set --no-use-training-overlay for ieee34 in-dist libraries — the overlay is reserved for OOD there."""
+        """Whether to add the training overlay (a few-hundred-kW training GPU spike) to in-distribution scenarios. Default True (ieee13 behavior). Set --no-use-training-overlay for ieee34 in-dist libraries — the overlay is reserved for OOD there."""  # noqa: E501
         randomize_ramps: bool = True
-        """Whether randomize_scenario synthesizes per-episode inference ramps. Default True (ieee13 behavior). Set --no-randomize-ramps for ieee34 in-dist libraries — ramps are reserved for OOD there."""
+        """Whether randomize_scenario synthesizes per-episode inference ramps. Default True (ieee13 behavior). Set --no-randomize-ramps for ieee34 in-dist libraries — ramps are reserved for OOD there."""  # noqa: E501
         # ── Randomization profile ──
         randomization_profile: Annotated[bool, tyro.conf.FlagConversionOff] = True
-        """True (broad, default) = bidirectional multi-ramps, wider PV/TVL scales, shape randomness, stochastic overlay. False (narrow) = legacy behavior."""
+        """True (broad, default) = bidirectional multi-ramps, wider PV/TVL scales, shape randomness, stochastic overlay. False (narrow) = legacy behavior."""  # noqa: E501
         pv_scale_min: float = 0.5
         pv_scale_max: float = 2.0
         load_scale_min: float = 0.5
@@ -1472,7 +1509,7 @@ if __name__ == "__main__":
         n_ramps_per_site_choices: tuple[int, ...] = (1,)
         """Possible numbers of ramps per DC site (broad profile). e.g. (1, 2) gives 50/50 single/double ramps."""
         ramp_up_prob: float = 0.0
-        """Probability a sampled ramp goes UP (broad profile). GPU capacity is checked per-site so up-ramps are clamped automatically."""
+        """Probability a sampled ramp goes UP (broad profile). GPU capacity is checked per-site so up-ramps are clamped automatically."""  # noqa: E501
         ramp_down_frac_min: float = 0.5
         ramp_down_frac_max: float = 0.85
         ramp_up_frac_min: float = 1.05
@@ -1488,9 +1525,13 @@ if __name__ == "__main__":
         randomize_pv_profile: bool = False
         """Replace the analytical pv_profile_kw with a multi-shape random PV profile (broad mode only)."""
         pv_shape_choices: tuple[str, ...] = (
-            "flat", "rising_falling", "morning_ramp", "afternoon_decline", "midday_dip",
+            "flat",
+            "rising_falling",
+            "morning_ramp",
+            "afternoon_decline",
+            "midday_dip",
         )
-        """PV shapes to sample from (broad mode + --randomize-pv-profile). Default covers all 5 transient/flat envelopes."""
+        """PV shapes to sample from (broad mode + --randomize-pv-profile). Default covers all 5 transient/flat envelopes."""  # noqa: E501
         pv_baseline_min: float = 0.75
         pv_baseline_max: float = 0.95
         pv_cloud_count_max: int = 3
@@ -1499,17 +1540,17 @@ if __name__ == "__main__":
         pv_cloud_width_min: float = 60.0
         pv_cloud_width_max: float = 300.0
         randomize_tvl_profile: bool = False
-        """Replace the analytical load_profile_kw with one of {flat, increasing, decreasing, peaked, valley} per scenario (broad mode only)."""
+        """Replace the analytical load_profile_kw with one of {flat, increasing, decreasing, peaked, valley} per scenario (broad mode only)."""  # noqa: E501
         tvl_shape_choices: tuple[str, ...] = ("flat", "increasing", "decreasing", "peaked", "valley")
         max_always_min: int = 5
-        """Max number of 'OFO always at min batch' scenarios to accept. Increase to 10 for training libraries to avoid under-representing easy scenarios."""
+        """Max number of 'OFO always at min batch' scenarios to accept. Increase to 10 for training libraries to avoid under-representing easy scenarios."""  # noqa: E501
         t_control_start_buffer: int = 200
         """Steps of buffer before the first baseline voltage violation (for episode truncation)."""
         t_control_end_buffer: int = 300
         """Steps of buffer after the last baseline voltage violation (for episode truncation)."""
         log_level: str = "INFO"
         append_to: Path | None = None
-        """If set, merge newly accepted scenarios into this existing library.pkl (deduplicates by seed). The new run is still saved under --tag for diagnostic plots."""
+        """If set, merge newly accepted scenarios into this existing library.pkl (deduplicates by seed). The new run is still saved under --tag for diagnostic plots."""  # noqa: E501
 
     args = tyro.cli(Args)
     main(

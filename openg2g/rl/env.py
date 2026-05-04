@@ -252,10 +252,7 @@ def decode_action(
         return {label: _apply_delta(label, delta) for label in model_labels}
 
     if action_mode == "delta":
-        return {
-            label: _apply_delta(label, int(action[i]) - 1)
-            for i, label in enumerate(model_labels)
-        }
+        return {label: _apply_delta(label, int(action[i]) - 1) for i, label in enumerate(model_labels)}
 
     raise ValueError(f"Unknown action_mode: {action_mode!r}")
 
@@ -290,7 +287,7 @@ def build_observation(
         # Per-bus min/max: [min_phase, max_phase] for each bus
         for k, indices in enumerate(obs_config.bus_phase_groups):
             ph_v = v_vec_full[list(indices)]
-            obs[2 * k]     = float(np.min(ph_v))
+            obs[2 * k] = float(np.min(ph_v))
             obs[2 * k + 1] = float(np.max(ph_v))
     elif M > 0:
         n = min(len(v_vec), M)
@@ -301,7 +298,7 @@ def build_observation(
     if obs_config.zone_summary:
         # Per-zone violation summary — replaces the 3 global scalars
         base = M
-        for zone_name, zone_bus_list in obs_config.zone_summary.items():
+        for zone_name, _zone_bus_list in obs_config.zone_summary.items():
             mask_z = (zone_masks or {}).get(zone_name)
             v_z = v_vec_full[mask_z] if mask_z is not None else v_vec_full
             under_z = np.maximum(v_min_cfg - v_z, 0.0)
@@ -729,7 +726,9 @@ class BatchSizeEnv(gymnasium.Env):
 
         self._prev_batch = {label: self._obs_config.get_initial_batch(label) for label in self._obs_config.model_labels}
         self._steps_since_change = {label: 999 for label in self._obs_config.model_labels}
-        obs = build_observation(grid, self._agent_dc, self._obs_config, self._prev_batch, self._zone_mask, self._zone_masks)
+        obs = build_observation(
+            grid, self._agent_dc, self._obs_config, self._prev_batch, self._zone_mask, self._zone_masks
+        )
         return obs, {}
 
     def step(self, action: np.ndarray) -> tuple[np.ndarray, float, bool, bool, dict]:
@@ -777,7 +776,9 @@ class BatchSizeEnv(gymnasium.Env):
             reward = max(reward, -self._reward_config.reward_clip)
 
         self._prev_batch = dict(batch_sizes)
-        obs = build_observation(self._grid, self._agent_dc, self._obs_config, self._prev_batch, self._zone_mask, self._zone_masks)
+        obs = build_observation(
+            self._grid, self._agent_dc, self._obs_config, self._prev_batch, self._zone_mask, self._zone_masks
+        )
 
         truncated = self._steps_done >= self._max_steps
         if truncated:
@@ -854,7 +855,9 @@ class SharedBatchSizeEnv(BatchSizeEnv):
         # Call parent reset (sets up sim, runs initial ticks)
         obs, info = super().reset(seed=seed, options=options)
         # Rebuild obs using ALL DCs
-        obs = build_observation(self._grid, self._all_dcs_list, self._obs_config, self._prev_batch, self._zone_mask, self._zone_masks)
+        obs = build_observation(
+            self._grid, self._all_dcs_list, self._obs_config, self._prev_batch, self._zone_mask, self._zone_masks
+        )
         return obs, info
 
     def step(self, action: np.ndarray) -> tuple[np.ndarray, float, bool, bool, dict]:
@@ -893,7 +896,9 @@ class SharedBatchSizeEnv(BatchSizeEnv):
                 self._steps_since_change[label] = self._steps_since_change.get(label, 999) + 1
 
         self._prev_batch = dict(all_batch_sizes)
-        obs = build_observation(self._grid, self._all_dcs_list, self._obs_config, self._prev_batch, self._zone_mask, self._zone_masks)
+        obs = build_observation(
+            self._grid, self._all_dcs_list, self._obs_config, self._prev_batch, self._zone_mask, self._zone_masks
+        )
 
         truncated = self._steps_done >= self._max_steps
         if truncated:

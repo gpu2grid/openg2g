@@ -20,31 +20,11 @@ from pathlib import Path
 
 import numpy as np
 import tyro
-from systems import (
-    DT_CTRL,
-    DT_DC,
-    DT_GRID,
-    EXPERIMENTS,
-    POWER_AUG,
-    SPECS_CACHE_DIR,
-    SYSTEMS,
-    TOTAL_DURATION_S,
-    TRAINING_TRACE_PATH,
-    V_MAX,
-    V_MIN,
-    DCSite,
-    PVSystemSpec,
-    ScenarioOpenDSSGrid,
-    TimeVaryingLoadSpec,
-    deploy,
-    materialize_scenario,
-)
 
 from openg2g.controller.tap_schedule import TapScheduleController
 from openg2g.datacenter.config import (
     DatacenterConfig,
     InferenceModelSpec,
-    ModelDeployment,
     ReplicaSchedule,
     TrainingRun,
 )
@@ -52,7 +32,30 @@ from openg2g.datacenter.offline import OfflineDatacenter, OfflineWorkload
 from openg2g.datacenter.workloads.inference import InferenceData
 from openg2g.datacenter.workloads.training import TrainingTrace
 from openg2g.grid.config import TapSchedule
-from openg2g.rl.env import BatchSizeEnv, ObservationConfig, RewardConfig, SharedBatchSizeEnv, compute_bus_phase_groups, compute_zone_mask, resolve_action_mode
+from openg2g.rl.env import (
+    BatchSizeEnv,
+    ObservationConfig,
+    RewardConfig,
+    SharedBatchSizeEnv,
+    compute_bus_phase_groups,
+    compute_zone_mask,
+    resolve_action_mode,
+)
+
+from systems import (
+    DT_CTRL,
+    DT_DC,
+    DT_GRID,
+    EXPERIMENTS,
+    POWER_AUG,
+    SPECS_CACHE_DIR,
+    TRAINING_TRACE_PATH,
+    V_MAX,
+    V_MIN,
+    DCSite,
+    ScenarioOpenDSSGrid,
+    materialize_scenario,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -97,7 +100,6 @@ def make_sim_factory(
     _episode_counter = [0]
 
     def make_sim(scenario_override=None):
-        ep = _episode_counter[0]
         _episode_counter[0] += 1
 
         if scenario_override is not None:
@@ -130,9 +132,7 @@ def make_sim_factory(
         datacenters: dict[str, OfflineDatacenter] = {}
         for sid, site in sites.items():
             dc_config = DatacenterConfig(gpus_per_server=8, base_kw_per_phase=site.base_kw_per_phase)
-            replica_schedules: dict[str, ReplicaSchedule] = {
-                md.spec.model_label: sched for md, sched in site.models
-            }
+            replica_schedules: dict[str, ReplicaSchedule] = {md.spec.model_label: sched for md, sched in site.models}
             initial_bs = {md.spec.model_label: md.initial_batch_size for md, _ in site.models}
             wl_kwargs: dict = {
                 "inference_data": site_inference[sid],
@@ -220,23 +220,25 @@ class TrainingMetricsCallback:
                 self._fp = None
                 self._writer = None
 
-            def _on_training_start(self) -> None:  # noqa: D401 - SB3 hook
-                self._fp = open(self.csv_path, "w", buffering=1, newline="")
+            def _on_training_start(self) -> None:
+                self._fp = open(self.csv_path, "w", buffering=1, newline="")  # noqa: SIM115
                 self._writer = csv.writer(self._fp)
-                self._writer.writerow([
-                    "episode",
-                    "timestep",
-                    "ep_reward",
-                    "ep_length",
-                    "voltage",
-                    "throughput",
-                    "latency",
-                    "switch",
-                    "safe",
-                    "max_undervoltage",
-                    "max_overvoltage",
-                    "mean_violation_frac",
-                ])
+                self._writer.writerow(
+                    [
+                        "episode",
+                        "timestep",
+                        "ep_reward",
+                        "ep_length",
+                        "voltage",
+                        "throughput",
+                        "latency",
+                        "switch",
+                        "safe",
+                        "max_undervoltage",
+                        "max_overvoltage",
+                        "mean_violation_frac",
+                    ]
+                )
 
             def _on_step(self) -> bool:
                 infos = self.locals.get("infos", []) or []
@@ -290,7 +292,7 @@ class TrainingMetricsCallback:
                         self._per_env[env_idx] = _new_episode_acc()
                 return True
 
-            def _on_training_end(self) -> None:  # noqa: D401 - SB3 hook
+            def _on_training_end(self) -> None:
                 if self._fp is not None:
                     self._fp.close()
                     self._fp = None
@@ -312,7 +314,7 @@ def plot_training_progress(csv_path: Path, output_path: Path, label: str) -> Pat
     import matplotlib.pyplot as plt
 
     rows: list[dict] = []
-    with open(csv_path, "r", newline="") as fp:
+    with open(csv_path, newline="") as fp:
         for r in csv.DictReader(fp):
             if any(v is None for v in r.values()):
                 continue  # skip partial rows from interrupted buffered writes
@@ -413,7 +415,7 @@ class Args:
     ent_coef: float = 0.01
     """Entropy coefficient."""
     hidden_dims: tuple[int, ...] = (128, 128)
-    """Hidden layer widths for the MLP policy/value network. Pass multiple values for a deeper net, e.g. --hidden-dims 256 256 256."""
+    """Hidden layer widths for the MLP policy/value network. Pass multiple values for a deeper net, e.g. --hidden-dims 256 256 256."""  # noqa: E501
     w_voltage: float = 1000.0
     """Reward weight for voltage violations."""
     w_throughput: float = 0.0
@@ -421,20 +423,20 @@ class Args:
     w_latency: float = 0.0
     """Reward weight for latency violations. Default 0 to isolate the voltage-control objective."""
     w_switch: float = 0.01
-    """Reward weight for switching cost (penalizes |log2(batch_t) - log2(batch_{t-1})| summed over models). Without this, randomized-scenario runs converge to a near-uniform action distribution and the deterministic eval policy ends up flipping batch sizes on every step. 0.01 is a gentle prior — much smaller than voltage_pen so it acts as a tie-breaker, not a co-equal objective."""
+    """Reward weight for switching cost (penalizes |log2(batch_t) - log2(batch_{t-1})| summed over models). Without this, randomized-scenario runs converge to a near-uniform action distribution and the deterministic eval policy ends up flipping batch sizes on every step. 0.01 is a gentle prior — much smaller than voltage_pen so it acts as a tie-breaker, not a co-equal objective."""  # noqa: E501
     w_safe: float = 0.0
-    """Small positive reward for staying in the safe voltage range. Each step adds +w_safe * (fraction of bus-phases within [v_min, v_max]). Default 0 (disabled). Recommended: 0.01."""
+    """Small positive reward for staying in the safe voltage range. Each step adds +w_safe * (fraction of bus-phases within [v_min, v_max]). Default 0 (disabled). Recommended: 0.01."""  # noqa: E501
     switch_mode: str = "magnitude"
-    """Switch penalty mode: 'magnitude' (original log-ratio), 'binary' (fixed cost per change), or 'cooldown' (decaying cost, recent changes expensive)."""
+    """Switch penalty mode: 'magnitude' (original log-ratio), 'binary' (fixed cost per change), or 'cooldown' (decaying cost, recent changes expensive)."""  # noqa: E501
     switch_cooldown_tau: float = 30.0
     """Time constant (steps) for cooldown switch penalty. Only used with --switch-mode cooldown."""
     action_mode: str = "delta"
     """Action space mode: 'delta' (per-model {-1,0,+1}, 3^N actions) or
     'coupled' (all models move by the same delta, 13 actions)."""
     reward_clip: float = 0.0
-    """If > 0, clip per-step reward to [-reward_clip, +inf). Prevents catastrophic scenarios from dominating PPO updates. Recommended: 1.0 (affects ~4% of episodes, leaving normal training signal intact)."""
+    """If > 0, clip per-step reward to [-reward_clip, +inf). Prevents catastrophic scenarios from dominating PPO updates. Recommended: 1.0 (affects ~4% of episodes, leaving normal training signal intact)."""  # noqa: E501
     vec_normalize: bool = True
-    """Wrap the vec env with SB3 VecNormalize (running obs/reward normalization). Strongly recommended: voltage_pen variance across scenarios is huge and tanks value-function learning without it."""
+    """Wrap the vec env with SB3 VecNormalize (running obs/reward normalization). Strongly recommended: voltage_pen variance across scenarios is huge and tanks value-function learning without it."""  # noqa: E501
     obs_mode: str = "full-voltage"
     """Voltage observation mode. Choices:
     - "full-voltage": all bus-phase raw voltages + per-system summary (3 global scalars).
@@ -447,7 +449,7 @@ class Args:
     total_duration_s: int = 3600
     """Episode length in simulated seconds. Lower for fast smoke tests (e.g. 300 = 5 simulated minutes)."""
     n_envs: int = 1
-    """Number of parallel rollout environments. >1 uses SubprocVecEnv (each subprocess builds its own OpenDSS instance to avoid global-state conflicts)."""
+    """Number of parallel rollout environments. >1 uses SubprocVecEnv (each subprocess builds its own OpenDSS instance to avoid global-state conflicts)."""  # noqa: E501
     tensorboard: bool = True
     """Write TensorBoard logs to <output_dir>/tb. View with `tensorboard --logdir <output_dir>/tb`."""
     plot: bool = True
@@ -457,15 +459,15 @@ class Args:
     log_level: str = "INFO"
     """Logging verbosity."""
     scenario_library: str = ""
-    """Path to a scenario library .pkl built by build_scenario_library.py. When set, episodes are sampled from this library."""
+    """Path to a scenario library .pkl built by build_scenario_library.py. When set, episodes are sampled from this library."""  # noqa: E501
     ofo_baseline: bool = False
-    """Subtract the OFO oracle's per-step voltage penalty from PPO's reward (requires --scenario-library). Disabling gives the raw voltage penalty as reward."""
+    """Subtract the OFO oracle's per-step voltage penalty from PPO's reward (requires --scenario-library). Disabling gives the raw voltage penalty as reward."""  # noqa: E501
     truncate_episode: bool = True
-    """Fast-forward past the initial quiet period and terminate after the last violation (requires --scenario-library with t_control_start/end). Disabling uses full 3600s episodes."""
+    """Fast-forward past the initial quiet period and terminate after the last violation (requires --scenario-library with t_control_start/end). Disabling uses full 3600s episodes."""  # noqa: E501
     seed: int = 42
     """Random seed."""
     init_from: str = ""
-    """Path to a PPO checkpoint .zip to warm-start from (e.g. ppo_1152000_steps.zip). If a sibling ppo_vecnormalize_<steps>.pkl exists and --vec-normalize is set, its stats are loaded too. Hyperparameters stored in the checkpoint (lr, ent_coef, clip_range, …) are preserved; pass CLI flags only to change the env-side reward weights."""
+    """Path to a PPO checkpoint .zip to warm-start from (e.g. ppo_1152000_steps.zip). If a sibling ppo_vecnormalize_<steps>.pkl exists and --vec-normalize is set, its stats are loaded too. Hyperparameters stored in the checkpoint (lr, ent_coef, clip_range, …) are preserved; pass CLI flags only to change the env-side reward weights."""  # noqa: E501
 
 
 def main() -> None:
@@ -532,7 +534,8 @@ def main() -> None:
         )
 
     make_sim, all_site_specs, all_replica_counts, all_initial_batch_sizes = make_sim_factory(
-        exp, inference_data,
+        exp,
+        inference_data,
     )
 
     # Probe grid for v_index and n_bus_phases
@@ -571,8 +574,13 @@ def main() -> None:
         n_bus_phases = 0
         bus_phase_groups = None
 
-    logger.info("Grid has %d bus-phase pairs across %d buses; obs_mode=%s, n_bus_phases=%d",
-                n_bus_phases_full, len(set(b for b, _ in v_index)), args.obs_mode, n_bus_phases)
+    logger.info(
+        "Grid has %d bus-phase pairs across %d buses; obs_mode=%s, n_bus_phases=%d",
+        n_bus_phases_full,
+        len(set(b for b, _ in v_index)),
+        args.obs_mode,
+        n_bus_phases,
+    )
 
     reward_config = RewardConfig(
         w_voltage=args.w_voltage,
@@ -618,9 +626,7 @@ def main() -> None:
             vn_init_ckpt = None
             if args.init_from:
                 _p = Path(args.init_from)
-                _cand = _p.with_name(
-                    _p.name.replace("ppo_", "ppo_vecnormalize_", 1).replace(".zip", ".pkl")
-                )
+                _cand = _p.with_name(_p.name.replace("ppo_", "ppo_vecnormalize_", 1).replace(".zip", ".pkl"))
                 if _cand.exists():
                     vn_init_ckpt = _cand
             if vn_init_ckpt is not None:
@@ -691,7 +697,10 @@ def main() -> None:
 
         if args.lr_schedule == "linear":
             _lr_init = float(args.learning_rate)
-            lr_arg = lambda progress_remaining: progress_remaining * _lr_init
+
+            def lr_arg(progress_remaining):
+                return progress_remaining * _lr_init
+
         elif args.lr_schedule == "constant":
             lr_arg = args.learning_rate
         else:
@@ -707,7 +716,8 @@ def main() -> None:
             model.set_env(vec_env)
             logger.info(
                 "Warm-started PPO from %s (num_timesteps=%d).",
-                args.init_from, getattr(model, "num_timesteps", 0),
+                args.init_from,
+                getattr(model, "num_timesteps", 0),
             )
         else:
             model = PPO(
@@ -750,7 +760,7 @@ def main() -> None:
                     logger.info("Wrote training plot to %s", plot_path)
                 else:
                     logger.warning("No metrics rows in %s — skipping plot", metrics_csv)
-            except Exception as e:  # noqa: BLE001
+            except Exception as e:
                 logger.warning("Plotting failed for '%s': %s", label, e)
 
     if args.shared and len(site_ids) > 1:
@@ -758,21 +768,21 @@ def main() -> None:
         logger.info("Training SHARED PPO for %d sites: %s", len(site_ids), site_ids)
 
         site_model_mapping = {sid: [s.model_label for s in all_site_specs[sid]] for sid in site_ids}
-        all_initial_bs_flat = {
-            label: bs
-            for sid in site_ids for label, bs in all_initial_batch_sizes[sid].items()
-        }
+        all_initial_bs_flat = {label: bs for sid in site_ids for label, bs in all_initial_batch_sizes[sid].items()}
         zone_summary = (
             {zname: tuple(zbuses) for zname, zbuses in zones.items()}
             if zones is not None and args.obs_mode in ("per-zone-summary", "per-bus-summary")
             else None
         )
         obs_config = ObservationConfig.from_multi_site(
-            all_site_specs, all_replica_counts, n_bus_phases=n_bus_phases,
+            all_site_specs,
+            all_replica_counts,
+            n_bus_phases=n_bus_phases,
             initial_batch_sizes=all_initial_bs_flat,
             zone_summary=zone_summary,
             bus_phase_groups=bus_phase_groups,
-            v_min=V_MIN, v_max=V_MAX
+            v_min=V_MIN,
+            v_max=V_MAX,
         )
 
         def shared_env_factory():
@@ -810,7 +820,13 @@ def main() -> None:
 
             site_initial_bs = all_initial_batch_sizes[sid]
             obs_config = ObservationConfig.from_model_specs(
-                specs, replica_counts, n_bus_phases=n_bp, initial_batch_sizes=site_initial_bs, zone_buses=zone_buses, v_min=V_MIN, v_max=V_MAX
+                specs,
+                replica_counts,
+                n_bus_phases=n_bp,
+                initial_batch_sizes=site_initial_bs,
+                zone_buses=zone_buses,
+                v_min=V_MIN,
+                v_max=V_MAX,
             )
 
             def site_env_factory(_obs_config=obs_config, _sid=sid, _lib=scenario_lib):

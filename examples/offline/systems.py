@@ -160,7 +160,9 @@ def all_model_specs() -> tuple[InferenceModelSpec, ...]:
 
 
 def deploy(
-    label: str, num_replicas: int, initial_batch_size: int = 128,
+    label: str,
+    num_replicas: int,
+    initial_batch_size: int = 128,
 ) -> tuple[ModelDeployment, ReplicaSchedule]:
     """Shorthand: ``deploy("Llama-3.1-8B", 720, 128)`` -> (ModelDeployment, ReplicaSchedule)."""
     return (
@@ -812,7 +814,9 @@ def _randomize_ramps(
         for md, sched in site.models:
             target = max(1, int(ramp_frac * sched.initial))
             new_sched = ReplicaSchedule(initial=sched.initial).ramp_to(
-                target, t_start=ramp_start, t_end=ramp_end,
+                target,
+                t_start=ramp_start,
+                t_end=ramp_end,
             )
             new_models.append((md, new_sched))
         new_sites[sid] = DCSite(
@@ -882,7 +886,7 @@ def _randomize_broad_ramps(
         model_scheds: dict[str, ReplicaSchedule] = {
             md.spec.model_label: ReplicaSchedule(initial=sched.initial) for md, sched in site.models
         }
-        for (z_lo, z_hi), z_count in zip(zones, zone_counts):
+        for (z_lo, z_hi), z_count in zip(zones, zone_counts, strict=False):
             if z_count == 0:
                 continue
             band_width = (z_hi - z_lo) / z_count
@@ -906,7 +910,9 @@ def _randomize_broad_ramps(
                     target = max(1, int(round(frac * sched.initial)))
                     label = md.spec.model_label
                     model_scheds[label] = model_scheds[label].ramp_to(
-                        target, t_start=t_start, t_end=t_end,
+                        target,
+                        t_start=t_start,
+                        t_end=t_end,
                     )
 
         new_models = tuple((md, model_scheds[md.spec.model_label]) for md, _ in site.models)
@@ -960,7 +966,11 @@ def randomize_scenario(
     ramp_up_frac_max: float = 1.5,
     randomize_pv_profile: bool = False,
     pv_shape_choices: tuple[str, ...] = (
-        "flat", "rising_falling", "morning_ramp", "afternoon_decline", "midday_dip",
+        "flat",
+        "rising_falling",
+        "morning_ramp",
+        "afternoon_decline",
+        "midday_dip",
     ),
     pv_baseline_min: float = 0.75,
     pv_baseline_max: float = 0.95,
@@ -990,7 +1000,11 @@ def randomize_scenario(
                 train_start = float(rng.uniform(0.0, max(0.0, float(TOTAL_DURATION_S) - train_dur)))
             else:
                 train_start = float(rng.uniform(500.0, 1500.0))
-            gpu_frac = float(rng.uniform(overlay_gpu_frac_min, overlay_gpu_frac_max)) if is_broad else float(rng.uniform(0.85, 1.0))
+            gpu_frac = (
+                float(rng.uniform(overlay_gpu_frac_min, overlay_gpu_frac_max))
+                if is_broad
+                else float(rng.uniform(0.85, 1.0))
+            )
             train_gpus = int(gpu_frac * training_base["n_gpus"])
             intensity = float(rng.uniform(overlay_intensity_min, overlay_intensity_max)) if is_broad else 1.0
             target_peak = training_base["target_peak_W_per_gpu"] * intensity
@@ -1046,7 +1060,9 @@ def randomize_scenario(
     pv_scale = float(rng.uniform(pv_scale_min, pv_scale_max)) if is_broad else float(rng.uniform(0.5, 2.0))
     load_scale = float(rng.uniform(load_scale_min, load_scale_max)) if is_broad else float(rng.uniform(0.5, 2.0))
     pv_t_shift = float(rng.uniform(-pv_t_shift_max_s, pv_t_shift_max_s)) if (is_broad and pv_t_shift_max_s > 0) else 0.0
-    tvl_t_shift = float(rng.uniform(-tvl_t_shift_max_s, tvl_t_shift_max_s)) if (is_broad and tvl_t_shift_max_s > 0) else 0.0
+    tvl_t_shift = (
+        float(rng.uniform(-tvl_t_shift_max_s, tvl_t_shift_max_s)) if (is_broad and tvl_t_shift_max_s > 0) else 0.0
+    )
     pv_warp = float(rng.uniform(pv_warp_min, pv_warp_max)) if is_broad else 1.0
     tvl_warp = float(rng.uniform(tvl_warp_min, tvl_warp_max)) if is_broad else 1.0
 
@@ -1101,10 +1117,7 @@ def randomize_scenario(
         params: dict = {"shape": shape}
         if shape == "flat":
             params["level"] = float(rng.uniform(0.5, 0.85))
-        elif shape == "increasing":
-            params["lo"] = float(rng.uniform(0.10, 0.30))
-            params["hi"] = float(rng.uniform(0.65, 0.95))
-        elif shape == "decreasing":
+        elif shape == "increasing" or shape == "decreasing":
             params["lo"] = float(rng.uniform(0.10, 0.30))
             params["hi"] = float(rng.uniform(0.65, 0.95))
         elif shape == "peaked":
@@ -1128,15 +1141,17 @@ def randomize_scenario(
             p_kind, p_params = _sample_pv_profile(rng)
         else:
             p_kind, p_params = "default", None
-        pv_systems_out.append(PVSystemSpec(
-            bus=s.bus,
-            bus_kv=s.bus_kv,
-            peak_kw=s.peak_kw * pv_scale,
-            peak_t_shift_s=pv_t_shift,
-            time_warp=pv_warp,
-            profile_kind=p_kind,
-            profile_params=p_params,
-        ))
+        pv_systems_out.append(
+            PVSystemSpec(
+                bus=s.bus,
+                bus_kv=s.bus_kv,
+                peak_kw=s.peak_kw * pv_scale,
+                peak_t_shift_s=pv_t_shift,
+                time_warp=pv_warp,
+                profile_kind=p_kind,
+                profile_params=p_params,
+            )
+        )
     tvl = [
         TimeVaryingLoadSpec(
             bus=s.bus,
@@ -1253,8 +1268,7 @@ def ieee13_experiment(training_trace: TrainingTrace | None = None) -> dict:
         deploy("Qwen3-235B-A22B", 210),
     )
     models = tuple(
-        (md, sched.ramp_to(ramp_targets[md.spec.model_label], t_start=2500, t_end=3000))
-        for md, sched in base_models
+        (md, sched.ramp_to(ramp_targets[md.spec.model_label], t_start=2500, t_end=3000)) for md, sched in base_models
     )
     training_base = (
         {
@@ -1303,7 +1317,7 @@ def ieee13_experiment(training_trace: TrainingTrace | None = None) -> dict:
     )
 
 
-def ieee34_experiment(training_trace: TrainingTrace | None = None) -> dict:  # noqa: ARG001
+def ieee34_experiment(training_trace: TrainingTrace | None = None) -> dict:
     """IEEE 34-bus: two DC sites (upstream/downstream)."""
     sys = SYSTEMS["ieee34"]()
     return dict(
@@ -1365,7 +1379,7 @@ def ieee34_experiment(training_trace: TrainingTrace | None = None) -> dict:  # n
     )
 
 
-def ieee123_experiment(training_trace: TrainingTrace | None = None) -> dict:  # noqa: ARG001
+def ieee123_experiment(training_trace: TrainingTrace | None = None) -> dict:
     """IEEE 123-bus: four DC sites across zones."""
     sys = SYSTEMS["ieee123"]()
     return dict(

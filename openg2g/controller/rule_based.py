@@ -91,9 +91,7 @@ class RuleBasedBatchSizeController(
         # to the worst-violation scan. Used in multi-DC topologies (ieee123)
         # to give each site credit only for the part of the network it can
         # actually move. None preserves the original global-scan behavior.
-        self._zone_lower: set[str] | None = (
-            {b.lower() for b in zone_buses} if zone_buses is not None else None
-        )
+        self._zone_lower: set[str] | None = {b.lower() for b in zone_buses} if zone_buses is not None else None
         self._initial_batch_sizes = initial_batch_sizes or {}
 
         # Build per-model feasible batch list (sorted ascending)
@@ -110,7 +108,7 @@ class RuleBasedBatchSizeController(
         }
 
         logger.info(
-            "RuleBasedBatchSizeController: %d models, dt=%s s, step_size=%.2f, deadband=%.4f, v=[%.2f, %.2f], zone_local=%s (n_zone_buses=%d)",
+            "RuleBasedBatchSizeController: %d models, dt=%s s, step_size=%.2f, deadband=%.4f, v=[%.2f, %.2f], zone_local=%s (n_zone_buses=%d)",  # noqa: E501
             len(model_specs),
             dt_s,
             config.step_size,

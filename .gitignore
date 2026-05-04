@@ -39,3 +39,4 @@ examples/offline/filter_scenario_library.py
 .git.backup-pre-filter/
 /paper_plots.mplstyle
 /plots.py
+scripts/verify_post_merge_migration.sh

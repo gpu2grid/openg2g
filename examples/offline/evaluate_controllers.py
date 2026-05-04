@@ -22,7 +22,7 @@ from __future__ import annotations
 import csv
 import logging
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 import matplotlib
@@ -31,6 +31,12 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 from build_scenario_library import run_simulation
+
+from openg2g.controller.ofo import LogisticModelStore, OFOConfig
+from openg2g.controller.rule_based import RuleBasedConfig
+from openg2g.datacenter.workloads.inference import InferenceData
+from openg2g.datacenter.workloads.training import TrainingTrace
+
 from systems import (
     DT_DC,
     EXPERIMENTS,
@@ -38,19 +44,9 @@ from systems import (
     TRAINING_TRACE_PATH,
     V_MAX,
     V_MIN,
-    DCSite,
-    PVSystemSpec,
-    TimeVaryingLoadSpec,
-    deploy,
     materialize_scenario,
     randomize_scenario,
 )
-
-from openg2g.controller.ofo import LogisticModelStore, OFOConfig
-from openg2g.controller.rule_based import RuleBasedConfig
-from openg2g.datacenter.config import ModelDeployment
-from openg2g.datacenter.workloads.inference import InferenceData
-from openg2g.datacenter.workloads.training import TrainingTrace
 
 logger = logging.getLogger("evaluate_controllers")
 
@@ -91,6 +87,7 @@ def _display_name(mode: str) -> str:
 
 
 # ── Plotting ──────────────────────────────────────────────────────────────────
+
 
 def plot_voltage_comparison(
     logs: dict[str, object],
@@ -188,7 +185,7 @@ def plot_violation_bars(
         ax.set_title(title, fontsize=14)
         ax.tick_params(axis="y", labelsize=12)
         ax.grid(axis="y", alpha=0.3)
-        for xi, val in zip(x, vals):
+        for xi, val in zip(x, vals, strict=False):
             ax.text(xi, val, fmt.format(val), ha="center", va="bottom", fontsize=10)
 
     fig.suptitle("Per-scenario controller metrics", fontsize=16, fontweight="bold")
@@ -265,6 +262,7 @@ def plot_batch_comparison(
 
 
 # ── Metrics helpers ───────────────────────────────────────────────────────────
+
 
 def count_batch_changes(log) -> int:
     """Count step-to-step batch-size changes summed across every (site, model) series."""
@@ -363,6 +361,7 @@ def extract_perf_metrics(log, itl_deadlines: dict[str, float] | None = None) -> 
 
 # ── Scenario generation ───────────────────────────────────────────────────────
 
+
 def generate_test_scenarios(
     exp: dict,
     inference_data: InferenceData,
@@ -444,7 +443,7 @@ def generate_test_scenarios(
         verdict = "ACCEPT" if passes else "reject"
         line = (
             f"  seed={effective_seed} base_int={base_int:.3f} ofo_int={ofo_int:.4f} "
-            f"recovery={100*recovery:.1f}%  {verdict}"
+            f"recovery={100 * recovery:.1f}%  {verdict}"
         )
         logger.info(line)
         tried.append(line)
@@ -460,12 +459,16 @@ def generate_test_scenarios(
 
     logger.info(
         "Filter complete: %d accepted out of %d attempted seeds (%d-%d)",
-        len(accepted), attempts, seed_start, seed - 1,
+        len(accepted),
+        attempts,
+        seed_start,
+        seed - 1,
     )
     if len(accepted) < n_scenarios:
         logger.warning(
             "Only accepted %d/%d scenarios — consider lowering min_recovery_frac or expanding seed range",
-            len(accepted), n_scenarios,
+            len(accepted),
+            n_scenarios,
         )
     return accepted
 
@@ -494,13 +497,16 @@ def load_scenarios_from_library(
     if n_take < n_scenarios:
         logger.warning(
             "Library has only %d scenarios — capping n_scenarios from %d to %d",
-            len(lib), n_scenarios, n_take,
+            len(lib),
+            n_scenarios,
+            n_take,
         )
 
     return [materialize_scenario(rec, training_base=training_base) for rec in lib.scenarios[:n_take]]
 
 
 # ── Evaluation ────────────────────────────────────────────────────────────────
+
 
 def run_scenario(
     scenario: dict,
@@ -514,9 +520,9 @@ def run_scenario(
     save_dir: Path,
     scenario_idx: int,
     obs_mode: str = "full-voltage",
-    ofo_variants: list[tuple[str, "OFOConfig"]] | None = None,
+    ofo_variants: list[tuple[str, OFOConfig]] | None = None,
     include_rule_based: bool = False,
-    rule_based_config: "RuleBasedConfig | None" = None,
+    rule_based_config: RuleBasedConfig | None = None,
     rule_step_sizes: tuple[float, ...] = (10.0,),
     rule_zone_local: bool = False,
     no_per_scenario_plots: bool = False,
@@ -530,9 +536,7 @@ def run_scenario(
     ofo_variants = ofo_variants or []
 
     itl_deadlines: dict[str, float] = {
-        md.spec.model_label: md.spec.itl_deadline_s
-        for site in exp["dc_sites"].values()
-        for md, _ in site.models
+        md.spec.model_label: md.spec.itl_deadline_s for site in exp["dc_sites"].values() for md, _ in site.models
     }
 
     dc_sites = scenario["dc_sites"]
@@ -579,9 +583,15 @@ def run_scenario(
         logger.info(
             "  scenario %d %s: viol=%.0fs integral=%.4f vmin=%.4f vmax=%.4f  "
             "tput=%.1f p99_lat=%.3fs power=%.1fkW batch_chg=%d",
-            scenario_idx, mode, vstats.violation_time_s,
-            vstats.integral_violation_pu_s, vstats.worst_vmin, vstats.worst_vmax,
-            perf["mean_throughput_toks_s"], perf["p99_latency_s"], perf["mean_power_kw"],
+            scenario_idx,
+            mode,
+            vstats.violation_time_s,
+            vstats.integral_violation_pu_s,
+            vstats.worst_vmin,
+            vstats.worst_vmax,
+            perf["mean_throughput_toks_s"],
+            perf["p99_latency_s"],
+            perf["mean_power_kw"],
             perf["batch_changes"],
         )
 
@@ -619,9 +629,15 @@ def run_scenario(
             logger.info(
                 "  scenario %d %s: viol=%.0fs integral=%.4f vmin=%.4f vmax=%.4f  "
                 "tput=%.1f p99_lat=%.3fs power=%.1fkW batch_chg=%d",
-                scenario_idx, label, vstats.violation_time_s,
-                vstats.integral_violation_pu_s, vstats.worst_vmin, vstats.worst_vmax,
-                perf["mean_throughput_toks_s"], perf["p99_latency_s"], perf["mean_power_kw"],
+                scenario_idx,
+                label,
+                vstats.violation_time_s,
+                vstats.integral_violation_pu_s,
+                vstats.worst_vmin,
+                vstats.worst_vmax,
+                perf["mean_throughput_toks_s"],
+                perf["p99_latency_s"],
+                perf["mean_power_kw"],
                 perf["batch_changes"],
             )
             if rule_based_config is not None:
@@ -655,13 +671,19 @@ def run_scenario(
         logger.info(
             "  scenario %d %s: viol=%.0fs integral=%.4f vmin=%.4f vmax=%.4f  "
             "tput=%.1f p99_lat=%.3fs power=%.1fkW batch_chg=%d",
-            scenario_idx, mode_key, vstats.violation_time_s,
-            vstats.integral_violation_pu_s, vstats.worst_vmin, vstats.worst_vmax,
-            perf["mean_throughput_toks_s"], perf["p99_latency_s"], perf["mean_power_kw"],
+            scenario_idx,
+            mode_key,
+            vstats.violation_time_s,
+            vstats.integral_violation_pu_s,
+            vstats.worst_vmin,
+            vstats.worst_vmax,
+            perf["mean_throughput_toks_s"],
+            perf["p99_latency_s"],
+            perf["mean_power_kw"],
             perf["batch_changes"],
         )
 
-    for ppo_path, label in zip(ppo_models, ppo_labels):
+    for ppo_path, label in zip(ppo_models, ppo_labels, strict=False):
         vstats, log = run_simulation(
             "ppo",
             sys=sys_cfg,
@@ -690,17 +712,27 @@ def run_scenario(
         logger.info(
             "  scenario %d ppo_%s: viol=%.0fs integral=%.4f vmin=%.4f vmax=%.4f  "
             "tput=%.1f p99_lat=%.3fs power=%.1fkW batch_chg=%d",
-            scenario_idx, label, vstats.violation_time_s,
-            vstats.integral_violation_pu_s, vstats.worst_vmin, vstats.worst_vmax,
-            perf["mean_throughput_toks_s"], perf["p99_latency_s"], perf["mean_power_kw"],
+            scenario_idx,
+            label,
+            vstats.violation_time_s,
+            vstats.integral_violation_pu_s,
+            vstats.worst_vmin,
+            vstats.worst_vmax,
+            perf["mean_throughput_toks_s"],
+            perf["p99_latency_s"],
+            perf["mean_power_kw"],
             perf["batch_changes"],
         )
 
     if not no_per_scenario_plots:
         plot_voltage_comparison(
-            all_logs, sc_save,
-            v_min=V_MIN, v_max=V_MAX, exclude_buses=exclude_buses,
-            scenario_idx=scenario_idx, use_display_names=use_display_names,
+            all_logs,
+            sc_save,
+            v_min=V_MIN,
+            v_max=V_MAX,
+            exclude_buses=exclude_buses,
+            scenario_idx=scenario_idx,
+            use_display_names=use_display_names,
         )
         plot_batch_comparison(all_logs, sc_save, scenario_idx=scenario_idx, use_display_names=use_display_names)
         plot_violation_bars(results, sc_save, scenario_idx=scenario_idx, use_display_names=use_display_names)
@@ -721,24 +753,23 @@ def plot_aggregate(
     n_sc = len(all_results)
     prefix = f"{system}_" if system else ""
 
-    colors = ["#999999", "#4CAF50", "#2196F3", "#FF9800", "#E91E63",
-              "#9C27B0", "#00BCD4", "#795548", "#607D8B"]
+    colors = ["#999999", "#4CAF50", "#2196F3", "#FF9800", "#E91E63", "#9C27B0", "#00BCD4", "#795548", "#607D8B"]
 
     display_labels = [_display_name(m) if use_display_names else m for m in modes]
 
     metrics = [
-        ("violation_time_s",       "Mean Violation Time (s)"),
-        ("integral",                "Mean Integral Violation (pu·s)"),
-        ("batch_changes",           "Mean Batch Size Changes"),
-        ("mean_throughput_toks_s",  "Mean Throughput (tok/s)"),
-        ("mean_power_kw",           "Mean Data Center Power (kW)"),
-        ("itl_violation_rate",      "Mean ITL Violation Rate"),
+        ("violation_time_s", "Mean Violation Time (s)"),
+        ("integral", "Mean Integral Violation (pu·s)"),
+        ("batch_changes", "Mean Batch Size Changes"),
+        ("mean_throughput_toks_s", "Mean Throughput (tok/s)"),
+        ("mean_power_kw", "Mean Data Center Power (kW)"),
+        ("itl_violation_rate", "Mean ITL Violation Rate"),
     ]
 
     fig, axes = plt.subplots(2, 3, figsize=(max(15, len(modes) * 3.0), 10))
     x = np.arange(len(modes))
 
-    for ax, (metric, title) in zip(axes.flat, metrics):
+    for ax, (metric, title) in zip(axes.flat, metrics, strict=False):
         means = []
         for mode in modes:
             vals = [r[mode].get(metric, 0) for r in all_results if mode in r]
@@ -766,9 +797,14 @@ def plot_aggregate(
 
     for i, mode in enumerate(modes):
         vals = [r[mode]["integral"] if mode in r else 0 for r in all_results]
-        ax.bar(x + i * width, vals, width,
-               label=_display_name(mode) if use_display_names else mode,
-               color=colors[i % len(colors)], alpha=0.85)
+        ax.bar(
+            x + i * width,
+            vals,
+            width,
+            label=_display_name(mode) if use_display_names else mode,
+            color=colors[i % len(colors)],
+            alpha=0.85,
+        )
 
     ax.set_xlabel("Scenario", fontsize=13)
     ax.set_ylabel("Integral Violation (pu·s)", fontsize=13)
@@ -798,9 +834,14 @@ def plot_aggregate(
                 base = r.get(baseline_key, {}).get("integral", 0.0)
                 val = r.get(mode, {}).get("integral", 0.0)
                 norm_vals.append(val / base if base > 0 else 0.0)
-            ax.bar(x + i * width, norm_vals, width,
-                   label=_display_name(mode) if use_display_names else mode,
-                   color=colors[(modes.index(mode)) % len(colors)], alpha=0.85)
+            ax.bar(
+                x + i * width,
+                norm_vals,
+                width,
+                label=_display_name(mode) if use_display_names else mode,
+                color=colors[(modes.index(mode)) % len(colors)],
+                alpha=0.85,
+            )
 
         ax.axhline(1.0, color="black", linestyle="--", linewidth=1, alpha=0.6, label="Baseline")
         ax.set_xlabel("Scenario", fontsize=13)
@@ -824,8 +865,13 @@ def plot_aggregate(
         if not vals:
             continue
         cdf = np.arange(1, len(vals) + 1) / len(vals)
-        ax.plot(vals, cdf, color=colors[i % len(colors)], linewidth=2,
-                label=_display_name(mode) if use_display_names else mode)
+        ax.plot(
+            vals,
+            cdf,
+            color=colors[i % len(colors)],
+            linewidth=2,
+            label=_display_name(mode) if use_display_names else mode,
+        )
     ax.set_xlabel("Integral Violation (pu·s)", fontsize=13)
     ax.set_ylabel("Cumulative Fraction", fontsize=13)
     ax.set_title("CDF of Integral Violation Across Scenarios", fontsize=14, fontweight="bold")
@@ -840,7 +886,7 @@ def plot_aggregate(
 
     # ── Throughput vs. voltage violation scatter ──
     scatter_data = {}
-    for i, mode in enumerate(modes):
+    for _i, mode in enumerate(modes):
         integrals = [r[mode].get("integral", 0.0) for r in all_results if mode in r]
         tputs = [r[mode].get("mean_throughput_toks_s", 0.0) for r in all_results if mode in r]
         scatter_data[mode] = (integrals, tputs)
@@ -848,8 +894,7 @@ def plot_aggregate(
     n_modes = len(modes)
     ncols = 2
     nrows = math.ceil(n_modes / ncols)
-    fig, axes = plt.subplots(nrows, ncols, figsize=(12, 5 * nrows),
-                             sharex=True, sharey=True, squeeze=False)
+    fig, axes = plt.subplots(nrows, ncols, figsize=(12, 5 * nrows), sharex=True, sharey=True, squeeze=False)
 
     for idx, mode in enumerate(modes):
         ax = axes[idx // ncols][idx % ncols]
@@ -858,14 +903,28 @@ def plot_aggregate(
 
         for other_mode, (oi, ot) in scatter_data.items():
             if other_mode != mode:
-                ax.scatter(oi, ot, color="lightgrey", s=40, alpha=0.6,
-                           edgecolors="none", zorder=1)
+                ax.scatter(oi, ot, color="lightgrey", s=40, alpha=0.6, edgecolors="none", zorder=1)
 
-        ax.scatter(integrals, tputs, color=colors[idx % len(colors)],
-                   s=80, alpha=0.9, edgecolors="black", linewidths=0.5, zorder=2)
-        ax.scatter(np.mean(integrals), np.mean(tputs),
-                   color=colors[idx % len(colors)], s=220, marker="*",
-                   edgecolors="black", linewidths=0.8, zorder=3)
+        ax.scatter(
+            integrals,
+            tputs,
+            color=colors[idx % len(colors)],
+            s=80,
+            alpha=0.9,
+            edgecolors="black",
+            linewidths=0.5,
+            zorder=2,
+        )
+        ax.scatter(
+            np.mean(integrals),
+            np.mean(tputs),
+            color=colors[idx % len(colors)],
+            s=220,
+            marker="*",
+            edgecolors="black",
+            linewidths=0.8,
+            zorder=3,
+        )
 
         ax.set_title(label, fontsize=14, fontweight="bold")
         ax.set_xlabel("Integral Violation (pu·s)", fontsize=12)
@@ -927,9 +986,7 @@ def main(
     ppo_models_resolved = [str(Path(p).resolve()) for p in ppo_models]
 
     if not ppo_labels:
-        ppo_labels = tuple(
-            Path(p).parent.name.replace("ppo_ablation_", "") for p in ppo_models
-        )
+        ppo_labels = tuple(Path(p).parent.name.replace("ppo_ablation_", "") for p in ppo_models)
 
     if system not in EXPERIMENTS:
         raise ValueError(f"Unknown system {system!r}. Valid: {sorted(EXPERIMENTS)}")
@@ -944,10 +1001,15 @@ def main(
     all_specs = tuple(m.spec for m in all_models)
 
     inference_data = InferenceData.ensure(
-        SPECS_CACHE_DIR, all_specs, plot=False, dt_s=float(DT_DC),
+        SPECS_CACHE_DIR,
+        all_specs,
+        plot=False,
+        dt_s=float(DT_DC),
     )
     logistic_models = LogisticModelStore.ensure(
-        SPECS_CACHE_DIR, all_specs, plot=False,
+        SPECS_CACHE_DIR,
+        all_specs,
+        plot=False,
     )
 
     base_ofo = exp["ofo_config"]
@@ -1009,11 +1071,14 @@ def main(
         logger.info(
             "OFO variants (%d): %s",
             len(ofo_variants),
-            [(l, c.w_throughput, c.w_switch, c.primal_step_size) for l, c in ofo_variants],
+            [(lbl, c.w_throughput, c.w_switch, c.primal_step_size) for lbl, c in ofo_variants],
         )
 
-    save_dir = Path(__file__).resolve().parent / "outputs" / system / (
-        output_dir or f"eval_multi_seed{seed_start}_n{n_scenarios}"
+    save_dir = (
+        Path(__file__).resolve().parent
+        / "outputs"
+        / system
+        / (output_dir or f"eval_multi_seed{seed_start}_n{n_scenarios}")
     )
     save_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1047,14 +1112,19 @@ def main(
         logger.info("=" * 70)
         logger.info(
             "SCENARIO %d/%d: seed=%d pv_scale=%.2f load_scale=%.2f",
-            i + 1, n_scenarios, scenario["seed"],
-            params["pv_scale"], params["load_scale"],
+            i + 1,
+            n_scenarios,
+            scenario["seed"],
+            params["pv_scale"],
+            params["load_scale"],
         )
         if params["training_overlay"]:
             to = params["training_overlay"]
             logger.info(
                 "  training: t=[%.0f, %.0f] n_gpus=%d",
-                to["t_start"], to["t_end"], to["n_gpus"],
+                to["t_start"],
+                to["t_end"],
+                to["n_gpus"],
             )
         logger.info("=" * 70)
 
@@ -1081,14 +1151,13 @@ def main(
         scenario_params.append(params)
         modes_set.update(results.keys())
 
-    rb_labels = (
-        ["rule_based"] if len(rule_step_sizes) == 1
-        else [f"rule_based_s{s:g}" for s in rule_step_sizes]
-    )
+    rb_labels = ["rule_based"] if len(rule_step_sizes) == 1 else [f"rule_based_s{s:g}" for s in rule_step_sizes]
     mode_order = (
-        ["baseline_no_tap"] + rb_labels
-        + [f"ppo_{l}" for l in ppo_labels]
-        + ["ofo"] + [f"ofo_{label}" for label, _ in ofo_variants]
+        ["baseline_no_tap"]
+        + rb_labels
+        + [f"ppo_{lbl}" for lbl in ppo_labels]
+        + ["ofo"]
+        + [f"ofo_{label}" for label, _ in ofo_variants]
     )
     modes = [m for m in mode_order if m in modes_set]
 
@@ -1113,41 +1182,66 @@ def main(
             logger.info(
                 "%-20s %10.1f %8.1f %10.4f %8.4f %12.4f %12.4f %10.1f %8.1f",
                 mode,
-                np.mean(viol), np.std(viol),
-                np.mean(intg), np.std(intg),
-                np.mean(vmin), np.mean(vmax),
-                np.mean(bchg), np.std(bchg),
+                np.mean(viol),
+                np.std(viol),
+                np.mean(intg),
+                np.std(intg),
+                np.mean(vmin),
+                np.mean(vmax),
+                np.mean(bchg),
+                np.std(bchg),
             )
 
     extra_cols = [
-        "mean_throughput_toks_s", "peak_throughput_toks_s",
-        "mean_latency_s", "p99_latency_s",
-        "mean_power_kw", "peak_power_kw",
+        "mean_throughput_toks_s",
+        "peak_throughput_toks_s",
+        "mean_latency_s",
+        "p99_latency_s",
+        "mean_power_kw",
+        "peak_power_kw",
         "batch_changes",
         "itl_violation_rate",
     ]
     csv_path = save_dir / "results.csv"
     with open(csv_path, "w", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow([
-            "scenario", "seed", "pv_scale", "load_scale",
-            "mode", "violation_time_s", "integral", "worst_vmin", "worst_vmax",
-            *extra_cols,
-        ])
-        for i, (results, params) in enumerate(zip(all_results, scenario_params)):
+        writer.writerow(
+            [
+                "scenario",
+                "seed",
+                "pv_scale",
+                "load_scale",
+                "mode",
+                "violation_time_s",
+                "integral",
+                "worst_vmin",
+                "worst_vmax",
+                *extra_cols,
+            ]
+        )
+        for i, (results, params) in enumerate(zip(all_results, scenario_params, strict=False)):
             for mode, stats in results.items():
                 sc = test_scenarios[i]
-                writer.writerow([
-                    i, sc["seed"], params["pv_scale"], params["load_scale"],
-                    mode,
-                    stats["violation_time_s"], stats["integral"],
-                    stats["worst_vmin"], stats["worst_vmax"],
-                    *[stats.get(k, "") for k in extra_cols],
-                ])
+                writer.writerow(
+                    [
+                        i,
+                        sc["seed"],
+                        params["pv_scale"],
+                        params["load_scale"],
+                        mode,
+                        stats["violation_time_s"],
+                        stats["integral"],
+                        stats["worst_vmin"],
+                        stats["worst_vmax"],
+                        *[stats.get(k, "") for k in extra_cols],
+                    ]
+                )
     logger.info("Results CSV: %s", csv_path)
 
     if not no_aggregate_plots:
-        plot_aggregate(all_results, scenario_params, save_dir, modes, system=system, use_display_names=use_display_names)
+        plot_aggregate(
+            all_results, scenario_params, save_dir, modes, system=system, use_display_names=use_display_names
+        )
     logger.info("All outputs saved to: %s", save_dir)
 
 
@@ -1169,7 +1263,7 @@ if __name__ == "__main__":
         output_dir: str = ""
         """Output directory name under outputs/<system>/. Auto-generated if empty."""
         obs_mode: str = "full-voltage"
-        """Observation mode used during PPO training: full-voltage, per-zone-summary, per-bus-summary, or system-summary-only."""
+        """Observation mode used during PPO training: full-voltage, per-zone-summary, per-bus-summary, or system-summary-only."""  # noqa: E501
         min_baseline_integral: float = 0.2
         """Minimum baseline_no_tap integral (pu*s) for a scenario seed to be accepted."""
         min_recovery_frac: float = 0.7
@@ -1189,7 +1283,7 @@ if __name__ == "__main__":
         rule_step_sizes: tuple[float, ...] = (10.0,)
         """Step size(s) for the rule-based controller."""
         rule_zone_local: bool = False
-        """When True AND sys defines `zones` AND there are >1 DC sites, each rule-based controller observes only buses in its own zone (decentralized credit assignment for ieee123)."""
+        """When True AND sys defines `zones` AND there are >1 DC sites, each rule-based controller observes only buses in its own zone (decentralized credit assignment for ieee123)."""  # noqa: E501
         no_per_scenario_plots: bool = False
         """Skip per-scenario voltage and batch plots (saves disk + time)."""
         no_aggregate_plots: bool = False
