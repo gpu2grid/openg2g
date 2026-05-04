@@ -37,3 +37,5 @@ examples/offline/merge_over_supplement_ieee13.py
 examples/offline/migrate_scenario_library.py
 examples/offline/filter_scenario_library.py
 .git.backup-pre-filter/
+/paper_plots.mplstyle
+/plots.py
