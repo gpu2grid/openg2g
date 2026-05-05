@@ -492,7 +492,7 @@ def main() -> None:
 
     exp = EXPERIMENTS[args.system](training_trace)
     script_dir = Path(__file__).resolve().parent
-    output_dir = Path(args.output_dir).resolve() if args.output_dir else script_dir / "outputs" / args.system / "ppo"
+    output_dir = script_dir / "outputs" / args.system / (args.output_dir or "ppo")
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # Collect all model specs across sites
