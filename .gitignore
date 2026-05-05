@@ -13,3 +13,30 @@ docs/api/
 
 data
 examples/*/outputs
+.claude/
+outputs/
+slurm_*.out
+examples/offline/*.sh
+/sbatch_*.sh
+/launch_*.sh
+
+# Paper-specific plotting scripts (not part of the upstream pipeline)
+examples/offline/plot_4way_multiseed.py
+examples/offline/plot_dataset_difficulty_3systems.py
+examples/offline/plot_dataset_diversity_ieee13.py
+examples/offline/plot_pipeline.py
+examples/offline/plot_training_reward_3systems.py
+examples/offline/plot_training_reward_breakdown_3systems.py
+examples/offline/plot_wv_sweep_combined_ieee13.py
+examples/offline/plot_wv_sweep_convergence_ieee13.py
+examples/offline/plot_wv_sweep_training_violation_ieee13.py
+examples/offline/dump_paper_batch_subfigures.py
+examples/offline/check_consistency.py
+examples/offline/compare_ppo_runs.py
+examples/offline/merge_over_supplement_ieee13.py
+examples/offline/migrate_scenario_library.py
+examples/offline/filter_scenario_library.py
+.git.backup-pre-filter/
+/paper_plots.mplstyle
+/plots.py
+scripts/verify_post_merge_migration.sh

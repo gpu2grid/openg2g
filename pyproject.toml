@@ -25,7 +25,7 @@ Documentation = "https://gpu2grid.io/openg2g"
 
 [project.optional-dependencies]
 opendss = ["opendssdirect.py"]
-rl = ["stable-baselines3>=2.0", "gymnasium"]
+rl = ["stable-baselines3>=2.0", "gymnasium", "tensorboard"]
 
 [dependency-groups]
 test = ["pytest"]
