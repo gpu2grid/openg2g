@@ -41,10 +41,36 @@ BASELINE_MODE = "baseline-no-tap"
 
 COLORS = {
     "baseline": "#9A9A9A",
-    "ofo": "#4C72B0",
-    "h100": "#4C72B0",
-    "b200": "#C44E52",
-    "hardware": "#C44E52",
+    "ofo": "#1F77B4",  # tab10 blue
+    "h100": "#1F77B4",  # tab10 blue
+    "b200": "#D62728",  # tab10 red
+    "hardware": "#D62728",  # tab10 red
+}
+
+_TAB10 = plt.get_cmap("tab10").colors
+
+# Stable per-model colors used wherever a model is identified by color
+# (model-size figure, hardware figure, etc.). The hardware figure uses
+# blue for Qwen 3 32B and red for Qwen 3 8B; that pair is canonical and
+# the rest of the palette is filled in around it.
+MODEL_COLORS: dict[str, str] = {
+    "Qwen 3 32B": _TAB10[0],  # blue
+    "Qwen 3 30B A3B": _TAB10[1],  # orange
+    "GPT-OSS 120B": _TAB10[2],  # green
+    "Qwen 3 8B": _TAB10[3],  # red
+    "Qwen 3 235B A22B": _TAB10[4],  # purple
+    "Qwen 3 235B A22B Thinking": _TAB10[4],  # same as 235B A22B
+    "Llama 3.1 70B": _TAB10[5],  # brown
+    "Llama 3.1 405B": _TAB10[6],  # pink
+}
+
+# Distinct color pairs for the two parallelism panels so (a) and (b) read as
+# separate experiments rather than the same one twice. The first pair reuses
+# the default h100/b200 hues (blue, red); the second pair picks two of the
+# remaining tab10 colors used by the model-size figure that are not in (a).
+PARALLELISM_PAIR_COLORS = {
+    "gpt-oss-120b": (COLORS["h100"], COLORS["b200"]),
+    "qwen-235b-a22b-thinking": (_TAB10[1], _TAB10[2]),
 }
 
 DISPLAY_LABELS = {
@@ -356,15 +382,21 @@ def plot_model_size(
     agg = _aggregate(df)
     all_variants = df["variant"].drop_duplicates().tolist()
 
-    # Sort variants by power-swing range (least flexible → most flexible).
+    # Compute power-swing range per variant.
     def _swing(variant: str) -> float:
         row = df[(df["variant"] == variant) & (df["mode"] == OFO_MODE)].iloc[0].to_dict()
         _, p_mw, _ = _pareto_from_row(row, logistic_models)
         return float(p_mw.max() - p_mw.min()) if len(p_mw) else 0.0
 
-    variants = sorted(all_variants, key=_swing)
-    palette = plt.get_cmap("tab10").colors
-    color_map = {v: palette[i % len(palette)] for i, v in enumerate(variants)}
+    # Color is fixed per model identity (MODEL_COLORS), so the same model
+    # appears in the same color across model-size, hardware, and other
+    # figures.
+    color_map = {v: MODEL_COLORS[_pretty(v)] for v in all_variants}
+
+    # Plot order: widest → narrowest, so the reference model with the largest
+    # feasible power range anchors the leftmost position and other models
+    # trail as comparisons.
+    variants = sorted(all_variants, key=_swing, reverse=True)
 
     def _val(v, mode, col):
         row = agg[(agg.variant == v) & (agg["mode"] == mode)]
@@ -420,7 +452,8 @@ def plot_parallelism(df, out, logistic_models, *, suffix: str = "") -> None:
             r = sub[(sub["variant"] == v) & (sub["mode"] == mode)]
             return float(r[col].iloc[0]) if not r.empty else math.nan
 
-        color_map = {labels[i]: (COLORS["h100"] if i == 0 else COLORS["b200"]) for i in range(len(variants))}
+        pair_palette = PARALLELISM_PAIR_COLORS.get(pair, (COLORS["h100"], COLORS["b200"]))
+        color_map = {labels[i]: pair_palette[i] for i in range(len(variants))}
 
         # (a) integral violation — colored bars, hatch = baseline vs OFO
         fig, ax = _make_panel()
@@ -484,9 +517,11 @@ def plot_hardware(df, out, logistic_models, *, suffix: str = "") -> None:
         r = agg[(agg["variant"] == v) & (agg["mode"] == mode)]
         return float(r[col].iloc[0]) if not r.empty else math.nan
 
-    # Two-color encoding (blue for the first model pair, red for the
-    # second), matching the parallelism and precision figures.
-    pair_colors = {p: (COLORS["h100"] if i == 0 else COLORS["b200"]) for i, p in enumerate(pairs)}
+    # Color each pair by its canonical model color (MODEL_COLORS), so
+    # e.g. Qwen 3 8B is the same red here as in the model-size figure.
+    pair_colors = {
+        p: MODEL_COLORS[_pretty(next(v for (pp, _), v in variants_by_pair_hw.items() if pp == p))] for p in pairs
+    }
 
     # (a) — integral violation. X-axis = hardware. Within each hardware
     # group, 4 bars: 2 models × (uncoord, coord). Color = model, hatch =
@@ -654,7 +689,10 @@ def plot_precision(df, out, logistic_models, *, suffix: str = "") -> None:
     def _display_prec(label: str) -> str:
         return "BF16" if label == "bf16" else label
 
-    handles = [_combo_handle(color_map[lbl], _display_prec(lbl)) for lbl in sorted(set(labels))]
+    # Order: BF16 first (blue), then FP8 (red), matching the blue-then-red
+    # order used in the model-size, hardware, and parallelism legends.
+    ordered_labels = [lbl for lbl in ("bf16", "FP8") if lbl in set(labels)]
+    handles = [_combo_handle(color_map[lbl], _display_prec(lbl)) for lbl in ordered_labels]
     _save_legend(handles, out / f"precision_legend{suffix}", ncol=len(set(labels)), width=1.8)
 
 

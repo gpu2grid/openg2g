@@ -14,8 +14,8 @@ from typing import Any, cast
 
 import numpy as np
 import pandas as pd
-from mlenergy_data.modeling import ITLMixtureModel
-from mlenergy_data.records import LLMRuns
+from mlenergy.data.modeling import ITLMixtureModel
+from mlenergy.data.records import LLMRuns
 from pydantic import BaseModel, ConfigDict
 
 import openg2g

@@ -1680,7 +1680,7 @@ wheels = [
 
 [[package]]
 name = "mlenergy-data"
-version = "0.3.2"
+version = "0.4.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "huggingface-hub" },
@@ -1691,9 +1691,9 @@ dependencies = [
     { name = "pyarrow" },
     { name = "pyyaml" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/ac/55/131b85ce36e2c9ce91612aea93b5912a4730eeac5f5f157647b9040b9f4a/mlenergy_data-0.3.2.tar.gz", hash = "sha256:613f89c508c8a2c328962f015a3c09db8f8fd52f78356e606b4dc5ff75102365", size = 35503, upload-time = "2026-03-23T21:38:21.542Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/37/d6/1958e8445023dfdc748018af1bf349d4f8a3c09d1c61316accc8fdacc12d/mlenergy_data-0.4.0.tar.gz", hash = "sha256:94119d4884d19348af340ecb8d36e75270e37b72ea1d606e9976aa6a3293ce4c", size = 37477, upload-time = "2026-05-07T02:10:30.823Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/24/3e/52e2de434bb6603d4159f945267def38c7b6e5898d4b887226cd35bf7e60/mlenergy_data-0.3.2-py3-none-any.whl", hash = "sha256:56d71c9e6504b8a59eda3a282ab79f68db4b19a374b3b09872b70d3778c84ebe", size = 27503, upload-time = "2026-03-23T21:38:20.677Z" },
+    { url = "https://files.pythonhosted.org/packages/da/d8/4396dcb42dbfc9018f4c397df9e3304c7cbbc62f67afd6f6fe956cc1f889/mlenergy_data-0.4.0-py3-none-any.whl", hash = "sha256:5c793a9b625091ffcd2c6a071458e3bdf76d2461913868d2d8a48bb45907a71f", size = 28378, upload-time = "2026-05-07T02:10:29.593Z" },
 ]
 
 [[package]]
@@ -2299,7 +2299,7 @@ test = [
 requires-dist = [
     { name = "aiohttp" },
     { name = "gymnasium", marker = "extra == 'rl'" },
-    { name = "mlenergy-data" },
+    { name = "mlenergy-data", specifier = ">=0.4.0" },
     { name = "numpy" },
     { name = "opendssdirect-py", marker = "extra == 'opendss'" },
     { name = "pandas" },

@@ -14,8 +14,8 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-from mlenergy_data.modeling import LogisticModel
-from mlenergy_data.records import LLMRuns
+from mlenergy.data.modeling import LogisticModel
+from mlenergy.data.records import LLMRuns
 from pydantic import BaseModel, ConfigDict
 
 from openg2g.clock import SimulationClock

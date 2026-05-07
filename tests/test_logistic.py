@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 
-from mlenergy_data.modeling import LogisticModel
+from mlenergy.data.modeling import LogisticModel
 
 
 def test_eval_at_midpoint():
