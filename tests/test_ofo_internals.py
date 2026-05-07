@@ -9,7 +9,7 @@ import math
 
 import numpy as np
 import pytest
-from mlenergy_data.modeling import LogisticModel
+from mlenergy.data.modeling import LogisticModel
 
 from openg2g.controller.ofo import (
     OFOConfig,
