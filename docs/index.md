@@ -16,7 +16,7 @@ A modular Python framework for studying how GPU-level controls affect distributi
 
 [Get Started](getting-started/installation.md){ .md-button .md-button--primary }
 [Library Guide](guide/concepts.md){ .md-button }
-[Read the Paper](https://arxiv.org/abs/2602.05116){ .md-button .md-button--arxiv }
+[Read the Paper](https://arxiv.org/abs/2605.05519){ .md-button .md-button--arxiv }
 
 </div>
 
