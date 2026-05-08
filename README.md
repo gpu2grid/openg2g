@@ -8,7 +8,7 @@
 <div align="center">
 <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache_2.0-2ea44f.svg" alt="License: Apache-2.0"></a>
 <a href="https://www.python.org/"><img src="https://img.shields.io/badge/Python-3.10%2B-blue.svg" alt="Python 3.10+"></a>
-<a href="https://arxiv.org/abs/2602.05116"><img src="https://img.shields.io/badge/arXiv-2602.05116-b31b1b.svg" alt="arXiv"></a>
+<a href="https://arxiv.org/abs/2605.05519"><img src="https://img.shields.io/badge/arXiv-2605.05519-b31b1b.svg" alt="arXiv"></a>
 <a href="https://gpu2grid.io/openg2g"><img src="https://img.shields.io/badge/Docs-gpu2grid.io-orange.svg" alt="Docs"></a>
 </div>
 
@@ -160,6 +160,13 @@ Jae-Won Chung <jwnchung@umich.edu>
 If you use OpenG2G in your research, please cite:
 
 ```bibtex
+@article{openg2g-arxiv26,
+  title   = {{OpenG2G}: A Simulation Platform for {AI} Datacenter-Grid Runtime Coordination},
+  author  = {Jae-Won Chung and Zhirui Liang and Yanyong Mao and Jiasi Chen and Mosharaf Chowdhury and Vladimir Dvorkin},
+  year    = {2026},
+  journal = {arXiv preprint arXiv:2605.05519},
+}
+
 @article{gpu2grid-arxiv26,
   title   = {{GPU-to-Grid}: Voltage Regulation via {GPU} Utilization Control},
   author  = {Zhirui Liang and Jae-Won Chung and Mosharaf Chowdhury and Jiasi Chen and Vladimir Dvorkin},
