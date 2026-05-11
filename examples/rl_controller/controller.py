@@ -178,9 +178,7 @@ class PPOBatchSizeController(
                 }
             self._zone_masks_computed = True
 
-        obs = build_observation(
-            grid, datacenter, self._obs_config, self._prev_batch, self._zone_mask, self._zone_masks
-        )
+        obs = build_observation(grid, datacenter, self._obs_config, self._prev_batch, self._zone_mask, self._zone_masks)
         if self._vecnormalize is not None:
             obs = self._vecnormalize.normalize_obs(obs)
         action, _ = self._sb3_model.predict(obs, deterministic=True)
