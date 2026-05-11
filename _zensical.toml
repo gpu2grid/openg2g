@@ -37,6 +37,7 @@ nav = [
   { "Examples" = [
     { "GPU Flexibility for Voltage Regulation" = "examples/gpu-flexibility.md" },
     { "Voltage Regulation Strategies" = "examples/voltage-regulation-strategies.md" },
+    { "Reinforcement Learning Controller (PPO)" = "examples/rl-controller.md" },
     { "Controller Parameter Sensitivity" = "examples/controller-parameter-sensitivity.md" },
     { "Grid Topology and DER Effects" = "examples/grid-topology-effects.md" },
     { "Datacenter Sizing and Hosting Capacity" = "examples/hosting-capacity.md" },

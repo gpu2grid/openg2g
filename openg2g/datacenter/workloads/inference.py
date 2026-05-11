@@ -659,7 +659,7 @@ class InferenceData:
         """Load per-spec caches under `base_dir`, generating missing ones.
 
         Any spec whose `base_dir/<hash>/_manifest.json` is missing triggers a
-        targeted regeneration (v3 lookup + fit) for just that spec — the
+        targeted regeneration (v3 lookup + fit) for just that spec: the
         already-cached specs are untouched. The manifest is the last file
         `save()` writes, so its presence is the completion marker; checking
         it avoids loading partially-written caches from an interrupted run.
@@ -742,7 +742,7 @@ def _write_inference_manifest(
     """Write per-spec `_manifest.json` files under `base_dir/<hash>/`.
 
     Each file records the full spec fields, openg2g/mlenergy-data
-    versions, the content hash, and the UTC timestamp — enough for any
+    versions, the content hash, and the UTC timestamp: enough for any
     reader to recover exactly which benchmark query produced this dir.
     """
     now = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")

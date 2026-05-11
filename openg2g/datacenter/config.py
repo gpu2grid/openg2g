@@ -39,7 +39,7 @@ class InferenceModelSpec(BaseModel):
         task: Benchmark task name (e.g. `"lm-arena-chat"`, `"gpqa"`,
             `"sourcegraph-fim"`).
         precision: Weight precision (e.g. `"bfloat16"`, `"fp8"`, `"mxfp4"`).
-            Informational — the underlying precision is already encoded in
+            Informational: the underlying precision is already encoded in
             the `model_id` of the HuggingFace checkpoint.
         gpus_per_replica: GPUs allocated to each replica.
         tensor_parallel: Tensor-parallel degree. For metadata / cache

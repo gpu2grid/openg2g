@@ -39,7 +39,7 @@ def _warn_if_fit_suspicious(
 ) -> None:
     """Emit `logger.warning` when the fit has suspicious parameters or shape.
 
-    Fits are not rejected — the caller can inspect the emitted warnings
+    Fits are not rejected: the caller can inspect the emitted warnings
     and decide whether to exclude batches via `fit_exclude_batch_sizes`
     or drop the spec.
     """

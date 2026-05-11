@@ -770,7 +770,7 @@ class OpenDSSGrid(GridBackend[GridState]):
                 continue
 
             if phase in phase_to_reg:
-                logger.info(
+                logger.debug(
                     "Multiple RegControls on phase %s: '%s' and '%s'. "
                     "Phase shorthand (a/b/c) disabled for this phase; use regulator names.",
                     _PHASE_NAME[phase],

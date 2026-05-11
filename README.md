@@ -142,6 +142,8 @@ python examples/offline/run_ofo.py --system ieee13 --mode all
 
 `--system` selects the IEEE test feeder (ieee13, ieee34, or ieee123). `--mode` selects one of `baseline-no-tap`, `baseline-tap-change`, `ofo-no-tap`, `ofo-tap-change`, or `all`. Benchmark selection now lives directly in each `InferenceModelSpec`, and generated artifacts are cached per spec under `data/specs/<spec-hash>/`.
 
+A reinforcement-learning (PPO) controller is available as a self-contained example under `examples/rl_controller/`: see [Reinforcement Learning Controller (PPO)](https://gpu2grid.io/openg2g/examples/rl-controller/) for the build / train / evaluate workflow.
+
 ## Documentation
 
 Full documentation is available at [https://gpu2grid.io/openg2g](https://gpu2grid.io/openg2g), including:

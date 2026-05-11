@@ -13,3 +13,5 @@ docs/api/
 
 data
 examples/*/outputs
+
+.claude/
