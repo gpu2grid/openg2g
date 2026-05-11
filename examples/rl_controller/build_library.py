@@ -1,12 +1,12 @@
 """Build a pre-screened scenario library for PPO training.
 
 Generates randomized ieee13 scenarios using the same randomization logic as
-``train_ppo.py:make_sim_factory``, runs both baseline (no controller) and OFO
+`train_ppo.py:make_sim_factory`, runs both baseline (no controller) and OFO
 on each, and accepts a scenario only if:
 
   1) The baseline episode has non-trivial voltage violation (so the policy
      has something to learn), and
-  2) OFO recovers at least ``--min-recovery-frac`` of the baseline integral
+  2) OFO recovers at least `--min-recovery-frac` of the baseline integral
      violation (so the violation is within the GPU-flexibility envelope).
 
 For each accepted scenario the library stores the seed (so the env can
@@ -15,19 +15,22 @@ will subtract from PPO's voltage cost during training to give a fair,
 scenario-difficulty-normalized reward.
 
 Usage:
-    python examples/offline/build_scenario_library.py --n-candidates 10
-    python examples/offline/build_scenario_library.py --n-candidates 50 \\
-        --pv-base-kw 200 --tvl-base-kw 200 --min-recovery-frac 0.8
+    python examples/rl_controller/build_library.py --system ieee13 \\
+        --n-candidates 10 --tag train_n10
+    python examples/rl_controller/build_library.py --system ieee13 \\
+        --n-candidates 50 --pv-base-kw 200 --tvl-base-kw 200 \\
+        --min-recovery-frac 0.8 --tag train_n50
 
-Outputs:
-    examples/offline/outputs/ieee13/scenario_library/<tag>/
-        library.pkl              -- list of accepted ScenarioRecord
-        candidates.csv           -- per-candidate stats (accepted + rejected)
-        scenario_envelopes.png   -- voltage envelope per scenario, baseline vs OFO
-        scenario_summary.png     -- bar chart of integral violation, baseline vs OFO
+Outputs (per `--tag`):
+    examples/rl_controller/outputs/<system>/scenario_library/<tag>/
+        metadata.json           -- build config + per-scenario scalar fields
+        traces.npz              -- per-scenario voltage penalty arrays
+        candidates.csv          -- per-candidate stats (accepted + rejected)
+        scenario_envelopes.png  -- voltage envelope per scenario, baseline vs OFO
+        scenario_summary.png    -- bar chart of integral violation, baseline vs OFO
 
-The .pkl is the artifact training will load via train_ppo.py's
-``--scenario-library`` flag (added in the next step).
+The library directory is the artifact `train_ppo.py` and `evaluate.py` consume
+through their `--scenario-library` flag.
 """
 
 from __future__ import annotations
@@ -35,16 +38,23 @@ from __future__ import annotations
 import csv
 import logging
 import math
-import pickle
-import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
-import matplotlib
-
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
 import numpy as np
+from controller import PPOBatchSizeController, SharedPPOBatchSizeController
+from env import ObservationConfig, compute_bus_phase_groups
+from scenarios import (
+    EXPERIMENTS,
+    DCSite,
+    PVSystemSpec,
+    ScenarioOpenDSSGrid,
+    ScenarioRecord,
+    TimeVaryingLoadSpec,
+    load_library_data,
+    randomize_scenario,
+    save_library,
+)
 
 from openg2g.controller.ofo import LogisticModelStore, OFOConfig
 from openg2g.controller.rule_based import RuleBasedBatchSizeController, RuleBasedConfig
@@ -57,22 +67,24 @@ from openg2g.datacenter.workloads.training import TrainingTrace
 from openg2g.grid.config import TapSchedule
 from openg2g.metrics.voltage import VoltageStats, compute_allbus_voltage_stats
 
+from plotting import (
+    _extract_batch_data,
+    _plot_batch_sizes,
+    _plot_envelopes,
+    _plot_summary,
+    _voltage_envelope,
+    _voltage_envelope_by_zone,
+)
 from systems import (
     DT_CTRL,
     DT_DC,
     DT_GRID,
-    EXPERIMENTS,
     POWER_AUG,
     SPECS_CACHE_DIR,
     TOTAL_DURATION_S,
     TRAINING_TRACE_PATH,
     V_MAX,
     V_MIN,
-    DCSite,
-    PVSystemSpec,
-    ScenarioOpenDSSGrid,
-    TimeVaryingLoadSpec,
-    randomize_scenario,
 )
 
 logger = logging.getLogger("scenario_library")
@@ -164,8 +176,6 @@ def run_simulation(
         if not primary_bus:
             primary_bus = site.bus
 
-    # Build grid then attach DCs (master's imperative pattern; the old
-    # dc_loads / dc_bus kwargs are no longer accepted by OpenDSSGrid).
     grid = ScenarioOpenDSSGrid(
         pv_systems=pv_systems,
         time_varying_loads=time_varying_loads,
@@ -224,22 +234,27 @@ def run_simulation(
             controllers.append(rb_ctrl)
 
     elif mode == "ppo":
-        from openg2g.controller.ppo import PPOBatchSizeController, SharedPPOBatchSizeController
-        from openg2g.rl.env import ObservationConfig
-
         ppo_path = Path(ppo_model).resolve()
 
         def _find_vecnormalize(model_file: Path) -> Path | None:
+            """Look for the VecNormalize sidecar next to a saved PPO model.
+
+            Two conventions:
+            1. `<stem>_vecnormalize.pkl`: what `train_ppo.py` writes for the
+               final saved model (e.g. `ppo_model.zip` ↔ `ppo_model_vecnormalize.pkl`).
+            2. `<prefix>_vecnormalize_<N>_steps.pkl`: SB3
+               `CheckpointCallback`'s sibling for an intermediate checkpoint
+               `<prefix>_<N>_steps.zip`.
+            """
             mf = Path(model_file)
             stem = mf.with_suffix("").name
-            candidates = [
-                mf.parent / f"{stem}_vecnormalize.pkl",
-                mf.parent / "vecnormalize.pkl",
-            ]
-            if stem.startswith("ppo_") and stem.endswith("_steps"):
-                candidates.append(mf.parent / f"ppo_vecnormalize_{stem[len('ppo_') :]}.pkl")
-            for parent in [mf.parent, *mf.parent.parents][:4]:
-                candidates.extend(sorted(parent.glob("ppo_model_*_vecnormalize.pkl")))
+            candidates = [mf.parent / f"{stem}_vecnormalize.pkl"]
+            if stem.endswith("_steps"):
+                # SB3 CheckpointCallback: <prefix>_<N>_steps.zip ↔ <prefix>_vecnormalize_<N>_steps.pkl
+                parts = stem.rsplit("_", 2)
+                if len(parts) == 3:
+                    prefix, n, _steps = parts
+                    candidates.append(mf.parent / f"{prefix}_vecnormalize_{n}_steps.pkl")
             for c in candidates:
                 if c.is_file():
                     return c
@@ -250,12 +265,8 @@ def run_simulation(
             cand = ppo_path / "ppo_model_shared.zip"
             if cand.exists():
                 shared_model = cand
-        elif ppo_path.suffix == ".zip":
-            looks_shared = (
-                len(site_ids) > 1 or "shared" in ppo_path.parts or ppo_path.stem.startswith("ppo_model_shared")
-            )
-            if looks_shared and ppo_path.exists():
-                shared_model = ppo_path
+        elif ppo_path.suffix == ".zip" and ppo_path.exists() and len(site_ids) > 1:
+            shared_model = ppo_path
         if shared_model is not None and shared_model.exists():
             from stable_baselines3 import PPO as SB3PPO
 
@@ -273,8 +284,6 @@ def run_simulation(
                 zone_summary = None
                 bus_phase_groups = None
             elif obs_mode == "per-bus-summary":
-                from openg2g.rl.env import compute_bus_phase_groups
-
                 grid.do_reset()
                 grid.start()
                 _v_index = grid.v_index
@@ -306,7 +315,7 @@ def run_simulation(
                 logger.info("PPO: loading VecNormalize stats from %s", vn_path)
             else:
                 logger.warning(
-                    "PPO: no VecNormalize stats found next to %s — policy will see UNNORMALIZED obs", shared_model
+                    "PPO: no VecNormalize stats found next to %s; policy will see UNNORMALIZED obs", shared_model
                 )
             ppo_ctrl = SharedPPOBatchSizeController(
                 datacenter=next(iter(datacenters.values())),
@@ -357,7 +366,7 @@ def run_simulation(
                     logger.info("PPO[%s]: loading VecNormalize stats from %s", site_id, vn_path)
                 else:
                     logger.warning(
-                        "PPO[%s]: no VecNormalize stats found next to %s — policy will see UNNORMALIZED obs",
+                        "PPO[%s]: no VecNormalize stats found next to %s; policy will see UNNORMALIZED obs",
                         site_id,
                         site_model,
                     )
@@ -378,8 +387,6 @@ def run_simulation(
         controllers=controllers,
         total_duration_s=TOTAL_DURATION_S,
     )
-
-    from openg2g.controller.ppo import SharedPPOBatchSizeController
 
     for ctrl in controllers:
         if isinstance(ctrl, SharedPPOBatchSizeController):
@@ -406,73 +413,11 @@ def run_simulation(
     return vstats, log
 
 
-@dataclass
-class ScenarioRecord:
-    """One pre-screened scenario, ready to be replayed at training time.
-
-    ``__module__`` is forced to ``build_scenario_library`` below so pickles
-    of this class work whether the script is run as ``__main__`` or imported.
-    Without the override, running ``python build_scenario_library.py`` writes
-    ``__main__.ScenarioRecord`` into the pickle, which then fails to unpickle
-    in any other process (e.g. train_ppo.py). See openg2g/rl/env.py:ScenarioLibrary
-    stub registration.
-    """
-
-    seed: int
-    pv_scale: float
-    load_scale: float
-    training_overlay: dict | None
-    baseline_integral: float
-    ofo_integral: float
-    baseline_violation_time_s: float
-    ofo_violation_time_s: float
-    recovery_frac: float
-    # Per-second OFO voltage penalty (sum of squared violation, length =
-    # total_duration_s). This is what gets subtracted from PPO's per-step
-    # voltage_pen during training.
-    ofo_voltage_pen_per_step: np.ndarray = field(repr=False)
-    baseline_voltage_pen_per_step: np.ndarray = field(repr=False)
-    # Episode window for truncated training: skip quiet prefix, stop after last violation.
-    # Computed from baseline_voltage_pen_per_step at build time with configurable buffers.
-    # env.py reads these via getattr(..., default) so old pickles without these fields degrade
-    # gracefully to full-episode training.
-    t_control_start: int = 0
-    t_control_end: int = 3600
-    bl_undervoltage_time_s: float = 0.0
-    bl_overvoltage_time_s: float = 0.0
-    # Per-scenario override for inference-ramp synthesis at replay time.
-    # When None, train_ppo uses the library-wide default from the library config.
-    randomize_ramps: bool | None = None
-    # Per-scenario ramp bounds. None falls back to the library-wide defaults in train_ppo.
-    ramp_frac_min: float | None = None
-    ramp_frac_max: float | None = None
-    ramp_start_min: float | None = None
-    ramp_start_max: float | None = None
-    ramp_dur_min: float | None = None
-    ramp_dur_max: float | None = None
-    # Resolved per-episode state — captured at build time so consumers don't
-    # need to replay randomize_scenario. Old pickles default to None and must
-    # be upgraded with examples/offline/migrate_scenario_library.py before use.
-    resolved_dc_sites: dict | None = None
-    resolved_pv_systems: tuple | None = None
-    resolved_tvl: tuple | None = None
-
-
-# Force stable pickle identity regardless of how build_scenario_library.py is
-# invoked (as __main__ script vs imported module). See docstring above.
-ScenarioRecord.__module__ = "build_scenario_library"
-# When run as `python build_scenario_library.py`, the script's globals live in
-# sys.modules['__main__'] and there is no entry for 'build_scenario_library'.
-# Pickle uses ScenarioRecord.__module__ to find the class at unpickle time, so
-# we alias sys.modules so both names resolve to the same module object.
-sys.modules.setdefault("build_scenario_library", sys.modules[__name__])
-
-
 def _per_step_voltage_pen(grid_states, *, v_min: float, v_max: float, exclude_buses: tuple[str, ...]) -> np.ndarray:
     """Compute the per-step voltage penalty (sum of squared violation magnitude).
 
-    This matches ``compute_reward`` in ``openg2g/rl/env.py``: at each step the
-    penalty is ``sum_max(v_min - v, 0)^2 + sum_max(v - v_max, 0)^2`` over all
+    This matches `compute_reward` in `env.py`: at each step the
+    penalty is `sum_max(v_min - v, 0)^2 + sum_max(v - v_max, 0)^2` over all
     bus-phases (excluding the substation buses), with NaNs treated as
     "not in violation".
     """
@@ -528,57 +473,6 @@ def _under_over_voltage_time(
         if has_over:
             over_steps += 1
     return float(under_steps), float(over_steps)
-
-
-def _voltage_envelope(grid_states, *, exclude_buses: tuple[str, ...]) -> tuple[np.ndarray, np.ndarray]:
-    """Return (vmin_t, vmax_t) per step for plotting."""
-    drop = {b.lower() for b in exclude_buses}
-    vmin = np.full(len(grid_states), np.inf)
-    vmax = np.full(len(grid_states), -np.inf)
-    for i, gs in enumerate(grid_states):
-        for bus in gs.voltages.buses():
-            if bus.lower() in drop:
-                continue
-            pv = gs.voltages[bus]
-            for v in (pv.a, pv.b, pv.c):
-                if math.isnan(v):
-                    continue
-                if v < vmin[i]:
-                    vmin[i] = v
-                if v > vmax[i]:
-                    vmax[i] = v
-    return vmin, vmax
-
-
-def _voltage_envelope_by_zone(
-    grid_states,
-    *,
-    zones: dict[str, list[str]],
-    exclude_buses: tuple[str, ...],
-) -> dict[str, tuple[np.ndarray, np.ndarray]]:
-    """Return {zone_name: (vmin_t, vmax_t)} per step, one array pair per zone."""
-    drop = {b.lower() for b in exclude_buses}
-    zone_sets = {z: {b.lower() for b in buses} for z, buses in zones.items()}
-    n = len(grid_states)
-    vmin = {z: np.full(n, np.inf) for z in zones}
-    vmax = {z: np.full(n, -np.inf) for z in zones}
-    for i, gs in enumerate(grid_states):
-        for bus in gs.voltages.buses():
-            bl = bus.lower()
-            if bl in drop:
-                continue
-            pv = gs.voltages[bus]
-            for z, bset in zone_sets.items():
-                if bl not in bset:
-                    continue
-                for v in (pv.a, pv.b, pv.c):
-                    if math.isnan(v):
-                        continue
-                    if v < vmin[z][i]:
-                        vmin[z][i] = v
-                    if v > vmax[z][i]:
-                        vmax[z][i] = v
-    return {z: (vmin[z], vmax[z]) for z in zones}
 
 
 def _zone_phase_integral(
@@ -645,100 +539,6 @@ def _build_run_kwargs(
     )
 
 
-def _plot_batch_sizes(
-    records: list[ScenarioRecord],
-    batch_data: dict[int, dict],
-    save_path: Path,
-    *,
-    max_rows: int = 40,
-) -> None:
-    """Plot batch size over time per accepted scenario, baseline vs OFO, one row per scenario.
-
-    When the library has more than ``max_rows`` scenarios, only the first
-    ``max_rows`` are shown. A single tall figure of hundreds of rows quickly
-    exceeds matplotlib's 65535-pixel dimension limit, so we cap here.
-    """
-    n = len(records)
-    if n == 0:
-        return
-    if n > max_rows:
-        logger.info("_plot_batch_sizes: capping at first %d of %d records", max_rows, n)
-        records = records[:max_rows]
-        n = max_rows
-
-    # Collect all (site_id, label) columns from the first scenario. For
-    # single-DC feeders (ieee13) there's one site; multi-DC feeders
-    # (ieee34) get one column per (site, model) pair.
-    first_seed = records[0].seed
-    ofo_by_site = batch_data[first_seed]["ofo"]
-    cols_meta: list[tuple[str, str]] = []
-    for site_id, sdata in ofo_by_site.items():
-        for label in sdata["batch_by_model"]:
-            cols_meta.append((site_id, label))
-    n_cols = len(cols_meta)
-
-    fig, axes = plt.subplots(n, n_cols, figsize=(4 * n_cols, 2.5 * n), sharex=True, squeeze=False)
-
-    for row, rec in enumerate(records):
-        bd = batch_data[rec.seed]
-        for col, (site_id, label) in enumerate(cols_meta):
-            ax = axes[row][col]
-            bl_site = bd["baseline"][site_id]
-            ofo_site = bd["ofo"][site_id]
-            ax.plot(
-                bl_site["time_s"],
-                bl_site["batch_by_model"][label],
-                color="#888",
-                linewidth=0.7,
-                alpha=0.7,
-                label="baseline",
-            )
-            ax.plot(
-                ofo_site["time_s"],
-                ofo_site["batch_by_model"][label],
-                color="#2196F3",
-                linewidth=0.7,
-                alpha=0.9,
-                label="OFO",
-            )
-            if row == 0:
-                short = label.split("/")[-1] if "/" in label else label
-                title = f"{site_id}:{short}" if len(ofo_by_site) > 1 else short
-                ax.set_title(title, fontsize=9)
-            if col == 0:
-                ax.set_ylabel(f"seed={rec.seed}\nBatch", fontsize=8)
-            ax.grid(True, alpha=0.2)
-            if row == 0 and col == 0:
-                ax.legend(fontsize=7, loc="upper right")
-
-    for col in range(n_cols):
-        axes[-1][col].set_xlabel("Time (s)")
-    fig.suptitle("Accepted scenarios — batch size (baseline vs OFO)", fontsize=13, fontweight="bold")
-    fig.tight_layout()
-    fig.savefig(save_path, dpi=120, bbox_inches="tight")
-    plt.close(fig)
-
-
-def _extract_batch_data(log) -> dict:
-    """Extract time_s and per-model batch sizes from a simulation log.
-
-    Returns {site_id: {"time_s": [...], "batch_by_model": {label: [bs]}}}.
-    Uses ``log.dc_states_by_site`` (per-site lists) so multi-DC feeders
-    like ieee34 don't get interleaved timestamps or alternating zeros.
-    """
-    per_site: dict[str, dict] = {}
-    for site_id, states in log.dc_states_by_site.items():
-        time_s = [s.time_s for s in states]
-        labels: list[str] = []
-        if states:
-            for m in states[0].batch_size_by_model:
-                if m not in labels:
-                    labels.append(m)
-        batch_by_model = {m: [s.batch_size_by_model.get(m, 0) for s in states] for m in labels}
-        per_site[site_id] = {"time_s": time_s, "batch_by_model": batch_by_model}
-    return per_site
-
-
 def _is_always_minimum_batch(ofo_log, min_batch_size: int = 8, warmup_s: float = 10.0) -> bool:
     """Return True if every model stays at min_batch_size for the entire episode after warmup_s.
 
@@ -753,150 +553,6 @@ def _is_always_minimum_batch(ofo_log, min_batch_size: int = 8, warmup_s: float =
                 if bs > min_batch_size:
                     return False
     return True
-
-
-def _plot_envelopes(
-    records: list[ScenarioRecord],
-    envelopes: dict,
-    save_path: Path,
-    *,
-    total_duration_s: int,
-    zones: dict[str, list[str]] | None = None,
-    max_rows: int = 40,
-) -> None:
-    """Plot voltage envelope per accepted scenario, baseline vs OFO.
-
-    When ``zones`` is provided (multi-zone feeders like ieee123), each scenario
-    gets one subplot per zone showing the per-zone vmin/vmax band. Otherwise a
-    single subplot with the global envelope is used.
-
-    Caps at ``max_rows * 2`` records (global mode) or ``max_rows`` records
-    (per-zone mode) to stay under matplotlib's 65535-pixel dimension limit.
-    """
-    n = len(records)
-    if n == 0:
-        return
-
-    t = np.arange(total_duration_s)
-
-    if zones:
-        zone_names = list(zones.keys())
-        n_zones = len(zone_names)
-        cap = max_rows
-        if n > cap:
-            logger.info("_plot_envelopes: capping at first %d of %d records", cap, n)
-            records = records[:cap]
-            n = cap
-        zone_colors = ["#2196F3", "#4CAF50", "#FF9800", "#9C27B0"]
-        fig, axes = plt.subplots(n, n_zones, figsize=(5 * n_zones, 3 * n), sharex=True, squeeze=False)
-        for row, rec in enumerate(records):
-            env = envelopes[rec.seed]
-            for col, z in enumerate(zone_names):
-                ax = axes[row][col]
-                bl_z = env["baseline_zones"].get(z)
-                of_z = env["ofo_zones"].get(z)
-                color = zone_colors[col % len(zone_colors)]
-                if bl_z is not None:
-                    ax.fill_between(t, bl_z[0], bl_z[1], alpha=0.25, color="#888", label="baseline")
-                if of_z is not None:
-                    ax.fill_between(t, of_z[0], of_z[1], alpha=0.4, color=color, label="OFO")
-                ax.axhline(V_MIN, color="red", linestyle="--", linewidth=0.8, alpha=0.6)
-                ax.axhline(V_MAX, color="red", linestyle="--", linewidth=0.8, alpha=0.6)
-                ax.grid(True, alpha=0.2)
-                if row == 0:
-                    ax.set_title(z, fontsize=10, fontweight="bold")
-                if col == 0:
-                    ax.set_ylabel(
-                        f"seed={rec.seed}\npv×{rec.pv_scale:.2f} ld×{rec.load_scale:.2f}\n"
-                        f"bl={rec.baseline_integral:.1f} ofo={rec.ofo_integral:.1f} "
-                        f"rec={rec.recovery_frac:.0%}",
-                        fontsize=7,
-                    )
-                else:
-                    ax.set_ylabel("V (pu)", fontsize=8)
-                if row == 0 and col == 0:
-                    ax.legend(loc="lower right", fontsize=7)
-        for col in range(n_zones):
-            axes[-1][col].set_xlabel("Time (s)", fontsize=8)
-        fig.suptitle(
-            "Accepted scenarios — per-zone voltage envelope (baseline vs OFO)",
-            fontsize=13,
-            fontweight="bold",
-        )
-    else:
-        cap = max_rows * 2
-        if n > cap:
-            logger.info("_plot_envelopes: capping at first %d of %d records", cap, n)
-            records = records[:cap]
-            n = cap
-        cols = 2
-        rows = (n + cols - 1) // cols
-        fig, axes = plt.subplots(rows, cols, figsize=(7 * cols, 3 * rows), sharex=True)
-        axes = np.atleast_2d(axes)
-
-        for idx, rec in enumerate(records):
-            r, c = divmod(idx, cols)
-            ax = axes[r][c]
-            bmin, bmax = envelopes[rec.seed]["baseline"]
-            omin, omax = envelopes[rec.seed]["ofo"]
-            ax.fill_between(t, bmin, bmax, alpha=0.25, color="#888", label="baseline")
-            ax.fill_between(t, omin, omax, alpha=0.4, color="#2196F3", label="OFO")
-            ax.axhline(V_MIN, color="red", linestyle="--", linewidth=1, alpha=0.6)
-            ax.axhline(V_MAX, color="red", linestyle="--", linewidth=1, alpha=0.6)
-            ax.set_title(
-                f"seed={rec.seed} pv×{rec.pv_scale:.2f} load×{rec.load_scale:.2f}\n"
-                f"int: bl={rec.baseline_integral:.2f} ofo={rec.ofo_integral:.2f} "
-                f"recov={rec.recovery_frac:.0%}",
-                fontsize=9,
-            )
-            ax.set_ylabel("V (pu)", fontsize=9)
-            ax.grid(True, alpha=0.2)
-            if idx == 0:
-                ax.legend(loc="lower right", fontsize=8)
-
-        for k in range(n, rows * cols):
-            r, c = divmod(k, cols)
-            axes[r][c].axis("off")
-
-        for c in range(cols):
-            axes[-1][c].set_xlabel("Time (s)")
-        fig.suptitle("Accepted scenarios — voltage envelope (baseline vs OFO)", fontsize=13, fontweight="bold")
-
-    fig.tight_layout()
-    fig.savefig(save_path, dpi=120, bbox_inches="tight")
-    plt.close(fig)
-
-
-def _plot_summary(all_stats: list[dict], save_path: Path) -> None:
-    """Bar chart of baseline vs OFO integral for every candidate (accepted + rejected)."""
-    n = len(all_stats)
-    if n == 0:
-        return
-    seeds = [s["seed"] for s in all_stats]
-    bl = [s["baseline_integral"] for s in all_stats]
-    of = [s["ofo_integral"] for s in all_stats]
-    accepted = [s["accepted"] for s in all_stats]
-
-    x = np.arange(n)
-    w = 0.4
-    fig, ax = plt.subplots(figsize=(max(8, 0.7 * n), 5))
-    ax.bar(x - w / 2, bl, w, color="#888", label="baseline integral")
-    ax.bar(x + w / 2, of, w, color="#2196F3", label="OFO integral")
-    for i, ok in enumerate(accepted):
-        marker = "✓" if ok else "✗"
-        color = "green" if ok else "red"
-        ax.annotate(marker, xy=(i, max(bl[i], of[i])), ha="center", va="bottom", color=color, fontsize=12)
-    ax.set_xticks(x)
-    ax.set_xticklabels([str(s) for s in seeds], rotation=45)
-    ax.set_xlabel("Seed")
-    ax.set_ylabel("Integral voltage violation (pu·s)")
-    ax.set_yscale("symlog", linthresh=0.1)
-    ax.set_title("Candidate scenarios — baseline vs OFO integral violation")
-    ax.legend()
-    ax.grid(True, axis="y", alpha=0.2)
-    fig.tight_layout()
-    fig.savefig(save_path, dpi=120, bbox_inches="tight")
-    plt.close(fig)
 
 
 def main(
@@ -1056,7 +712,7 @@ def main(
         plot=False,
     )
 
-    # Training overlay base — same defaults as train_ppo._ieee13_experiment.
+    # Training overlay base: same defaults as train_ppo._ieee13_experiment.
     # Only used when use_training_overlay is True (ieee13 default). For ieee34
     # the in-distribution scenarios deliberately skip the training overlay so
     # PV/TVL scales are the sole source of randomness (overlay is reserved for
@@ -1228,7 +884,7 @@ def main(
             if always_min:
                 if n_always_min_accepted >= MAX_ALWAYS_MIN:
                     logger.info(
-                        "  seed=%d: OFO always at min batch — cap reached (%d/%d), skipping",
+                        "  seed=%d: OFO always at min batch: cap reached (%d/%d), skipping",
                         effective_seed,
                         n_always_min_accepted,
                         MAX_ALWAYS_MIN,
@@ -1237,7 +893,7 @@ def main(
                 else:
                     n_always_min_accepted += 1
                     logger.info(
-                        "  seed=%d: OFO always at min batch — accepting (%d/%d)",
+                        "  seed=%d: OFO always at min batch: accepting (%d/%d)",
                         effective_seed,
                         n_always_min_accepted,
                         MAX_ALWAYS_MIN,
@@ -1277,9 +933,6 @@ def main(
                 baseline_voltage_pen_per_step=baseline_pen,
                 t_control_start=t_ctrl_start,
                 t_control_end=t_ctrl_end,
-                resolved_dc_sites=scenario["dc_sites"],
-                resolved_pv_systems=tuple(scenario["pv_systems"]),
-                resolved_tvl=tuple(scenario["tvl"]),
             )
             accepted.append(rec)
             env_entry: dict = {
@@ -1304,7 +957,6 @@ def main(
             }
 
     # ── Save artifacts ──
-    library_path = out_dir / "library.pkl"
     randomize_kwargs = {
         "randomize_ramps": randomize_ramps,
         "randomization_profile": randomization_profile,
@@ -1346,53 +998,55 @@ def main(
         "tvl_shape_choices": tuple(tvl_shape_choices),
     }
 
-    with open(library_path, "wb") as f:
-        pickle.dump(
+    config = {
+        "system": system,
+        "n_candidates": n_total,
+        "min_recovery_frac": min_recovery_frac,
+        "max_recovery_frac": max_recovery_frac,
+        "min_baseline_integral": min_baseline_integral,
+        "pv_base_kw": pv_base_kw,
+        "tvl_base_kw": tvl_base_kw,
+        "use_training_overlay": use_training_overlay,
+        "randomize_ramps": randomize_ramps,
+        "randomize_kwargs": randomize_kwargs,
+        "pv_systems_base": [{"bus": p.bus, "bus_kv": p.bus_kv, "peak_kw": p.peak_kw} for p in pv_systems_base],
+        "tvl_base": [{"bus": t.bus, "bus_kv": t.bus_kv, "peak_kw": t.peak_kw} for t in tvl_base],
+        "v_min": V_MIN,
+        "v_max": V_MAX,
+        # Build-time training-overlay parameters (the trace itself is loaded
+        # from disk at consumption time and not stored here).
+        "training_base": (
             {
-                "scenarios": accepted,
-                "config": {
-                    "system": system,
-                    "n_candidates": n_total,
-                    "min_recovery_frac": min_recovery_frac,
-                    "max_recovery_frac": max_recovery_frac,
-                    "min_baseline_integral": min_baseline_integral,
-                    "pv_base_kw": pv_base_kw,
-                    "tvl_base_kw": tvl_base_kw,
-                    "use_training_overlay": use_training_overlay,
-                    "randomize_ramps": randomize_ramps,
-                    "randomize_kwargs": randomize_kwargs,
-                    "pv_systems_base": [
-                        {"bus": p.bus, "bus_kv": p.bus_kv, "peak_kw": p.peak_kw} for p in pv_systems_base
-                    ],
-                    "tvl_base": [{"bus": t.bus, "bus_kv": t.bus_kv, "peak_kw": t.peak_kw} for t in tvl_base],
-                    "v_min": V_MIN,
-                    "v_max": V_MAX,
-                },
-            },
-            f,
-        )
-    logger.info("Wrote %d accepted scenarios to %s", len(accepted), library_path)
+                "n_gpus": 2400,
+                "target_peak_W_per_gpu": 400.0,
+                "t_start": 1000.0,
+                "t_end": 2000.0,
+            }
+            if use_training_overlay
+            else None
+        ),
+    }
+    save_library(out_dir, accepted, config)
+    logger.info("Wrote %d accepted scenarios to %s", len(accepted), out_dir)
 
     # ── Optional: merge into an existing library ──
     if append_to is not None:
-        if not append_to.exists():
-            raise FileNotFoundError(f"--append-to target not found: {append_to}")
-        with open(append_to, "rb") as f:
-            existing = pickle.load(f)
-        existing_seeds = {s.seed for s in existing["scenarios"]}
+        if not append_to.exists() or not append_to.is_dir():
+            raise FileNotFoundError(f"--append-to target not found (must be a library directory): {append_to}")
+        existing_scenarios, existing_config = load_library_data(append_to)
+        existing_seeds = {s.seed for s in existing_scenarios}
         new_scenarios = [s for s in accepted if s.seed not in existing_seeds]
         if new_scenarios:
-            existing["scenarios"] = existing["scenarios"] + new_scenarios
-            with open(append_to, "wb") as f:
-                pickle.dump(existing, f)
+            merged = existing_scenarios + new_scenarios
+            save_library(append_to, merged, existing_config)
             logger.info(
                 "Appended %d new scenario(s) to %s (total now: %d)",
                 len(new_scenarios),
                 append_to,
-                len(existing["scenarios"]),
+                len(merged),
             )
         else:
-            logger.info("No new scenarios to append — all seeds already present in %s", append_to)
+            logger.info("No new scenarios to append: all seeds already present in %s", append_to)
 
     csv_path = out_dir / "candidates.csv"
     with open(csv_path, "w", newline="") as f:
@@ -1445,23 +1099,14 @@ def main(
         logger.info("  baseline integral (mean ± std): %.2f ± %.2f", bls.mean(), bls.std())
 
 
-# ── Optional supplement-phase helpers (used by the CLI when --n-supplement-candidates > 0) ──
-
-
-def _is_pure_overvoltage(rec) -> bool:
-    """Classify a ScenarioRecord as pure-overvoltage (over > 0, under == 0).
-
-    Uses the saved per-record fields when present (newer builds); falls back to
-    the load_scale heuristic for old builds where the fields weren't written.
-    """
-    if "bl_overvoltage_time_s" in rec.__dict__:
-        return rec.bl_overvoltage_time_s > 0 and rec.bl_undervoltage_time_s == 0
-    return getattr(rec, "load_scale", 99.0) <= 1.0  # rough proxy: low load implies overvoltage
+def _is_pure_overvoltage(rec: ScenarioRecord) -> bool:
+    """Classify a ScenarioRecord as pure-overvoltage (over > 0, under == 0)."""
+    return rec.bl_overvoltage_time_s > 0 and rec.bl_undervoltage_time_s == 0
 
 
 def _merge_supplement_into_base(
-    base_pkl: Path,
-    supp_pkl: Path,
+    base_dir: Path,
+    supp_dir: Path,
     swap_undervoltage_for_overvoltage: int = 0,
 ) -> None:
     """Merge pure-overvoltage scenarios from a supplement library into a base library.
@@ -1473,57 +1118,46 @@ def _merge_supplement_into_base(
     from the supplement, remove the same number of undervoltage-only scenarios
     (highest load_scale first) from the base. Library size unchanged.
     """
-    if not base_pkl.exists():
-        raise FileNotFoundError(f"--n-supplement-candidates set but base library missing: {base_pkl}")
-    if not supp_pkl.exists():
-        raise FileNotFoundError(f"supplement library missing: {supp_pkl}")
+    if not base_dir.is_dir():
+        raise FileNotFoundError(f"--n-supplement-candidates set but base library missing: {base_dir}")
+    if not supp_dir.is_dir():
+        raise FileNotFoundError(f"supplement library missing: {supp_dir}")
 
-    with open(base_pkl, "rb") as f:
-        base_lib = pickle.load(f)
-    with open(supp_pkl, "rb") as f:
-        supp_lib = pickle.load(f)
+    base_scenarios, base_config = load_library_data(base_dir)
+    supp_scenarios, _ = load_library_data(supp_dir)
 
-    pure_over = [r for r in supp_lib["scenarios"] if _is_pure_overvoltage(r)]
-    base_seeds = {r.seed for r in base_lib["scenarios"]}
+    pure_over = [r for r in supp_scenarios if _is_pure_overvoltage(r)]
+    base_seeds = {r.seed for r in base_scenarios}
     pure_over_new = [r for r in pure_over if r.seed not in base_seeds]
     logger.info(
         "Supplement merge: %d/%d supplement scenarios are pure-overvoltage (%d new vs base)",
         len(pure_over),
-        len(supp_lib["scenarios"]),
+        len(supp_scenarios),
         len(pure_over_new),
     )
 
     if swap_undervoltage_for_overvoltage <= 0:
-        new_scenarios = list(base_lib["scenarios"]) + pure_over_new
+        new_scenarios = list(base_scenarios) + pure_over_new
     else:
         n_take = min(swap_undervoltage_for_overvoltage, len(pure_over_new))
-        recs = list(base_lib["scenarios"])
         under_only_idx = [
-            i
-            for i, r in enumerate(recs)
-            if getattr(r, "bl_undervoltage_time_s", None) is not None
-            and r.bl_undervoltage_time_s > 0
-            and getattr(r, "bl_overvoltage_time_s", 0) == 0
+            i for i, r in enumerate(base_scenarios) if r.bl_undervoltage_time_s > 0 and r.bl_overvoltage_time_s == 0
         ]
-        if not under_only_idx:
-            under_only_idx = [i for i, r in enumerate(recs) if getattr(r, "load_scale", 0) > 2.0]
-        under_only_idx.sort(key=lambda i: getattr(recs[i], "load_scale", 0), reverse=True)
+        under_only_idx.sort(key=lambda i: base_scenarios[i].load_scale, reverse=True)
         remove_idx = set(under_only_idx[:n_take])
         if remove_idx:
-            ls_min = min(getattr(recs[i], "load_scale", 0) for i in remove_idx)
-            ls_max = max(getattr(recs[i], "load_scale", 0) for i in remove_idx)
+            ls_min = min(base_scenarios[i].load_scale for i in remove_idx)
+            ls_max = max(base_scenarios[i].load_scale for i in remove_idx)
             logger.info(
                 "  test-set swap: removing %d undervoltage-only scenarios (load_scale %.2f-%.2f)",
                 len(remove_idx),
                 ls_min,
                 ls_max,
             )
-        new_scenarios = [r for i, r in enumerate(recs) if i not in remove_idx] + pure_over_new[:n_take]
+        new_scenarios = [r for i, r in enumerate(base_scenarios) if i not in remove_idx] + pure_over_new[:n_take]
 
-    base_lib["scenarios"] = new_scenarios
-    with open(base_pkl, "wb") as f:
-        pickle.dump(base_lib, f)
-    logger.info("Wrote merged library to %s (%d scenarios total)", base_pkl, len(new_scenarios))
+    save_library(base_dir, new_scenarios, base_config)
+    logger.info("Wrote merged library to %s (%d scenarios total)", base_dir, len(new_scenarios))
 
 
 if __name__ == "__main__":
@@ -1563,12 +1197,12 @@ if __name__ == "__main__":
         seeds: tuple[int, ...] = ()
         """Explicit list of effective seeds to run (overrides seed_start + n_candidates). Use to re-run only known-accepted seeds from a prior build log."""  # noqa: E501
         use_training_overlay: bool = True
-        """Whether to add the training overlay (a few-hundred-kW training GPU spike) to in-distribution scenarios. Default True (ieee13 behavior). Set --no-use-training-overlay for ieee34 in-dist libraries — the overlay is reserved for OOD there."""  # noqa: E501
+        """Whether to add the training overlay (a few-hundred-kW training GPU spike) to in-distribution scenarios. Default True (ieee13 behavior). Set --no-use-training-overlay for ieee34 in-dist libraries; the overlay is reserved for OOD there."""  # noqa: E501
         randomize_ramps: bool = True
-        """Whether randomize_scenario synthesizes per-episode inference ramps. Default True (ieee13 behavior). Set --no-randomize-ramps for ieee34 in-dist libraries — ramps are reserved for OOD there."""  # noqa: E501
+        """Whether randomize_scenario synthesizes per-episode inference ramps. Default True (ieee13 behavior). Set --no-randomize-ramps for ieee34 in-dist libraries; ramps are reserved for OOD there."""  # noqa: E501
         # ── Randomization profile ──
         randomization_profile: Annotated[bool, tyro.conf.FlagConversionOff] = True
-        """True (broad, default) = bidirectional multi-ramps, wider PV/TVL scales, shape randomness, stochastic overlay. False (narrow) = legacy behavior."""  # noqa: E501
+        """True (broad, default) = bidirectional multi-ramps, wider PV/TVL scales, shape randomness, stochastic overlay. False (narrow) = single descending ramp + scalar PV/TVL only."""  # noqa: E501
         pv_scale_min: float = 0.5
         pv_scale_max: float = 2.0
         load_scale_min: float = 0.5
@@ -1631,10 +1265,10 @@ if __name__ == "__main__":
         """Steps of buffer after the last baseline voltage violation (for episode truncation)."""
         log_level: str = "INFO"
         append_to: Path | None = None
-        """If set, merge newly accepted scenarios into this existing library.pkl (deduplicates by seed). The new run is still saved under --tag for diagnostic plots."""  # noqa: E501
+        """If set, merge newly accepted scenarios into this existing library directory (deduplicates by seed). The new run is still saved under --tag for diagnostic plots."""  # noqa: E501
         # ── Optional supplement phase (paper-balanced library workflow) ──
         n_supplement_candidates: int = 0
-        """If > 0, after the main build run a second pass with overvoltage-favouring params (high PV, low load) and merge pure-overvoltage scenarios into the base library. Replaces the standalone build_balanced_library_ieee13.py orchestrator."""  # noqa: E501
+        """If > 0, after the main build run a second pass with overvoltage-favouring params (high PV, low load) and merge pure-overvoltage scenarios into the base library."""  # noqa: E501
         supplement_seed_start: int = -1
         """Starting candidate index for the supplement pass. Default -1 means seed_start + 4000 (prevents seed overlap)."""  # noqa: E501
         supplement_pv_scale_min: float = 2.0
@@ -1795,7 +1429,7 @@ if __name__ == "__main__":
 
         scenario_root = Path(__file__).resolve().parent / "outputs" / args.system / "scenario_library"
         _merge_supplement_into_base(
-            base_pkl=scenario_root / args.tag / "library.pkl",
-            supp_pkl=scenario_root / supp_tag / "library.pkl",
+            base_dir=scenario_root / args.tag,
+            supp_dir=scenario_root / supp_tag,
             swap_undervoltage_for_overvoltage=args.swap_undervoltage_for_overvoltage,
         )

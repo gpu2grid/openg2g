@@ -3,7 +3,7 @@ from __future__ import annotations
 from fractions import Fraction
 
 import numpy as np
-from mlenergy_data.modeling import LogisticModel
+from mlenergy.data.modeling import LogisticModel
 
 from openg2g.clock import SimulationClock
 from openg2g.common import ThreePhase

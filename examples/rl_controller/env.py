@@ -6,66 +6,78 @@ import math
 from collections.abc import Callable
 from dataclasses import dataclass
 from fractions import Fraction
+from pathlib import Path
 from typing import Any
 
 import gymnasium
 import numpy as np
 from gymnasium import spaces
+from scenarios import (
+    EXPERIMENTS,
+    PVSystemSpec,
+    ScenarioRecord,
+    TimeVaryingLoadSpec,
+    load_library_data,
+    materialize_scenario,
+)
 
-from openg2g.clock import SimulationClock
-from openg2g.common import ThreePhase
 from openg2g.controller.ofo import LogisticModelStore
 from openg2g.controller.tap_schedule import TapScheduleController
-from openg2g.coordinator import SimulationLog
+from openg2g.coordinator import Coordinator
 from openg2g.datacenter.base import DatacenterBackend, LLMDatacenterState
-from openg2g.datacenter.command import SetBatchSize
+from openg2g.datacenter.command import DatacenterCommand, SetBatchSize
 from openg2g.datacenter.config import InferenceModelSpec
-from openg2g.events import EventEmitter
 from openg2g.grid.base import GridBackend
-
-# ── Observation & reward config ─────────────────────────────────────────────
+from openg2g.grid.command import GridCommand
 
 
 @dataclass(frozen=True)
 class ObservationConfig:
     """Fixed observation space configuration.
 
-    The observation vector layout is::
+    The observation vector layout is:
 
-        [0 .. M-1]              voltage vector (M bus-phase magnitudes, pu)
+    ```
+    [0 .. M-1]              voltage vector (M bus-phase magnitudes, pu)
+    ```
 
-    Then, if ``zone_summary`` is set (per-zone voltage summary mode)::
+    Then, if `zone_summary` is set (per-zone voltage summary mode):
 
-        [M + 3*z + 0]           zone z: worst undervoltage magnitude
-        [M + 3*z + 1]           zone z: worst overvoltage magnitude
-        [M + 3*z + 2]           zone z: fraction of bus-phases in violation
-        [M + 3*n_zones + 5*i]   model i features (see below)
+    ```
+    [M + 3*z + 0]           zone z: worst undervoltage magnitude
+    [M + 3*z + 1]           zone z: worst overvoltage magnitude
+    [M + 3*z + 2]           zone z: fraction of bus-phases in violation
+    [M + 3*n_zones + 5*i]   model i features (see below)
+    ```
 
-    Otherwise (global summary mode)::
+    Otherwise (global summary mode):
 
-        [M]                     worst undervoltage magnitude
-        [M+1]                   worst overvoltage magnitude
-        [M+2]                   fraction of bus-phases in violation
-        [M+3 + 5*i + 0]        model i features (see below)
+    ```
+    [M]                     worst undervoltage magnitude
+    [M+1]                   worst overvoltage magnitude
+    [M+2]                   fraction of bus-phases in violation
+    [M+3 + 5*i + 0]         model i features (see below)
+    ```
 
-    Per-model features (5 values each)::
+    Per-model features (5 values each):
 
-        + 0   normalized batch size (log2 scale) [0,1]
-        + 1   ITL / deadline  [0,3]
-        + 2   active_replicas / max_replicas  [0,1]
-        + 3   total 3-phase power (MW)
-        + 4   delta batch from prev step (log2 norm) [-1,1]
+    ```
+    + 0   normalized batch size (log2 scale) [0,1]
+    + 1   ITL / deadline  [0,3]
+    + 2   active_replicas / max_replicas  [0,1]
+    + 3   total 3-phase power (MW)
+    + 4   delta batch from prev step (log2 norm) [-1,1]
+    ```
 
-    Where M = ``n_bus_phases``.  Set M = 0 for summary-only observations.
-    When ``zone_buses`` is set, M is the number of bus-phases within those
-    buses (subset of the full grid), and violation summaries are computed
-    over that zone only.
-    When ``zone_summary`` is set, the 3 global violation scalars are replaced
-    by 3 scalars per zone.  Use with M = 0 for a compact multi-zone observation.
-    When ``bus_phase_groups`` is set, M must equal ``2 * n_buses`` and the
-    first M slots contain [min_phase_voltage, max_phase_voltage] per bus
-    instead of raw per-phase voltages.  Each entry in ``bus_phase_groups``
-    is a tuple of indices into the full ``v_vec`` for that bus's phases.
+    Where M = `n_bus_phases`. Set M = 0 for summary-only observations. When
+    `zone_buses` is set, M is the number of bus-phases within those buses
+    (subset of the full grid), and violation summaries are computed over
+    that zone only. When `zone_summary` is set, the 3 global violation
+    scalars are replaced by 3 scalars per zone: use with M = 0 for a
+    compact multi-zone observation. When `bus_phase_groups` is set, M must
+    equal `2 * n_buses` and the first M slots contain [min_phase_voltage,
+    max_phase_voltage] per bus instead of raw per-phase voltages; each
+    entry is a tuple of indices into the full `v_vec` for that bus's phases.
     """
 
     model_labels: tuple[str, ...]
@@ -179,24 +191,18 @@ class RewardConfig:
     catastrophic scenarios from dominating PPO updates. Recommended: 1.0."""
     switch_mode: str = "magnitude"
     """Switch penalty mode:
-    - ``"magnitude"``: ``-w_switch * |log2(b_t) - log2(b_{t-1})|`` (original).
-    - ``"binary"``: ``-w_switch`` per model whenever batch size changes.
-    - ``"cooldown"``: ``-w_switch * exp(-steps_since_last_change / switch_cooldown_tau)``
+    - `"magnitude"`: `-w_switch * |log2(b_t) - log2(b_{t-1})|` (original).
+    - `"binary"`: `-w_switch` per model whenever batch size changes.
+    - `"cooldown"`: `-w_switch * exp(-steps_since_last_change / switch_cooldown_tau)`
       per model whenever batch size changes (recent changes are expensive).
     """
     w_safe: float = 0.0
     """Small positive reward for keeping voltages in range. Each step the agent
-    receives ``+w_safe * (fraction of bus-phases within [v_min, v_max])``.
+    receives `+w_safe * (fraction of bus-phases within [v_min, v_max])`.
     Default 0 (disabled). Recommended starting value: 0.01."""
     switch_cooldown_tau: float = 30.0
     """Time constant (in steps) for the cooldown switch penalty.
-    Only used when ``switch_mode="cooldown"``."""
-    action_mode: str = "delta"
-    """Action space mode: ``"delta"`` (per-model {-1,0,+1}, MultiDiscrete [3]*N)
-    or ``"coupled"`` (single Discrete action shifting all models by the same delta)."""
-
-
-# ── Zone voltage filtering ──────────────────────────────────────────────────
+    Only used when `switch_mode="cooldown"`."""
 
 
 def compute_zone_mask(v_index: list[tuple[str, int]], zone_buses: tuple[str, ...]) -> np.ndarray:
@@ -215,11 +221,6 @@ def compute_bus_phase_groups(v_index: list[tuple[str, int]]) -> tuple[tuple[int,
     for i, (bus, _ph) in enumerate(v_index):
         groups.setdefault(bus, []).append(i)
     return tuple(tuple(idx) for idx in groups.values())
-
-
-def resolve_action_mode(cfg: RewardConfig) -> str:
-    """Return the action mode from the reward config."""
-    return cfg.action_mode
 
 
 def decode_action(
@@ -254,9 +255,6 @@ def decode_action(
         return {label: _apply_delta(label, int(action[i]) - 1) for i, label in enumerate(model_labels)}
 
     raise ValueError(f"Unknown action_mode: {action_mode!r}")
-
-
-# ── Observation & reward builders ───────────────────────────────────────────
 
 
 def build_observation(
@@ -295,7 +293,7 @@ def build_observation(
     v_min_cfg, v_max_cfg = obs_config.v_min, obs_config.v_max
 
     if obs_config.zone_summary:
-        # Per-zone violation summary — replaces the 3 global scalars
+        # Per-zone violation summary: replaces the 3 global scalars
         base = M
         for zone_name, _zone_bus_list in obs_config.zone_summary.items():
             mask_z = (zone_masks or {}).get(zone_name)
@@ -316,7 +314,7 @@ def build_observation(
         obs[M + 1] = float(np.max(over)) if n_total > 0 else 0.0
         obs[M + 2] = float(np.count_nonzero(under > 0) + np.count_nonzero(over > 0)) / max(n_total, 1)
 
-    # Per-model features — gather DC states
+    # Per-model features: gather DC states
     dcs = datacenter if isinstance(datacenter, list) else [datacenter]
     # Build a merged state dict from all DCs
     batch_by_model: dict[str, int] = {}
@@ -372,16 +370,16 @@ def compute_reward(
     """Compute per-step scalar reward.
 
     Returns:
-        ``(total_reward, reward_components, voltage_stats)``.
+        `(total_reward, reward_components, voltage_stats)`.
 
-        ``reward_components`` is a signed breakdown by source — keys
-        ``"voltage"``, ``"throughput"``, ``"latency"``, ``"switch"``.
-        Penalties are negative, bonuses positive; the sum equals
-        ``total_reward``.
+        `reward_components` is a signed breakdown by source: keys
+        `"voltage"`, `"throughput"`, `"latency"`, `"switch"`,
+        `"safe"`. Penalties are negative, bonuses positive; the sum
+        equals `total_reward`.
 
-        ``voltage_stats`` reports per-step grid health: ``"max_under"``
-        (worst undervoltage magnitude in pu), ``"max_over"`` (worst
-        overvoltage), and ``"violation_frac"`` (fraction of bus-phases
+        `voltage_stats` reports per-step grid health: `"max_under"`
+        (worst undervoltage magnitude in pu), `"max_over"` (worst
+        overvoltage), and `"violation_frac"` (fraction of bus-phases
         currently in violation). All computed over the full grid.
     """
     # Voltage violation penalty (over ALL buses, not just zone)
@@ -452,8 +450,6 @@ def compute_reward(
     return reward, components, voltage_stats
 
 
-# ── Simulation factory type ─────────────────────────────────────────────────
-
 SimComponents = tuple[
     dict[str, DatacenterBackend],  # datacenters keyed by site_id
     GridBackend,  # grid
@@ -463,45 +459,45 @@ SimComponents = tuple[
 MakeSimFn = Callable[..., SimComponents]
 
 
-# ── Scenario library ───────────────────────────────────────────────────────
-
-
 class ScenarioLibrary:
-    """Pre-screened scenario bank for PPO training.
+    """Pre-screened scenario bank for PPO training and evaluation.
 
-    Loaded from the ``library.pkl`` produced by ``build_scenario_library.py``.
-    Each scenario stores the seed (for deterministic replay via
-    ``randomize_scenario``), the per-second OFO voltage penalty trace (for
-    OFO-difference reward), and optionally ``t_control_start`` /
-    ``t_control_end`` (for episode truncation).
+    Loaded from the directory produced by `build_library.py`:
+
+    - `metadata.json`: build-time config + per-scenario scalar fields.
+    - `traces.npz`: per-scenario voltage penalty arrays
+      (`ofo_<i>` / `baseline_<i>`).
+
+    `materialize(rec)` replays `randomize_scenario(seed=rec.seed, ...)` to
+    rebuild the full per-episode scenario configuration on demand. Replay is
+    bit-identical to the build-time output because `randomize_scenario` is
+    fully seeded: there is no on-disk cache of the resolved configs to keep
+    in sync.
     """
 
-    def __init__(self, path: str) -> None:
-        import pickle
-        import sys
-        import types
-        from pathlib import Path
-
-        # Register a stub module so pickle can resolve
-        # build_scenario_library.ScenarioRecord without requiring the
-        # script to be on sys.path.
-        if "build_scenario_library" not in sys.modules:
-            _stub = types.ModuleType("build_scenario_library")
-
-            class _ScenarioRecord:
-                pass
-
-            _ScenarioRecord.__module__ = "build_scenario_library"
-            _ScenarioRecord.__qualname__ = "ScenarioRecord"
-            _stub.ScenarioRecord = _ScenarioRecord
-            sys.modules["build_scenario_library"] = _stub
-
-        with open(Path(path), "rb") as f:
-            data = pickle.load(f)
-        self.scenarios: list = data["scenarios"]
-        self.config: dict = data.get("config", {})
+    def __init__(
+        self,
+        path: str,
+        *,
+        training_trace=None,
+    ) -> None:
+        lib_dir = Path(path)
+        self.scenarios, self.config = load_library_data(lib_dir)
         if not self.scenarios:
             raise ValueError(f"Scenario library at {path} is empty.")
+
+        # Materialization base components, reconstructed from the experiment
+        # factory + library config. randomize_scenario needs these to replay.
+        base_exp = EXPERIMENTS[self.config["system"]](training_trace=training_trace)
+        self._dc_sites_base: dict[str, Any] = base_exp["dc_sites"]
+        self._pv_systems_base = [PVSystemSpec(**p) for p in self.config["pv_systems_base"]]
+        self._tvl_base = [TimeVaryingLoadSpec(**t) for t in self.config["tvl_base"]]
+        overlay_cfg = self.config.get("training_base")
+        if overlay_cfg is not None and training_trace is not None:
+            self._training_base: dict | None = {**overlay_cfg, "trace": training_trace}
+        else:
+            self._training_base = None
+
         self._rng = np.random.default_rng()
 
     def __len__(self) -> int:
@@ -512,22 +508,34 @@ class ScenarioLibrary:
         idx = int(self._rng.integers(0, len(self.scenarios)))
         return self.scenarios[idx]
 
+    def materialize(self, rec: ScenarioRecord) -> dict:
+        """Re-derive the full per-episode scenario dict for `rec`.
 
-# ── Per-site Gymnasium environment ──────────────────────────────────────────
+        Returns the same shape as `randomize_scenario` (keys `dc_sites`,
+        `pv_systems`, `tvl`, `training_run`, `params`, ...).
+        """
+        return materialize_scenario(
+            rec,
+            dc_sites_base=self._dc_sites_base,
+            pv_systems_base=self._pv_systems_base,
+            tvl_base=self._tvl_base,
+            training_base=self._training_base,
+            randomize_kwargs=self.config["randomize_kwargs"],
+        )
 
 
 class BatchSizeEnv(gymnasium.Env):
     """Gymnasium environment for batch-size voltage regulation.
 
-    Each ``step(action)`` advances the simulation by one control interval.
-    For multi-DC setups, ``agent_site_id`` specifies which site the RL agent
+    Each `step(action)` advances the simulation by one control interval.
+    For multi-DC setups, `agent_site_id` specifies which site the RL agent
     controls.  Other sites run with fixed batch sizes.
 
-    When ``scenario_library`` is provided, each ``reset()`` samples a
-    pre-screened scenario and replays it.  When ``ofo_baseline=True`` the
+    When `scenario_library` is provided, each `reset()` samples a
+    pre-screened scenario and replays it.  When `ofo_baseline=True` the
     voltage reward term becomes the per-step difference between PPO's
     voltage penalty and the OFO oracle's (stored in the library), so the
-    agent is rewarded for *improving on OFO*.  When ``truncate_episode=True``
+    agent is rewarded for *improving on OFO*.  When `truncate_episode=True`
     the episode fast-forwards through the initial quiet period (before the
     first baseline violation) and terminates after the last violation clears.
     """
@@ -540,6 +548,7 @@ class BatchSizeEnv(gymnasium.Env):
         obs_config: ObservationConfig,
         agent_site_id: str = "_default",
         reward_config: RewardConfig | None = None,
+        action_mode: str = "delta",
         logistic_models: LogisticModelStore | None = None,
         dt_ctrl: Fraction = Fraction(1),
         total_duration_s: int = 3600,
@@ -559,13 +568,13 @@ class BatchSizeEnv(gymnasium.Env):
         self._ofo_baseline = ofo_baseline
         self._truncate_episode = truncate_episode
 
-        self._action_mode = resolve_action_mode(self._reward_config)
+        self._action_mode = action_mode
 
         self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(obs_config.obs_dim,), dtype=np.float32)
         n_feasible = min(len(obs_config.feasible_batch_sizes[m]) for m in obs_config.model_labels)
         n_models = len(obs_config.model_labels)
-        self._coupled_max_shift = n_feasible - 1  # e.g. 6 for 7 batch sizes
-        n_coupled = 2 * self._coupled_max_shift + 1  # e.g. 13
+        self._coupled_max_shift = n_feasible - 1
+        n_coupled = 2 * self._coupled_max_shift + 1
 
         if self._action_mode == "coupled":
             self.action_space = spaces.Discrete(n_coupled)
@@ -575,23 +584,15 @@ class BatchSizeEnv(gymnasium.Env):
             raise ValueError(f"Unknown action_mode: {self._action_mode!r}")
 
         self._datacenters: dict[str, DatacenterBackend] = {}
-        self._grid: GridBackend | None = None
-        self._tap_ctrl: TapScheduleController | None = None
-        self._clock: SimulationClock | None = None
-        self._log: SimulationLog | None = None
-        self._dc_events: EventEmitter | None = None
-        self._grid_events: EventEmitter | None = None
-        self._ctrl_events: EventEmitter | None = None
-        self._dc_buffers: dict[str, list[ThreePhase]] = {}
+        self._coord: Coordinator | None = None
         self._prev_batch: dict[str, int] = {}
         self._steps_since_change: dict[str, int] = {}
         self._steps_done: int = 0
         self._max_steps: int = 0
         self._zone_mask: np.ndarray | None = None
         self._zone_masks: dict[str, np.ndarray] | None = None
-        # Per-episode state from the scenario library
         self._ofo_voltage_trace: np.ndarray | None = None
-        self._sim_step_offset: int = 0  # how many sim steps were fast-forwarded
+        self._sim_step_offset: int = 0  # base-tick offset of the first PPO control step
 
     def _action_to_batch_sizes(self, action: np.ndarray) -> dict[str, int]:
         return decode_action(
@@ -603,104 +604,73 @@ class BatchSizeEnv(gymnasium.Env):
             self._coupled_max_shift,
         )
 
-    @property
-    def _agent_dc(self) -> DatacenterBackend:
+    def _action_to_commands(self, action: np.ndarray) -> tuple[list[DatacenterCommand | GridCommand], dict[str, int]]:
+        """Decode an action into the commands to dispatch this step.
+
+        Returns `(commands, applied_batch_sizes)`: the `applied_batch_sizes`
+        dict is what `compute_reward` and the steps-since-change tracking
+        consume. Subclasses (e.g. `SharedBatchSizeEnv`) override to dispatch
+        per-site commands when one policy controls multiple datacenters.
+        """
+        batch_sizes = self._action_to_batch_sizes(action)
+        commands: list[DatacenterCommand | GridCommand] = [
+            SetBatchSize(batch_size_by_model=batch_sizes, target=self._datacenters[self._agent_site_id])
+        ]
+        return commands, batch_sizes
+
+    def _obs_target(self) -> DatacenterBackend | list[DatacenterBackend]:
+        """Datacenter(s) feeding `build_observation` / `compute_reward`.
+
+        Single-policy default: just the agent's DC. `SharedBatchSizeEnv`
+        overrides to return all DCs jointly.
+        """
         return self._datacenters[self._agent_site_id]
 
-    def _advance_ticks(self, n_ticks: int) -> None:
-        """Advance all components by *n_ticks* base ticks."""
-        datacenters = self._datacenters
-        grid = self._grid
-        tap_ctrl = self._tap_ctrl
-        clock = self._clock
-        assert grid is not None and clock is not None
+    def _advance_one_control_interval(self) -> None:
+        coord = self._coord
+        if coord is None:
+            raise RuntimeError("Coordinator not started; call reset() first.")
+        n_ticks = int(self._dt_ctrl / coord.clock.tick_s)
         for _ in range(n_ticks):
-            for sid, dc in datacenters.items():
-                if clock.is_due(dc.dt_s):
-                    dc_state = dc.do_step(clock, self._dc_events)
-                    self._dc_buffers[sid].append(dc_state.power_w)
-            if clock.is_due(grid.dt_s):
-                # Master's OpenDSSGrid.step() expects power_samples_w keyed
-                # by the DatacenterBackend object (the same key used in
-                # grid.attach_dc), not by the site-id string.
-                power_arg = {datacenters[sid]: list(buf) for sid, buf in self._dc_buffers.items()}
-                grid.do_step(clock, power_arg, self._grid_events)
-                for buf in self._dc_buffers.values():
-                    buf.clear()
-            if tap_ctrl is not None and clock.is_due(tap_ctrl.dt_s):
-                # Master's TapScheduleController.step() takes (clock, events).
-                # The old (clock, datacenter, grid, events) signature is gone.
-                cmds = tap_ctrl.step(clock, self._ctrl_events)
-                for cmd in cmds:
-                    grid.apply_control(cmd, self._grid_events)
-            clock.advance()
+            coord.step()
 
     def reset(self, *, seed: int | None = None, options: dict[str, Any] | None = None) -> tuple[np.ndarray, dict]:
         super().reset(seed=seed, options=options)
 
-        # If using a scenario library, sample a scenario and stash the OFO
-        # trace for the difference reward.  The make_sim_fn is expected to
-        # pick up the scenario seed from an external variable set by the
-        # caller (train_ppo.py manages this via a closure).
+        if self._coord is not None:
+            self._coord.stop()
+            self._coord = None
+
         self._ofo_voltage_trace = None
         self._sim_step_offset = 0
         t_control_start = 0
         t_control_end = self._total_duration_s
 
         if self._scenario_library is not None:
-            scenario = self._scenario_library.sample()
+            scenario_record = self._scenario_library.sample()
             if self._ofo_baseline:
-                self._ofo_voltage_trace = scenario.ofo_voltage_pen_per_step
+                self._ofo_voltage_trace = scenario_record.ofo_voltage_pen_per_step
             if self._truncate_episode:
-                t_control_start = getattr(scenario, "t_control_start", 0)
-                t_control_end = getattr(scenario, "t_control_end", self._total_duration_s)
-            # Pass the scenario to make_sim so it uses the library's params
-            self._current_scenario = scenario
-
-        if self._scenario_library is not None:
-            datacenters, grid, tap_ctrl = self._make_sim(scenario_override=self._current_scenario)
+                t_control_start = scenario_record.t_control_start
+                t_control_end = scenario_record.t_control_end
+            scenario_dict = self._scenario_library.materialize(scenario_record)
+            datacenters, grid, tap_ctrl = self._make_sim(scenario_override=scenario_dict)
         else:
             datacenters, grid, tap_ctrl = self._make_sim()
         self._datacenters = datacenters
-        self._grid = grid
-        self._tap_ctrl = tap_ctrl
 
-        all_dcs = list(datacenters.values())
-        periods = [dc.dt_s for dc in all_dcs] + [grid.dt_s]
-        if tap_ctrl is not None:
-            periods.append(tap_ctrl.dt_s)
-        periods.append(self._dt_ctrl)
-        tick = periods[0]
-        for p in periods[1:]:
-            tick = _gcd_fraction(tick, p)
+        controllers = [tap_ctrl] if tap_ctrl is not None else []
+        self._coord = Coordinator(
+            datacenters=list(datacenters.values()),
+            grid=grid,
+            controllers=controllers,
+            total_duration_s=self._total_duration_s,
+        )
+        self._coord.reset()
+        self._coord.start()
 
-        self._clock = SimulationClock(tick_s=tick)
-        self._log = SimulationLog()
-        self._dc_events = EventEmitter(self._clock, self._log, "datacenter")
-        self._grid_events = EventEmitter(self._clock, self._log, "grid")
-        self._ctrl_events = EventEmitter(self._clock, self._log, "controller")
-        self._dc_buffers = {sid: [] for sid in datacenters}
-        self._steps_done = 0
-
-        for dc in all_dcs:
-            dc.do_reset()
-        grid.do_reset()
-        if tap_ctrl is not None:
-            tap_ctrl.reset()
-        for dc in all_dcs:
-            dc.start()
-        grid.start()
-        if tap_ctrl is not None:
-            tap_ctrl.start()
-
-        # Compute zone mask if configured (single-zone voltage vector mode)
         zone_buses = self._obs_config.zone_buses
-        if zone_buses is not None:
-            self._zone_mask = compute_zone_mask(grid.v_index, zone_buses)
-        else:
-            self._zone_mask = None
-
-        # Compute per-zone masks for zone_summary mode
+        self._zone_mask = compute_zone_mask(grid.v_index, zone_buses) if zone_buses is not None else None
         if self._obs_config.zone_summary:
             self._zone_masks = {
                 zname: compute_zone_mask(grid.v_index, tuple(zbuses))
@@ -709,104 +679,98 @@ class BatchSizeEnv(gymnasium.Env):
         else:
             self._zone_masks = None
 
-        n_ticks_per_ctrl = int(self._dt_ctrl / tick)
-
-        # Fast-forward through the quiet period with fixed initial batch sizes
-        # (no PPO control). The sim still runs so the grid/DC states evolve.
+        # Fast-forward through the quiet pre-violation window with fixed initial
+        # batch sizes; the sim still runs so grid/DC states evolve.
         self._sim_step_offset = t_control_start
         for _ in range(t_control_start):
-            self._advance_ticks(n_ticks_per_ctrl)
+            self._advance_one_control_interval()
 
-        # PPO episode length: from t_control_start to t_control_end
-        self._max_steps = t_control_end - t_control_start
-
-        # Run one more tick to get the first observation at t_control_start
-        self._advance_ticks(n_ticks_per_ctrl)
+        # One more interval so the first observation reflects t_control_start.
+        # That consumes one tick of the control window, so the agent gets
+        # `(t_control_end - t_control_start - 1)` steps to act on; without the
+        # -1, the final step's sim time would be t_control_end and overshoot
+        # the OFO trace (which covers [0, total_duration_s - 1]).
+        self._advance_one_control_interval()
+        self._max_steps = t_control_end - t_control_start - 1
+        self._steps_done = 0
 
         self._prev_batch = {label: self._obs_config.get_initial_batch(label) for label in self._obs_config.model_labels}
         self._steps_since_change = {label: 999 for label in self._obs_config.model_labels}
         obs = build_observation(
-            grid, self._agent_dc, self._obs_config, self._prev_batch, self._zone_mask, self._zone_masks
+            self._coord.grid, self._obs_target(), self._obs_config, self._prev_batch, self._zone_mask, self._zone_masks
         )
         return obs, {}
 
     def step(self, action: np.ndarray) -> tuple[np.ndarray, float, bool, bool, dict]:
-        assert self._grid is not None and self._clock is not None
+        coord = self._coord
+        if coord is None:
+            raise RuntimeError("Coordinator not started; call reset() first.")
 
-        batch_sizes = self._action_to_batch_sizes(action)
-        cmd = SetBatchSize(batch_size_by_model=batch_sizes, target=self._agent_dc)
-        self._agent_dc.apply_control(cmd, self._dc_events)
-
-        n_ticks_per_ctrl = int(self._dt_ctrl / self._clock.tick_s)
-        self._advance_ticks(n_ticks_per_ctrl)
+        commands, applied_batch = self._action_to_commands(action)
+        coord.dispatch_commands(commands)
+        self._advance_one_control_interval()
         self._steps_done += 1
 
+        target = self._obs_target()
         reward, reward_components, voltage_stats = compute_reward(
-            self._grid,
-            self._agent_dc,
+            coord.grid,
+            target,
             self._obs_config,
             self._reward_config,
             self._prev_batch,
-            batch_sizes,
+            applied_batch,
             self._logistic_models,
             steps_since_change=self._steps_since_change,
         )
 
-        # Update steps-since-change tracking
         for label in self._obs_config.model_labels:
-            if batch_sizes.get(label) != self._prev_batch.get(label):
+            if applied_batch.get(label) != self._prev_batch.get(label):
                 self._steps_since_change[label] = 0
             else:
                 self._steps_since_change[label] = self._steps_since_change.get(label, 999) + 1
 
-        # OFO-difference reward: subtract the OFO oracle's voltage penalty
-        # at this simulation timestep so the agent is rewarded for beating OFO.
+        # OFO-difference reward: add back the OFO oracle's voltage penalty at
+        # this simulation timestep so the agent is rewarded for beating OFO.
         if self._ofo_voltage_trace is not None:
             sim_t = self._sim_step_offset + self._steps_done
-            ofo_pen = float(self._ofo_voltage_trace[sim_t]) if sim_t < len(self._ofo_voltage_trace) else 0.0
+            if sim_t >= len(self._ofo_voltage_trace):
+                raise IndexError(
+                    f"OFO trace lookup at sim_t={sim_t} but trace length is "
+                    f"{len(self._ofo_voltage_trace)}; episode is running past the trace. "
+                    "Check t_control_end vs. the scenario library's total_duration_s."
+                )
+            ofo_pen = float(self._ofo_voltage_trace[sim_t])
             ofo_voltage_baseline = self._reward_config.w_voltage * ofo_pen
             reward += ofo_voltage_baseline
             reward_components = dict(reward_components)
             reward_components["voltage"] += ofo_voltage_baseline
             reward_components["ofo_baseline"] = ofo_voltage_baseline
 
-        # Clip reward to prevent catastrophic scenarios from dominating updates.
         if self._reward_config.reward_clip > 0:
             reward = max(reward, -self._reward_config.reward_clip)
 
-        self._prev_batch = dict(batch_sizes)
+        self._prev_batch = dict(applied_batch)
         obs = build_observation(
-            self._grid, self._agent_dc, self._obs_config, self._prev_batch, self._zone_mask, self._zone_masks
+            coord.grid, target, self._obs_config, self._prev_batch, self._zone_mask, self._zone_masks
         )
 
         truncated = self._steps_done >= self._max_steps
-        if truncated:
-            self._stop_components()
         info = {"reward_components": reward_components, "voltage_stats": voltage_stats}
         return obs, reward, False, truncated, info
 
-    def _stop_components(self) -> None:
-        if self._tap_ctrl is not None:
-            self._tap_ctrl.stop()
-        if self._grid is not None:
-            self._grid.stop()
-        for dc in self._datacenters.values():
-            dc.stop()
-
     def close(self) -> None:
-        self._stop_components()
+        if self._coord is not None:
+            self._coord.stop()
+            self._coord = None
         super().close()
-
-
-# ── Shared multi-site Gymnasium environment ─────────────────────────────────
 
 
 class SharedBatchSizeEnv(BatchSizeEnv):
     """Controls ALL datacenter sites jointly with a single policy.
 
-    The observation includes per-model features from all sites.
-    The action space covers all models across all sites.
-    ``site_model_mapping`` maps site_id → list of model labels at that site.
+    The observation includes per-model features from all sites; the action
+    space covers all models across all sites. `site_model_mapping` maps each
+    site_id to the list of model labels served at that site.
     """
 
     def __init__(
@@ -815,6 +779,7 @@ class SharedBatchSizeEnv(BatchSizeEnv):
         obs_config: ObservationConfig,
         site_model_mapping: dict[str, list[str]],
         reward_config: RewardConfig | None = None,
+        action_mode: str = "delta",
         logistic_models: LogisticModelStore | None = None,
         dt_ctrl: Fraction = Fraction(1),
         total_duration_s: int = 3600,
@@ -822,13 +787,11 @@ class SharedBatchSizeEnv(BatchSizeEnv):
         ofo_baseline: bool = False,
         truncate_episode: bool = False,
     ) -> None:
-        # Use the first site as agent_site_id (unused for shared, but needed by parent)
-        first_site = next(iter(site_model_mapping))
         super().__init__(
             make_sim_fn=make_sim_fn,
             obs_config=obs_config,
-            agent_site_id=first_site,
             reward_config=reward_config,
+            action_mode=action_mode,
             logistic_models=logistic_models,
             dt_ctrl=dt_ctrl,
             total_duration_s=total_duration_s,
@@ -838,81 +801,19 @@ class SharedBatchSizeEnv(BatchSizeEnv):
         )
         self._site_model_mapping = site_model_mapping
 
-    def _action_to_site_batch_sizes(self, action: np.ndarray) -> dict[str, dict[str, int]]:
-        """Convert action indices to per-site batch size dicts."""
-        flat = super()._action_to_batch_sizes(action)
-        result: dict[str, dict[str, int]] = {}
+    def _action_to_commands(self, action: np.ndarray) -> tuple[list[DatacenterCommand | GridCommand], dict[str, int]]:
+        flat = self._action_to_batch_sizes(action)
+        commands: list[DatacenterCommand | GridCommand] = []
+        applied_batch: dict[str, int] = {}
         for sid, labels in self._site_model_mapping.items():
-            result[sid] = {label: flat[label] for label in labels if label in flat}
-        return result
+            if sid not in self._datacenters:
+                continue
+            site_batch = {label: flat[label] for label in labels if label in flat}
+            if not site_batch:
+                continue
+            commands.append(SetBatchSize(batch_size_by_model=site_batch, target=self._datacenters[sid]))
+            applied_batch.update(site_batch)
+        return commands, applied_batch
 
-    @property
-    def _all_dcs_list(self) -> list[DatacenterBackend]:
+    def _obs_target(self) -> list[DatacenterBackend]:
         return list(self._datacenters.values())
-
-    def reset(self, *, seed: int | None = None, options: dict[str, Any] | None = None) -> tuple[np.ndarray, dict]:
-        # Call parent reset (sets up sim, runs initial ticks)
-        obs, info = super().reset(seed=seed, options=options)
-        # Rebuild obs using ALL DCs
-        obs = build_observation(
-            self._grid, self._all_dcs_list, self._obs_config, self._prev_batch, self._zone_mask, self._zone_masks
-        )
-        return obs, info
-
-    def step(self, action: np.ndarray) -> tuple[np.ndarray, float, bool, bool, dict]:
-        assert self._grid is not None and self._clock is not None
-
-        # Apply batch sizes to each site's DC
-        site_batches = self._action_to_site_batch_sizes(action)
-        all_batch_sizes: dict[str, int] = {}
-        for sid, batches in site_batches.items():
-            if sid in self._datacenters:
-                dc = self._datacenters[sid]
-                cmd = SetBatchSize(batch_size_by_model=batches, target=dc)
-                dc.apply_control(cmd, self._dc_events)
-                all_batch_sizes.update(batches)
-
-        n_ticks_per_ctrl = int(self._dt_ctrl / self._clock.tick_s)
-        self._advance_ticks(n_ticks_per_ctrl)
-        self._steps_done += 1
-
-        reward, reward_components, voltage_stats = compute_reward(
-            self._grid,
-            self._all_dcs_list,
-            self._obs_config,
-            self._reward_config,
-            self._prev_batch,
-            all_batch_sizes,
-            self._logistic_models,
-            steps_since_change=self._steps_since_change,
-        )
-
-        # Update steps-since-change tracking
-        for label in self._obs_config.model_labels:
-            if all_batch_sizes.get(label) != self._prev_batch.get(label):
-                self._steps_since_change[label] = 0
-            else:
-                self._steps_since_change[label] = self._steps_since_change.get(label, 999) + 1
-
-        self._prev_batch = dict(all_batch_sizes)
-        obs = build_observation(
-            self._grid, self._all_dcs_list, self._obs_config, self._prev_batch, self._zone_mask, self._zone_masks
-        )
-
-        truncated = self._steps_done >= self._max_steps
-        if truncated:
-            self._stop_components()
-        info = {"reward_components": reward_components, "voltage_stats": voltage_stats}
-        return obs, reward, False, truncated, info
-
-
-# ── Utilities ───────────────────────────────────────────────────────────────
-
-
-def _gcd_fraction(a: Fraction, b: Fraction) -> Fraction:
-    """GCD of two Fractions."""
-    from math import gcd
-
-    num = gcd(a.numerator * b.denominator, b.numerator * a.denominator)
-    den = a.denominator * b.denominator
-    return Fraction(num, den)

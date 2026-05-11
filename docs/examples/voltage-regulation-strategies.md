@@ -24,7 +24,7 @@ This analysis compares four control strategies:
 | `run_ofo.py --mode ofo-no-tap` | OFO without tap schedule |
 | `run_ofo.py --mode ofo-tap-change` | OFO with tap schedule |
 | `analyze_different_controllers.py` | Side-by-side comparison of baseline, rule-based, and OFO |
-| `evaluate_controllers.py` | Held-out scenario evaluation that also accepts trained PPO models via `--ppo-models` (see [Reinforcement Learning Controller (PPO)](rl-controller.md)) |
+| `examples/rl_controller/evaluate.py` | Held-out scenario evaluation that also accepts trained PPO models via `--ppo-models` (see [Reinforcement Learning Controller (PPO)](rl-controller.md)) |
 
 ## Usage
 

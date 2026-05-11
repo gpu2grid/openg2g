@@ -3,7 +3,7 @@
 Each panel saves as its own PDF, SVG, and PNG; the paper composes subfloats
 from these. Style comes from the local `paper_plots.mplstyle`. Legends are
 color-only and horizontal; display labels drop precision / parallelism
-decorations — those live in captions.
+decorations: those live in captions.
 """
 
 from __future__ import annotations
@@ -97,7 +97,7 @@ def _line_handle(color: str, label: str) -> Line2D:
 
 
 def _combo_handle(color: str, label: str):
-    """Composite legend handle — a bar swatch + a line marker, both in
+    """Composite legend handle: a bar swatch + a line marker, both in
     `color`, rendered side-by-side under one label. Use with
     `HandlerTuple` so one legend entry covers both the (a) bars and the
     (b) Pareto panels at once.
@@ -182,7 +182,7 @@ def _grouped_bars(
 ) -> None:
     """Bars grouped by variant. Each variant has two bars: hatched
     (uncoordinated) and solid (coordinated), both colored by variant.
-    No x tick labels — identity comes from the shared legend + caption."""
+    No x tick labels: identity comes from the shared legend + caption."""
     n = len(colors)
     xs = np.arange(n)
     offset = bar_width / 2 + 0.012
@@ -236,7 +236,7 @@ def _make_panel():
 
 def _save(fig: plt.Figure, stem: Path) -> None:
     stem.parent.mkdir(parents=True, exist_ok=True)
-    # No tight_layout — it overrides set_position. bbox_inches=None
+    # No tight_layout: it overrides set_position. bbox_inches=None
     # preserves the exact figsize, guaranteeing matched dimensions.
     kwargs = {"bbox_inches": None, "pad_inches": 0.0}
     fig.savefig(stem.with_suffix(".pdf"), metadata={"CreationDate": None, "Creator": None, "Producer": None}, **kwargs)
@@ -370,7 +370,7 @@ def plot_model_size(
         row = agg[(agg.variant == v) & (agg["mode"] == mode)]
         return float(row[col].iloc[0]) if not row.empty else math.nan
 
-    # (a) integral violation — colored bars, hatched (uncoord.) vs solid (coord.)
+    # (a) integral violation: colored bars, hatched (uncoord.) vs solid (coord.)
     fig, ax = _make_panel()
     _grouped_bars(
         ax,
@@ -382,7 +382,7 @@ def plot_model_size(
     )
     _save(fig, out / f"model_size_a{suffix}")
 
-    # (b) Pareto frontier — same color per variant
+    # (b) Pareto frontier: same color per variant
     entries = [df[(df["variant"] == v) & (df["mode"] == OFO_MODE)].iloc[0].to_dict() for v in variants]
     fig, ax = _make_panel()
     _plot_pareto(ax, entries, logistic_models, color_map=color_map, label_map={v: _pretty(v) for v in variants})
@@ -422,7 +422,7 @@ def plot_parallelism(df, out, logistic_models, *, suffix: str = "") -> None:
 
         color_map = {labels[i]: (COLORS["h100"] if i == 0 else COLORS["b200"]) for i in range(len(variants))}
 
-        # (a) integral violation — colored bars, hatch = baseline vs OFO
+        # (a) integral violation: colored bars, hatch = baseline vs OFO
         fig, ax = _make_panel()
         _grouped_bars(
             ax,
@@ -434,7 +434,7 @@ def plot_parallelism(df, out, logistic_models, *, suffix: str = "") -> None:
         )
         _save(fig, out / f"{stem}_a{suffix}")
 
-        # (b) Pareto — same colors.
+        # (b) Pareto: same colors.
         entries = []
         for vv, lbl in zip(variants, labels, strict=True):
             r = df[(df["variant"] == vv) & (df["mode"] == OFO_MODE)].iloc[0].to_dict()
@@ -488,7 +488,7 @@ def plot_hardware(df, out, logistic_models, *, suffix: str = "") -> None:
     # second), matching the parallelism and precision figures.
     pair_colors = {p: (COLORS["h100"] if i == 0 else COLORS["b200"]) for i, p in enumerate(pairs)}
 
-    # (a) — integral violation. X-axis = hardware. Within each hardware
+    # (a): integral violation. X-axis = hardware. Within each hardware
     # group, 4 bars: 2 models × (uncoord, coord). Color = model, hatch =
     # uncoord (hatched) / coord (solid).
     bar_width = 0.18
@@ -511,7 +511,7 @@ def plot_hardware(df, out, logistic_models, *, suffix: str = "") -> None:
     ax.grid(True, axis="y", alpha=0.2)
     _save(fig, out / f"hardware_a{suffix}")
 
-    # (b) — Pareto for both models on BOTH hardware. Color = model
+    # (b): Pareto for both models on BOTH hardware. Color = model
     # (shared with (a) and the main legend). Marker fill = hardware:
     # open = H100, filled = B200. An inline mini-legend inside the axes
     # explains the marker encoding.
@@ -620,7 +620,7 @@ def plot_precision(df, out, logistic_models, *, suffix: str = "") -> None:
 
     color_map = {"bf16": COLORS["ofo"], "FP8": COLORS["hardware"]}
 
-    # (a) violation — colored bars, hatch = uncoord., solid = coord.
+    # (a) violation: colored bars, hatch = uncoord., solid = coord.
     fig, ax = _make_panel()
     _grouped_bars(
         ax,
@@ -632,7 +632,7 @@ def plot_precision(df, out, logistic_models, *, suffix: str = "") -> None:
     )
     _save(fig, out / f"precision_a{suffix}")
 
-    # (b) Pareto — same colors
+    # (b) Pareto: same colors
     entries = []
     for v, lbl in zip(variants, labels, strict=True):
         r = df[(df["variant"] == v) & (df["mode"] == OFO_MODE)].iloc[0].to_dict()
@@ -649,7 +649,7 @@ def plot_precision(df, out, logistic_models, *, suffix: str = "") -> None:
     _apply_pareto_axes(ax)
     _save(fig, out / f"precision_b{suffix}")
 
-    # Shared legend — colors only; hatch/solid explained in the caption.
+    # Shared legend: colors only; hatch/solid explained in the caption.
     # Display "BF16" (not "bf16") per paper style.
     def _display_prec(label: str) -> str:
         return "BF16" if label == "bf16" else label
@@ -695,7 +695,7 @@ def main(
         for name, plotter in dual_gpu:
             path = indir / f"{name}{suffix}.csv"
             if not path.exists():
-                logger.warning("Missing %s — skipping", path)
+                logger.warning("Missing %s: skipping", path)
                 continue
             df = pd.read_csv(path)
             logger.info("Loaded %s: %d rows", path.name, len(df))
@@ -713,7 +713,7 @@ def main(
     for name, plotter in cross_gpu:
         path = indir / f"{name}_b200.csv"
         if not path.exists():
-            logger.warning("Missing %s — skipping", path)
+            logger.warning("Missing %s: skipping", path)
             continue
         df = pd.read_csv(path)
         logger.info("Loaded %s: %d rows", path.name, len(df))

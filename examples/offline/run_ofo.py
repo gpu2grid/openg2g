@@ -164,7 +164,7 @@ def unpack_deployments(
     return models, schedules
 
 
-# Data pipeline — per-spec content-addressed cache (see InferenceModelSpec.cache_hash)
+# Data pipeline: per-spec content-addressed cache (see InferenceModelSpec.cache_hash)
 
 SPECS_CACHE_DIR = _PROJECT_ROOT / "data" / "specs"
 TRAINING_TRACE_PATH = _PROJECT_ROOT / "data" / "training_trace.csv"

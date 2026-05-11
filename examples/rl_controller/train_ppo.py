@@ -5,9 +5,13 @@ ieee123), each site gets its own policy while other sites use fixed
 mid-range batch sizes during that site's training.
 
 Usage:
-    python train_ppo.py --system ieee13 --total-timesteps 200000
-    python train_ppo.py --system ieee13 --obs-mode system-summary-only   # summary-only obs
-    python train_ppo.py --system ieee13 --hidden-dims 256 256 256 --n-envs 8
+    python examples/rl_controller/train_ppo.py --system ieee13 \\
+        --scenario-library examples/rl_controller/outputs/ieee13/scenario_library/train_n500 \\
+        --total-timesteps 2000000
+    python examples/rl_controller/train_ppo.py --system ieee13 \\
+        --scenario-library .../train_n500 --obs-mode system-summary-only
+    python examples/rl_controller/train_ppo.py --system ieee13 \\
+        --scenario-library .../train_n500 --hidden-dims 256 256 256 --n-envs 8
 """
 
 from __future__ import annotations
@@ -20,6 +24,20 @@ from pathlib import Path
 
 import numpy as np
 import tyro
+from env import (
+    BatchSizeEnv,
+    ObservationConfig,
+    RewardConfig,
+    ScenarioLibrary,
+    SharedBatchSizeEnv,
+    compute_bus_phase_groups,
+    compute_zone_mask,
+)
+from scenarios import (
+    EXPERIMENTS,
+    DCSite,
+    ScenarioOpenDSSGrid,
+)
 
 from openg2g.controller.tap_schedule import TapScheduleController
 from openg2g.datacenter.config import (
@@ -32,34 +50,19 @@ from openg2g.datacenter.offline import OfflineDatacenter, OfflineWorkload
 from openg2g.datacenter.workloads.inference import InferenceData
 from openg2g.datacenter.workloads.training import TrainingTrace
 from openg2g.grid.config import TapSchedule
-from openg2g.rl.env import (
-    BatchSizeEnv,
-    ObservationConfig,
-    RewardConfig,
-    SharedBatchSizeEnv,
-    compute_bus_phase_groups,
-    compute_zone_mask,
-    resolve_action_mode,
-)
 
 from systems import (
     DT_CTRL,
     DT_DC,
     DT_GRID,
-    EXPERIMENTS,
     POWER_AUG,
     SPECS_CACHE_DIR,
     TRAINING_TRACE_PATH,
     V_MAX,
     V_MIN,
-    DCSite,
-    ScenarioOpenDSSGrid,
-    materialize_scenario,
 )
 
 logger = logging.getLogger(__name__)
-
-# ── Simulation factory ──────────────────────────────────────────────────────
 
 
 def make_sim_factory(
@@ -68,12 +71,12 @@ def make_sim_factory(
 ):
     """Return a callable that builds fresh simulation components.
 
-    Returns ``(make_sim, all_site_specs, all_replica_counts)`` where
-    ``make_sim()`` produces ``(dict[str, DatacenterBackend], grid, tap_ctrl)``.
-
-    Library scenarios are replayed by reading the resolved fields stored on
-    each ``ScenarioRecord``; the rng-replay path is gone. Old libraries must
-    be upgraded via ``examples/offline/migrate_scenario_library.py``.
+    Returns `(make_sim, all_site_specs, all_replica_counts, all_initial_batch_sizes)`
+    where `make_sim(scenario_override=None)` produces
+    `(dict[str, DatacenterBackend], grid, tap_ctrl)`. When the env is sampling
+    from a `ScenarioLibrary`, it passes the already-materialized scenario dict
+    as `scenario_override`; otherwise `make_sim()` falls back to the
+    experiment's defaults.
     """
     sys = exp["sys"]
     dc_sites: dict[str, DCSite] = exp["dc_sites"]
@@ -99,20 +102,19 @@ def make_sim_factory(
 
     _episode_counter = [0]
 
-    def make_sim(scenario_override=None):
+    def make_sim(scenario_override: dict | None = None):
         _episode_counter[0] += 1
 
         if scenario_override is not None:
-            sc = materialize_scenario(scenario_override, training_base=training_base)
-            sites = sc["dc_sites"]
+            sites = scenario_override["dc_sites"]
             # Library was built keyed by the experiment's DC site id (e.g. "default");
             # the grid expects "_default" for single-DC. Remap once here.
             if is_single_dc and "_default" not in sites:
                 orig = next(iter(sites))
                 sites = {"_default": sites[orig]}
-            pv_systems = sc["pv_systems"]
-            tvl = sc["tvl"]
-            training = sc["training_run"]
+            pv_systems = scenario_override["pv_systems"]
+            tvl = scenario_override["tvl"]
+            training = scenario_override["training_run"]
         else:
             sites = dc_sites
             pv_systems = pv_systems_base
@@ -126,9 +128,6 @@ def make_sim_factory(
             else:
                 training = None
 
-        # Build all datacenters. Per-model schedules combine the (initial,
-        # ramps) pair stored on site.models — replaces the old dict[str, int]
-        # replica_counts + separate inference_ramps fields.
         datacenters: dict[str, OfflineDatacenter] = {}
         for sid, site in sites.items():
             dc_config = DatacenterConfig(gpus_per_server=8, base_kw_per_phase=site.base_kw_per_phase)
@@ -152,8 +151,6 @@ def make_sim_factory(
                 total_gpu_capacity=site.total_gpu_capacity,
             )
 
-        # Build grid then attach DCs (master's imperative pattern; old
-        # dc_loads / dc_bus kwargs no longer accepted by OpenDSSGrid).
         dc_config_pf = DatacenterConfig(base_kw_per_phase=0).power_factor
         exclude = tuple(sys.get("exclude_buses", ()))
         grid = ScenarioOpenDSSGrid(
@@ -181,9 +178,6 @@ def make_sim_factory(
     return make_sim, all_site_specs, all_replica_counts, all_initial_batch_sizes
 
 
-# ── Training metrics callback ───────────────────────────────────────────────
-
-
 def _new_episode_acc() -> dict:
     return {
         "voltage": 0.0,
@@ -203,7 +197,7 @@ class TrainingMetricsCallback:
 
     Writes one CSV row per completed episode and mirrors the same metrics to
     the SB3 TensorBoard logger so they show up alongside built-in PPO metrics.
-    Imported lazily inside ``main`` so SB3 isn't a hard import for tooling that
+    Imported lazily inside `main` so SB3 isn't a hard import for tooling that
     only wants the experiment definitions.
     """
 
@@ -300,13 +294,10 @@ class TrainingMetricsCallback:
         return _Impl(csv_path)
 
 
-# ── Plotting ────────────────────────────────────────────────────────────────
-
-
 def plot_training_progress(csv_path: Path, output_path: Path, label: str) -> Path | None:
     """Read the per-episode metrics CSV and emit a 2x2 PNG dashboard.
 
-    Returns the output path on success, or ``None`` if the CSV is empty.
+    Returns the output path on success, or `None` if the CSV is empty.
     """
     import matplotlib
 
@@ -347,7 +338,7 @@ def plot_training_progress(csv_path: Path, output_path: Path, label: str) -> Pat
     ax.plot(eps, smooth(ep_reward, window), label=f"smooth (w={window})", linewidth=2)
     ax.set_xlabel("Episode")
     ax.set_ylabel("Episode reward")
-    ax.set_title(f"Learning curve — {label}")
+    ax.set_title(f"Learning curve: {label}")
     ax.legend()
     ax.grid(alpha=0.3)
 
@@ -380,14 +371,11 @@ def plot_training_progress(csv_path: Path, output_path: Path, label: str) -> Pat
     ax.set_ylim(0, max(0.05, float(viol_frac.max()) * 1.1))
     ax.grid(alpha=0.3)
 
-    fig.suptitle(f"PPO training progress — {label}", fontsize=14)
+    fig.suptitle(f"PPO training progress: {label}", fontsize=14)
     fig.tight_layout()
     fig.savefig(output_path, dpi=110)
     plt.close(fig)
     return output_path
-
-
-# ── Main ────────────────────────────────────────────────────────────────────
 
 
 @dataclass
@@ -402,6 +390,8 @@ class Args:
     """Learning rate schedule: 'constant' or 'linear' (decays to 0 over training)."""
     n_steps: int = 3600
     """Rollout length per environment (one full simulated hour)."""
+    checkpoint_interval_rollouts: int = 10
+    """Checkpoint cadence in rollouts. With the defaults (n_steps=3600, n_envs=8), 10 rollouts ≈ 288000 env transitions, so a 2M-step run produces ~7 snapshots."""  # noqa: E501
     batch_size: int = 128
     """Minibatch size for PPO updates."""
     n_epochs: int = 10
@@ -423,7 +413,7 @@ class Args:
     w_latency: float = 0.0
     """Reward weight for latency violations. Default 0 to isolate the voltage-control objective."""
     w_switch: float = 0.01
-    """Reward weight for switching cost (penalizes |log2(batch_t) - log2(batch_{t-1})| summed over models). Without this, randomized-scenario runs converge to a near-uniform action distribution and the deterministic eval policy ends up flipping batch sizes on every step. 0.01 is a gentle prior — much smaller than voltage_pen so it acts as a tie-breaker, not a co-equal objective."""  # noqa: E501
+    """Reward weight for switching cost (penalizes |log2(batch_t) - log2(batch_{t-1})| summed over models). Without this, randomized-scenario runs converge to a near-uniform action distribution and the deterministic eval policy ends up flipping batch sizes on every step. 0.01 is a gentle prior: much smaller than voltage_pen so it acts as a tie-breaker, not a co-equal objective."""  # noqa: E501
     w_safe: float = 0.0
     """Small positive reward for staying in the safe voltage range. Each step adds +w_safe * (fraction of bus-phases within [v_min, v_max]). Default 0 (disabled). Recommended: 0.01."""  # noqa: E501
     switch_mode: str = "magnitude"
@@ -459,7 +449,7 @@ class Args:
     log_level: str = "INFO"
     """Logging verbosity."""
     scenario_library: str = ""
-    """Path to a scenario library .pkl built by build_scenario_library.py. When set, episodes are sampled from this library."""  # noqa: E501
+    """Path to a scenario library directory built by build_library.py (containing metadata.json + traces.npz). When set, episodes are sampled from this library."""  # noqa: E501
     ofo_baseline: bool = False
     """Subtract the OFO oracle's per-step voltage penalty from PPO's reward (requires --scenario-library). Disabling gives the raw voltage penalty as reward."""  # noqa: E501
     truncate_episode: bool = True
@@ -486,8 +476,6 @@ def main() -> None:
         logger.error("Unknown system: %s. Available: %s", args.system, list(EXPERIMENTS.keys()))
         sys.exit(1)
 
-    # Load training trace from the canonical fixed path (matches master's
-    # run_ofo.py pattern; the JSON-driven training_trace_params pipeline is gone).
     training_trace = TrainingTrace.ensure(TRAINING_TRACE_PATH)
 
     exp = EXPERIMENTS[args.system](training_trace)
@@ -522,8 +510,6 @@ def main() -> None:
 
     scenario_lib = None
     if args.scenario_library:
-        from openg2g.rl.env import ScenarioLibrary
-
         scenario_lib = ScenarioLibrary(args.scenario_library)
         logger.info(
             "Loaded scenario library with %d scenarios from %s (ofo_baseline=%s, truncate=%s)",
@@ -593,7 +579,6 @@ def main() -> None:
         reward_clip=args.reward_clip,
         switch_mode=args.switch_mode,
         switch_cooldown_tau=args.switch_cooldown_tau,
-        action_mode=args.action_mode,
     )
 
     site_ids = list(all_site_specs.keys())
@@ -604,12 +589,12 @@ def main() -> None:
     from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecNormalize
 
     def _train_and_save(env_factory, label: str, save_name: str) -> None:
-        """Build a (possibly vectorized) env from ``env_factory`` and train one PPO model.
+        """Build a (possibly vectorized) env from `env_factory` and train one PPO model.
 
-        ``env_factory`` is a zero-arg callable returning a fresh ``BatchSizeEnv``
+        `env_factory` is a zero-arg callable returning a fresh `BatchSizeEnv`
         (or subclass). It is invoked once per parallel environment, wrapped with
-        ``Monitor``, and stitched into a vec-env. ``SubprocVecEnv`` is used when
-        ``args.n_envs > 1`` because each rollout needs its own OpenDSS instance
+        `Monitor`, and stitched into a vec-env. `SubprocVecEnv` is used when
+        `args.n_envs > 1` because each rollout needs its own OpenDSS instance
         (OpenDSS holds global state, so multiple envs in one process collide).
         """
 
@@ -679,12 +664,12 @@ def main() -> None:
             "  switch_mode=%s  switch_cooldown_tau=%s  action_mode=%s",
             args.switch_mode,
             args.switch_cooldown_tau,
-            resolve_action_mode(reward_config),
+            args.action_mode,
         )
         logger.info("=" * 60)
 
         checkpoint_cb = CheckpointCallback(
-            save_freq=max(args.n_steps * 10, 1),
+            save_freq=max(args.n_steps * args.checkpoint_interval_rollouts, 1),
             save_path=str(output_dir / "checkpoints" / label),
             name_prefix="ppo",
             save_vecnormalize=args.vec_normalize,
@@ -759,7 +744,7 @@ def main() -> None:
                 if plot_path is not None:
                     logger.info("Wrote training plot to %s", plot_path)
                 else:
-                    logger.warning("No metrics rows in %s — skipping plot", metrics_csv)
+                    logger.warning("No metrics rows in %s: skipping plot", metrics_csv)
             except Exception as e:
                 logger.warning("Plotting failed for '%s': %s", label, e)
 
@@ -791,6 +776,7 @@ def main() -> None:
                 obs_config=obs_config,
                 site_model_mapping=site_model_mapping,
                 reward_config=reward_config,
+                action_mode=args.action_mode,
                 logistic_models=logistic_models,
                 dt_ctrl=DT_CTRL,
                 total_duration_s=args.total_duration_s,
@@ -835,6 +821,7 @@ def main() -> None:
                     obs_config=_obs_config,
                     agent_site_id=_sid,
                     reward_config=reward_config,
+                    action_mode=args.action_mode,
                     logistic_models=logistic_models,
                     dt_ctrl=DT_CTRL,
                     total_duration_s=args.total_duration_s,
@@ -845,14 +832,16 @@ def main() -> None:
 
             _train_and_save(site_env_factory, sid, f"ppo_model_{sid}")
 
-    # For single-site, also save without site suffix for backwards compat
+    # Single-site runs alias the per-site output to the canonical ppo_model.zip
+    # path that the docs + evaluate.py default to.
     if len(site_ids) == 1:
         import shutil
 
-        src = output_dir / f"ppo_model_{site_ids[0]}.zip"
-        dst = output_dir / "ppo_model.zip"
-        shutil.copy2(src, dst)
-        logger.info("Copied to %s", dst)
+        for suffix in (".zip", "_vecnormalize.pkl"):
+            src = output_dir / f"ppo_model_{site_ids[0]}{suffix}"
+            dst = output_dir / f"ppo_model{suffix}"
+            if src.exists():
+                shutil.copy2(src, dst)
 
     logger.info("All done. Models saved to %s", output_dir)
 

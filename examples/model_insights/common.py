@@ -13,7 +13,6 @@ from __future__ import annotations
 import csv
 import logging
 import math
-import sys
 from dataclasses import dataclass, field
 from fractions import Fraction
 from pathlib import Path
@@ -44,7 +43,6 @@ from openg2g.grid.opendss import OpenDSSGrid
 from openg2g.metrics.performance import PerformanceStats, compute_performance_stats
 from openg2g.metrics.voltage import VoltageStats, compute_allbus_voltage_stats
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "offline"))
 from systems import SYSTEMS, tap
 
 logger = logging.getLogger("model_insights")
@@ -314,7 +312,7 @@ SPECS: dict[str, InferenceModelSpec] = {
 }
 
 
-# Data pipeline — per-spec content-addressed cache (see InferenceModelSpec.cache_hash)
+# Data pipeline: per-spec content-addressed cache (see InferenceModelSpec.cache_hash)
 
 SPECS_CACHE_DIR = _PROJECT_ROOT / "data" / "specs"
 TRAINING_TRACE_PATH = _PROJECT_ROOT / "data" / "training_trace.csv"
@@ -558,7 +556,7 @@ def compute_achievable_power_range(
     DC power.
 
     The logistic is fit to `avg_power_watts`, the per-run average power for
-    the full `num_gpus` bench configuration — `model.eval(batch)` already
+    the full `num_gpus` bench configuration: `model.eval(batch)` already
     covers the whole replica, so do NOT multiply by `gpus_per_replica`.
     """
     total_max_w = 0.0
@@ -589,7 +587,7 @@ def compute_matched_peak_replicas(
     budget when GPU counts per replica differ.
 
     Args:
-        spec: The model spec — `feasible_batch_sizes` must already be capped
+        spec: The model spec: `feasible_batch_sizes` must already be capped
             to batches that meet the SLO; pass the output of
             `restrict_spec_by_deadline` if an SLO is in play.
         target_peak_kw: Target peak inference power in kW.
@@ -634,7 +632,7 @@ def deploy(
     """Shorthand for `(ModelDeployment, ReplicaSchedule(initial=...))`.
 
     `initial_batch_size=None` (the default) starts the scenario at the
-    largest feasible batch — i.e., maximum DC power stress, leaving the
+    largest feasible batch: i.e., maximum DC power stress, leaving the
     controller full downward range.
 
     Args:

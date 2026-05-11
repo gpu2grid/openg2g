@@ -6,7 +6,7 @@ from fractions import Fraction
 
 import numpy as np
 import pytest
-from mlenergy_data.modeling import ITLMixtureModel
+from mlenergy.data.modeling import ITLMixtureModel
 
 from openg2g.clock import SimulationClock
 from openg2g.coordinator import SimulationLog

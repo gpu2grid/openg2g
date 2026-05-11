@@ -14,8 +14,8 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-from mlenergy_data.modeling import LogisticModel
-from mlenergy_data.records import LLMRuns
+from mlenergy.data.modeling import LogisticModel
+from mlenergy.data.records import LLMRuns
 from pydantic import BaseModel, ConfigDict
 
 from openg2g.clock import SimulationClock
@@ -39,7 +39,7 @@ def _warn_if_fit_suspicious(
 ) -> None:
     """Emit `logger.warning` when the fit has suspicious parameters or shape.
 
-    Fits are not rejected — the caller can inspect the emitted warnings
+    Fits are not rejected: the caller can inspect the emitted warnings
     and decide whether to exclude batches via `fit_exclude_batch_sizes`
     or drop the spec.
     """

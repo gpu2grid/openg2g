@@ -5,15 +5,15 @@ multi-scenario evaluation pipeline (scenario generation, CSV export, aggregate
 plots).
 
 Usage:
-    python examples/offline/evaluate_controllers.py \
-        --ppo-models outputs/ieee13/ppo_ablation_a4_full_episode/ppo_model.zip \
-                     outputs/ieee13/ppo_ablation_a9_low_ent/ppo_model.zip \
-        --ppo-labels a4_full_ep a9_low_ent \
+    python examples/rl_controller/evaluate.py \
+        --ppo-models outputs/ieee13/ppo_seed1/ppo_model.zip \
+                     outputs/ieee13/ppo_seed2/ppo_model.zip \
+        --ppo-labels seed1 seed2 \
         --n-scenarios 10 --seed-start 500
 
     # Quick test with 3 scenarios
-    python examples/offline/evaluate_controllers.py \
-        --ppo-models outputs/ieee13/ppo_ablation_a5_2M/ppo_model.zip \
+    python examples/rl_controller/evaluate.py \
+        --ppo-models outputs/ieee13/ppo/ppo_model.zip \
         --n-scenarios 3
 """
 
@@ -25,243 +25,34 @@ import math
 from dataclasses import dataclass
 from pathlib import Path
 
-import matplotlib
-
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
 import numpy as np
-from build_scenario_library import run_simulation
+from build_library import run_simulation
+from env import ScenarioLibrary
+from scenarios import (
+    EXPERIMENTS,
+    randomize_scenario,
+)
 
 from openg2g.controller.ofo import LogisticModelStore, OFOConfig
 from openg2g.controller.rule_based import RuleBasedConfig
 from openg2g.datacenter.workloads.inference import InferenceData
 from openg2g.datacenter.workloads.training import TrainingTrace
 
+from plotting import (
+    plot_aggregate,
+    plot_batch_comparison,
+    plot_violation_bars,
+    plot_voltage_comparison,
+)
 from systems import (
     DT_DC,
-    EXPERIMENTS,
     SPECS_CACHE_DIR,
     TRAINING_TRACE_PATH,
     V_MAX,
     V_MIN,
-    materialize_scenario,
-    randomize_scenario,
 )
 
 logger = logging.getLogger("evaluate_controllers")
-
-
-# ── Display helpers ───────────────────────────────────────────────────────────
-
-DISPLAY_NAMES: dict[str, str] = {
-    "baseline_no_tap": "No Control",
-    "rule_based": "Droop Control",
-    "ofo": "OFO Control",
-}
-
-
-def _display_order_key(mode: str) -> int:
-    if mode == "baseline_no_tap":
-        return 0
-    if mode == "rule_based" or mode.startswith("rule_based_s"):
-        return 1
-    if mode.startswith("ppo_"):
-        return 2
-    if mode == "ofo" or mode.startswith("ofo_"):
-        return 3
-    return 99
-
-
-def _sort_modes(modes: list[str]) -> list[str]:
-    return sorted(modes, key=_display_order_key)
-
-
-def _display_name(mode: str) -> str:
-    if mode in DISPLAY_NAMES:
-        return DISPLAY_NAMES[mode]
-    if mode.startswith("rule_based_s"):
-        return "Droop Control"
-    if mode.startswith("ppo_"):
-        return "PPO Control"
-    return mode.replace("_", " ").title()
-
-
-# ── Plotting ──────────────────────────────────────────────────────────────────
-
-
-def plot_voltage_comparison(
-    logs: dict[str, object],
-    save_dir: Path,
-    *,
-    v_min: float = 0.95,
-    v_max: float = 1.05,
-    exclude_buses: tuple[str, ...] = (),
-    scenario_idx: int | None = None,
-    use_display_names: bool = False,
-) -> None:
-    """Side-by-side voltage envelopes for each controller mode."""
-    modes = _sort_modes(list(logs.keys()))
-    n = len(modes)
-    fig, axes = plt.subplots(1, n, figsize=(6 * n, 5), sharey=True)
-    if n == 1:
-        axes = [axes]
-
-    drop = {b.lower() for b in exclude_buses}
-
-    for ax, mode in zip(axes, modes, strict=False):
-        log = logs[mode]
-        time_s = np.array(log.time_s)
-
-        v_min_arr = np.full(len(log.grid_states), np.inf)
-        v_max_arr = np.full(len(log.grid_states), -np.inf)
-
-        for t_idx, gs in enumerate(log.grid_states):
-            for bus in gs.voltages.buses():
-                if bus.lower() in drop:
-                    continue
-                pv = gs.voltages[bus]
-                for v in (pv.a, pv.b, pv.c):
-                    if not math.isnan(v):
-                        v_min_arr[t_idx] = min(v_min_arr[t_idx], v)
-                        v_max_arr[t_idx] = max(v_max_arr[t_idx], v)
-
-        ax.fill_between(time_s, v_min_arr, v_max_arr, alpha=0.3, color="steelblue")
-        ax.plot(time_s, v_min_arr, color="steelblue", linewidth=0.5, label="Vmin")
-        ax.plot(time_s, v_max_arr, color="coral", linewidth=0.5, label="Vmax")
-        ax.axhline(v_min, color="red", linestyle="--", linewidth=1, alpha=0.7)
-        ax.axhline(v_max, color="red", linestyle="--", linewidth=1, alpha=0.7)
-        ax.set_xlabel("Time (s)", fontsize=13)
-        ax.set_title(_display_name(mode) if use_display_names else mode, fontsize=14)
-        ax.legend(fontsize=12)
-        ax.tick_params(labelsize=12)
-        ax.grid(True, alpha=0.2)
-
-    axes[0].set_ylabel("Voltage (pu)", fontsize=13)
-    fig.suptitle("Voltage Envelope Comparison", fontsize=16, fontweight="bold")
-    fig.tight_layout()
-    stem = f"scenario_{scenario_idx:03d}_voltage_comparison" if scenario_idx is not None else "voltage_comparison"
-    fig.savefig(save_dir / f"{stem}.png", dpi=150, bbox_inches="tight")
-    plt.close(fig)
-    logger.info("Saved %s.png", stem)
-
-
-def plot_violation_bars(
-    results: dict[str, dict],
-    save_dir: Path,
-    *,
-    scenario_idx: int | None = None,
-    use_display_names: bool = False,
-) -> None:
-    """Four-panel bar chart for a single scenario:
-    violation time, integral violation, mean throughput, batch size changes.
-    """
-    modes = _sort_modes(list(results.keys()))
-    if not modes:
-        return
-
-    cmap = plt.get_cmap("tab10")
-    colors = [cmap(i % 10) for i in range(len(modes))]
-
-    viol_s = [float(results[m].get("violation_time_s", 0.0)) for m in modes]
-    integ = [float(results[m].get("integral", 0.0)) for m in modes]
-    tput = [float(results[m].get("mean_throughput_toks_s", 0.0)) for m in modes]
-    batch_chg = [float(results[m].get("batch_changes", 0.0)) for m in modes]
-    labels = [_display_name(m) if use_display_names else m for m in modes]
-
-    fig, axes = plt.subplots(1, 4, figsize=(max(18, 2.0 * len(modes) + 12), 6))
-    ax_v, ax_i, ax_t, ax_b = axes
-
-    x = np.arange(len(modes))
-    for ax, vals, ylabel, title, fmt in [
-        (ax_v, viol_s, "Violation time (s)", "Violation time", "{:.0f}"),
-        (ax_i, integ, "Integral violation (pu·s)", "Integral violation", "{:.2f}"),
-        (ax_t, tput, "Throughput (tok/s)", "Mean throughput", "{:.2e}"),
-        (ax_b, batch_chg, "Batch size changes", "Batch size changes", "{:.0f}"),
-    ]:
-        ax.bar(x, vals, color=colors, alpha=0.88, edgecolor="black", linewidth=0.5)
-        ax.set_xticks(x)
-        ax.set_xticklabels(labels, rotation=35, ha="right", fontsize=12)
-        ax.set_ylabel(ylabel, fontsize=13)
-        ax.set_title(title, fontsize=14)
-        ax.tick_params(axis="y", labelsize=12)
-        ax.grid(axis="y", alpha=0.3)
-        for xi, val in zip(x, vals, strict=False):
-            ax.text(xi, val, fmt.format(val), ha="center", va="bottom", fontsize=10)
-
-    fig.suptitle("Per-scenario controller metrics", fontsize=16, fontweight="bold")
-    fig.tight_layout()
-    stem = f"scenario_{scenario_idx:03d}_performance_summary" if scenario_idx is not None else "violation_bars"
-    fig.savefig(save_dir / f"{stem}.png", dpi=150, bbox_inches="tight")
-    plt.close(fig)
-    logger.info("Saved %s.png", stem)
-
-
-def plot_batch_comparison(
-    logs: dict[str, object],
-    save_dir: Path,
-    *,
-    scenario_idx: int | None = None,
-    use_display_names: bool = False,
-) -> None:
-    """Batch size over time for each controller mode, one subplot per (site, model) pair."""
-    modes = _sort_modes(list(logs.keys()))
-    if not modes:
-        logger.info("plot_batch_comparison: no controllers to plot")
-        return
-
-    site_models: list[tuple[str, str]] = []
-    for log in logs.values():
-        for site_id, states in log.dc_states_by_site.items():
-            if not states:
-                continue
-            for m in states[0].batch_size_by_model:
-                pair = (site_id, m)
-                if pair not in site_models:
-                    site_models.append(pair)
-        break
-
-    n_rows = len(site_models)
-    cmap = plt.get_cmap("tab10")
-    fig, axes = plt.subplots(
-        n_rows,
-        1,
-        figsize=(13, 4 * n_rows),
-        sharex=True,
-        squeeze=False,
-    )
-
-    for row, (site_id, model_label) in enumerate(site_models):
-        ax = axes[row][0]
-        for i, mode in enumerate(modes):
-            log = logs[mode]
-            site_states = log.dc_states_by_site.get(site_id, [])
-            times = [s.time_s for s in site_states]
-            batches = [s.batch_size_by_model.get(model_label, 0) for s in site_states]
-            ax.plot(
-                times,
-                batches,
-                color=cmap(i % 10),
-                linewidth=1.5,
-                alpha=0.85,
-                label=_display_name(mode) if use_display_names else mode,
-            )
-        ax.set_ylabel("Batch Size", fontsize=13)
-        title = f"{model_label} @ {site_id}" if len(log.dc_states_by_site) > 1 else model_label
-        ax.set_title(title, fontsize=14)
-        ax.legend(fontsize=12, loc="upper right")
-        ax.tick_params(labelsize=12)
-        ax.grid(True, alpha=0.3)
-
-    axes[-1][0].set_xlabel("Time (s)", fontsize=13)
-    fig.suptitle("Batch Size Comparison by Model", fontsize=16, fontweight="bold")
-    fig.tight_layout(rect=[0, 0, 1, 0.95])
-    stem = f"scenario_{scenario_idx:03d}_batch_size_comparison" if scenario_idx is not None else "batch_size_comparison"
-    fig.savefig(save_dir / f"{stem}.png", dpi=150, bbox_inches="tight")
-    plt.close(fig)
-    logger.info("Saved %s.png", stem)
-
-
-# ── Metrics helpers ───────────────────────────────────────────────────────────
 
 
 def count_batch_changes(log) -> int:
@@ -357,9 +148,6 @@ def extract_perf_metrics(log, itl_deadlines: dict[str, float] | None = None) -> 
         "batch_changes": count_batch_changes(log),
         "itl_violation_rate": itl_violation_rate,
     }
-
-
-# ── Scenario generation ───────────────────────────────────────────────────────
 
 
 def generate_test_scenarios(
@@ -466,7 +254,7 @@ def generate_test_scenarios(
     )
     if len(accepted) < n_scenarios:
         logger.warning(
-            "Only accepted %d/%d scenarios — consider lowering min_recovery_frac or expanding seed range",
+            "Only accepted %d/%d scenarios: consider lowering min_recovery_frac or expanding seed range",
             len(accepted),
             n_scenarios,
         )
@@ -476,36 +264,31 @@ def generate_test_scenarios(
 def load_scenarios_from_library(
     library_path: str,
     *,
-    exp: dict,
     n_scenarios: int,
+    training_trace: TrainingTrace,
 ) -> list[dict]:
-    """Load pre-screened scenarios from a ScenarioLibrary pickle.
+    """Load pre-screened scenarios from a `ScenarioLibrary` directory.
 
-    Each record carries its resolved ``dc_sites`` / ``pv_systems`` / ``tvl``
-    directly, so loading is a pure pickle read — no rng replay, no
-    distribution mismatch when records from different build-time ranges are
-    mixed in one library.
+    Replays `randomize_scenario(seed)` for each record (deterministic, since
+    the RNG is seeded) to rebuild the per-episode dict. `training_trace` is
+    needed because libraries built with `--use-training-overlay` reference
+    a TrainingTrace at materialization time; for libraries without overlay
+    it can be `None`.
     """
-    from openg2g.rl.env import ScenarioLibrary
-
-    lib = ScenarioLibrary(library_path)
-    training_base = exp.get("training_base")
+    lib = ScenarioLibrary(library_path, training_trace=training_trace)
 
     logger.info("Loaded library with %d records from %s", len(lib), library_path)
 
     n_take = min(n_scenarios, len(lib))
     if n_take < n_scenarios:
         logger.warning(
-            "Library has only %d scenarios — capping n_scenarios from %d to %d",
+            "Library has only %d scenarios; capping n_scenarios from %d to %d",
             len(lib),
             n_scenarios,
             n_take,
         )
 
-    return [materialize_scenario(rec, training_base=training_base) for rec in lib.scenarios[:n_take]]
-
-
-# ── Evaluation ────────────────────────────────────────────────────────────────
+    return [lib.materialize(rec) for rec in lib.scenarios[:n_take]]
 
 
 def run_scenario(
@@ -522,7 +305,6 @@ def run_scenario(
     obs_mode: str = "full-voltage",
     ofo_variants: list[tuple[str, OFOConfig]] | None = None,
     include_rule_based: bool = False,
-    rule_based_config: RuleBasedConfig | None = None,
     rule_step_sizes: tuple[float, ...] = (10.0,),
     rule_zone_local: bool = False,
     no_per_scenario_plots: bool = False,
@@ -598,9 +380,7 @@ def run_scenario(
     if include_rule_based:
         for step_size in rule_step_sizes:
             label = "rule_based" if len(rule_step_sizes) == 1 else f"rule_based_s{step_size:g}"
-            rb_config = rule_based_config or RuleBasedConfig(v_min=V_MIN, v_max=V_MAX, step_size=step_size)
-            if rule_based_config is not None:
-                rb_config = rule_based_config
+            rb_config = RuleBasedConfig(v_min=V_MIN, v_max=V_MAX, step_size=step_size)
             vstats, log = run_simulation(
                 label,
                 sys=sys_cfg,
@@ -640,8 +420,6 @@ def run_scenario(
                 perf["mean_power_kw"],
                 perf["batch_changes"],
             )
-            if rule_based_config is not None:
-                break
 
     for variant_label, variant_cfg in ofo_variants:
         vstats, log = run_simulation(
@@ -740,212 +518,6 @@ def run_scenario(
     return results
 
 
-def plot_aggregate(
-    all_results: list[dict],
-    scenario_params: list[dict],
-    save_dir: Path,
-    modes: list[str],
-    *,
-    system: str = "",
-    use_display_names: bool = False,
-) -> None:
-    """2×3 aggregate bar chart (means) + per-scenario breakdown + normalized integral + CDF + scatter."""
-    n_sc = len(all_results)
-    prefix = f"{system}_" if system else ""
-
-    colors = ["#999999", "#4CAF50", "#2196F3", "#FF9800", "#E91E63", "#9C27B0", "#00BCD4", "#795548", "#607D8B"]
-
-    display_labels = [_display_name(m) if use_display_names else m for m in modes]
-
-    metrics = [
-        ("violation_time_s", "Mean Violation Time (s)"),
-        ("integral", "Mean Integral Violation (pu·s)"),
-        ("batch_changes", "Mean Batch Size Changes"),
-        ("mean_throughput_toks_s", "Mean Throughput (tok/s)"),
-        ("mean_power_kw", "Mean Data Center Power (kW)"),
-        ("itl_violation_rate", "Mean ITL Violation Rate"),
-    ]
-
-    fig, axes = plt.subplots(2, 3, figsize=(max(15, len(modes) * 3.0), 10))
-    x = np.arange(len(modes))
-
-    for ax, (metric, title) in zip(axes.flat, metrics, strict=False):
-        means = []
-        for mode in modes:
-            vals = [r[mode].get(metric, 0) for r in all_results if mode in r]
-            means.append(np.mean(vals) if vals else 0.0)
-
-        ax.bar(x, means, color=colors[: len(modes)], alpha=0.85)
-        ax.set_xticks(x)
-        ax.set_xticklabels(display_labels, rotation=30, ha="right", fontsize=12)
-        ax.set_ylabel(title, fontsize=13)
-        ax.set_title(title, fontsize=14, fontweight="bold")
-        ax.tick_params(axis="y", labelsize=12)
-        ax.grid(axis="y", alpha=0.3)
-
-    fig.suptitle(f"Aggregate Controller Metrics — {n_sc} Scenarios", fontsize=16, fontweight="bold")
-    fig.tight_layout(rect=[0, 0, 1, 0.95])
-    fname = f"{prefix}controller_evaluation.png"
-    fig.savefig(save_dir / fname, dpi=150, bbox_inches="tight")
-    plt.close(fig)
-    logger.info("Saved %s", fname)
-
-    # ── Per-scenario integral (absolute) ──
-    fig, ax = plt.subplots(figsize=(max(10, n_sc * 0.8), 6))
-    x = np.arange(n_sc)
-    width = 0.8 / len(modes)
-
-    for i, mode in enumerate(modes):
-        vals = [r[mode]["integral"] if mode in r else 0 for r in all_results]
-        ax.bar(
-            x + i * width,
-            vals,
-            width,
-            label=_display_name(mode) if use_display_names else mode,
-            color=colors[i % len(colors)],
-            alpha=0.85,
-        )
-
-    ax.set_xlabel("Scenario", fontsize=13)
-    ax.set_ylabel("Integral Violation (pu·s)", fontsize=13)
-    ax.set_title("Per-Scenario Integral Violation", fontsize=14, fontweight="bold")
-    ax.set_xticks(x + width * (len(modes) - 1) / 2)
-    ax.set_xticklabels([f"S{i}" for i in range(n_sc)], fontsize=10)
-    ax.legend(fontsize=10, loc="upper right")
-    ax.tick_params(axis="y", labelsize=12)
-    ax.grid(axis="y", alpha=0.3)
-    fig.tight_layout()
-    fname = f"{prefix}scenario_summary.png"
-    fig.savefig(save_dir / fname, dpi=150, bbox_inches="tight")
-    plt.close(fig)
-    logger.info("Saved %s", fname)
-
-    # ── Per-scenario normalized integral (relative to baseline_no_tap) ──
-    baseline_key = "baseline_no_tap"
-    if baseline_key in modes:
-        fig, ax = plt.subplots(figsize=(max(10, n_sc * 0.8), 6))
-        x = np.arange(n_sc)
-        non_baseline = [m for m in modes if m != baseline_key]
-        width = 0.8 / len(non_baseline)
-
-        for i, mode in enumerate(non_baseline):
-            norm_vals = []
-            for r in all_results:
-                base = r.get(baseline_key, {}).get("integral", 0.0)
-                val = r.get(mode, {}).get("integral", 0.0)
-                norm_vals.append(val / base if base > 0 else 0.0)
-            ax.bar(
-                x + i * width,
-                norm_vals,
-                width,
-                label=_display_name(mode) if use_display_names else mode,
-                color=colors[(modes.index(mode)) % len(colors)],
-                alpha=0.85,
-            )
-
-        ax.axhline(1.0, color="black", linestyle="--", linewidth=1, alpha=0.6, label="Baseline")
-        ax.set_xlabel("Scenario", fontsize=13)
-        ax.set_ylabel("Normalized Integral (relative to No Control)", fontsize=13)
-        ax.set_title("Per-Scenario Normalized Integral Violation", fontsize=14, fontweight="bold")
-        ax.set_xticks(x + width * (len(non_baseline) - 1) / 2)
-        ax.set_xticklabels([f"S{i}" for i in range(n_sc)], fontsize=10)
-        ax.legend(fontsize=10, loc="upper right")
-        ax.tick_params(axis="y", labelsize=12)
-        ax.grid(axis="y", alpha=0.3)
-        fig.tight_layout()
-        fname = f"{prefix}scenario_normalized_integral.png"
-        fig.savefig(save_dir / fname, dpi=150, bbox_inches="tight")
-        plt.close(fig)
-        logger.info("Saved %s", fname)
-
-    # ── CDF of integral violation ──
-    fig, ax = plt.subplots(figsize=(8, 6))
-    for i, mode in enumerate(modes):
-        vals = sorted([r[mode].get("integral", 0.0) for r in all_results if mode in r])
-        if not vals:
-            continue
-        cdf = np.arange(1, len(vals) + 1) / len(vals)
-        ax.plot(
-            vals,
-            cdf,
-            color=colors[i % len(colors)],
-            linewidth=2,
-            label=_display_name(mode) if use_display_names else mode,
-        )
-    ax.set_xlabel("Integral Violation (pu·s)", fontsize=13)
-    ax.set_ylabel("Cumulative Fraction", fontsize=13)
-    ax.set_title("CDF of Integral Violation Across Scenarios", fontsize=14, fontweight="bold")
-    ax.legend(fontsize=11, loc="lower right")
-    ax.tick_params(labelsize=12)
-    ax.grid(True, alpha=0.3)
-    fig.tight_layout()
-    fname = f"{prefix}cdf_integral.png"
-    fig.savefig(save_dir / fname, dpi=150, bbox_inches="tight")
-    plt.close(fig)
-    logger.info("Saved %s", fname)
-
-    # ── Throughput vs. voltage violation scatter ──
-    scatter_data = {}
-    for _i, mode in enumerate(modes):
-        integrals = [r[mode].get("integral", 0.0) for r in all_results if mode in r]
-        tputs = [r[mode].get("mean_throughput_toks_s", 0.0) for r in all_results if mode in r]
-        scatter_data[mode] = (integrals, tputs)
-
-    n_modes = len(modes)
-    ncols = 2
-    nrows = math.ceil(n_modes / ncols)
-    fig, axes = plt.subplots(nrows, ncols, figsize=(12, 5 * nrows), sharex=True, sharey=True, squeeze=False)
-
-    for idx, mode in enumerate(modes):
-        ax = axes[idx // ncols][idx % ncols]
-        integrals, tputs = scatter_data[mode]
-        label = _display_name(mode) if use_display_names else mode
-
-        for other_mode, (oi, ot) in scatter_data.items():
-            if other_mode != mode:
-                ax.scatter(oi, ot, color="lightgrey", s=40, alpha=0.6, edgecolors="none", zorder=1)
-
-        ax.scatter(
-            integrals,
-            tputs,
-            color=colors[idx % len(colors)],
-            s=80,
-            alpha=0.9,
-            edgecolors="black",
-            linewidths=0.5,
-            zorder=2,
-        )
-        ax.scatter(
-            np.mean(integrals),
-            np.mean(tputs),
-            color=colors[idx % len(colors)],
-            s=220,
-            marker="*",
-            edgecolors="black",
-            linewidths=0.8,
-            zorder=3,
-        )
-
-        ax.set_title(label, fontsize=14, fontweight="bold")
-        ax.set_xlabel("Integral Violation (pu·s)", fontsize=12)
-        ax.set_ylabel("Mean Throughput (tok/s)", fontsize=12)
-        ax.tick_params(labelsize=11)
-        ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"{v:.2e}"))
-        ax.grid(True, alpha=0.3)
-
-    for idx in range(n_modes, nrows * ncols):
-        axes[idx // ncols][idx % ncols].set_visible(False)
-
-    fig.suptitle("Throughput vs. Voltage Violation by Controller", fontsize=16, fontweight="bold")
-    fig.tight_layout(rect=[0, 0, 1, 0.95])
-    fname = f"{prefix}throughput_vs_violation.png"
-    fig.savefig(save_dir / fname, dpi=150, bbox_inches="tight")
-    plt.close(fig)
-    logger.info("Saved %s", fname)
-
-    logger.info("Saved aggregate figures to %s", save_dir)
-
-
 def main(
     *,
     ppo_models: tuple[str, ...] = (),
@@ -986,7 +558,7 @@ def main(
     ppo_models_resolved = [str(Path(p).resolve()) for p in ppo_models]
 
     if not ppo_labels:
-        ppo_labels = tuple(Path(p).parent.name.replace("ppo_ablation_", "") for p in ppo_models)
+        ppo_labels = tuple(str(i) for i in range(len(ppo_models)))
 
     if system not in EXPERIMENTS:
         raise ValueError(f"Unknown system {system!r}. Valid: {sorted(EXPERIMENTS)}")
@@ -1085,8 +657,8 @@ def main(
     if scenario_library:
         test_scenarios = load_scenarios_from_library(
             scenario_library,
-            exp=exp,
             n_scenarios=n_scenarios,
+            training_trace=training_trace,
         )
     else:
         test_scenarios = generate_test_scenarios(
@@ -1291,7 +863,7 @@ if __name__ == "__main__":
         randomize_ramps: bool = True
         """Synthesize per-episode inference ramps. Set --no-randomize-ramps for ieee34."""
         scenario_library: str = ""
-        """Path to a pre-screened scenario library .pkl (from build_scenario_library.py)."""
+        """Path to a pre-screened scenario library directory (from build_library.py)."""
         use_display_names: bool = False
         """Use human-readable display names in all plots."""
         log_level: str = "INFO"

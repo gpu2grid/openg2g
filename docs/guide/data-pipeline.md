@@ -87,7 +87,7 @@ For each model and batch size, it:
 
 1. Extracts power timelines from benchmark runs
 2. Resamples to a median-duration grid
-3. Fits [`ITLMixtureModel`][mlenergy_data.modeling.ITLMixtureModel] distributions per batch size
+3. Fits [`ITLMixtureModel`][mlenergy.data.modeling.ITLMixtureModel] distributions per batch size
 
 ```
 ML.ENERGY Benchmark Dataset                 mlenergy-data
@@ -129,20 +129,20 @@ $$p(x) = \frac{P_{\max}}{1 + \exp(-k_p(x - x_{0,p}))} + p_0, \quad x \triangleq 
 
 where $P_{\max}$ is the saturation magnitude, $k_p$ controls transition sharpness, $x_{0,p}$ is the characteristic batch size threshold, and $p_0$ is an offset term. Latency and throughput use the same functional form with their own parameters.
 
-OpenG2G uses [`LogisticModel`][mlenergy_data.modeling.LogisticModel] from [`mlenergy-data`](https://ml.energy/data) at both stages:
+OpenG2G uses [`LogisticModel`][mlenergy.data.modeling.LogisticModel] from [`mlenergy-data`](https://ml.energy/data) at both stages:
 
-- **Generation**: [`LogisticModel.fit(x, y)`][mlenergy_data.modeling.logistic.LogisticModel.fit] fits the curve to benchmark data
-- **Runtime**: [`LogisticModel.eval(batch)`][mlenergy_data.modeling.logistic.LogisticModel.eval] evaluates the curve, and [`LogisticModel.deriv_wrt_x(x)`][mlenergy_data.modeling.logistic.LogisticModel.deriv_wrt_x] computes gradients for the OFO controller
+- **Generation**: [`LogisticModel.fit(x, y)`][mlenergy.data.modeling.logistic.LogisticModel.fit] fits the curve to benchmark data
+- **Runtime**: [`LogisticModel.eval(batch)`][mlenergy.data.modeling.logistic.LogisticModel.eval] evaluates the curve, and [`LogisticModel.deriv_wrt_x(x)`][mlenergy.data.modeling.logistic.LogisticModel.deriv_wrt_x] computes gradients for the OFO controller
 
 ## ITL Mixture Model
 
 Historical ITL measurements exhibit heavy-tailed behavior.
 The generation step captures this using a weighted mixture of two lognormal distributions per batch size.
 
-OpenG2G uses [`ITLMixtureModel`][mlenergy_data.modeling.ITLMixtureModel] from [`mlenergy-data`](https://ml.energy/data) at both stages:
+OpenG2G uses [`ITLMixtureModel`][mlenergy.data.modeling.ITLMixtureModel] from [`mlenergy-data`](https://ml.energy/data) at both stages:
 
-- **Generation**: [`ITLMixtureModel.fit(samples)`][mlenergy_data.modeling.latency.ITLMixtureModel.fit] fits the mixture to raw ITL samples
-- **Runtime**: [`ITLMixtureModel.sample_avg(n_replicas, rng)`][mlenergy_data.modeling.latency.ITLMixtureModel.sample_avg] draws average latency across replicas
+- **Generation**: [`ITLMixtureModel.fit(samples)`][mlenergy.data.modeling.latency.ITLMixtureModel.fit] fits the mixture to raw ITL samples
+- **Runtime**: [`ITLMixtureModel.sample_avg(n_replicas, rng)`][mlenergy.data.modeling.latency.ITLMixtureModel.sample_avg] draws average latency across replicas
 
 ## Training Trace Generation
 
@@ -164,5 +164,5 @@ To use the dataset:
 
 At simulation time, the generated artifacts are consumed by two components:
 
-- **[`OfflineDatacenter`][openg2g.datacenter.offline.OfflineDatacenter]**: Uses [`InferenceData`][openg2g.datacenter.workloads.inference.InferenceData] to replay periodic per-GPU power templates. Latency fits ([`ITLMixtureModel`][mlenergy_data.modeling.ITLMixtureModel]) are sampled at each control interval.
+- **[`OfflineDatacenter`][openg2g.datacenter.offline.OfflineDatacenter]**: Uses [`InferenceData`][openg2g.datacenter.workloads.inference.InferenceData] to replay periodic per-GPU power templates. Latency fits ([`ITLMixtureModel`][mlenergy.data.modeling.ITLMixtureModel]) are sampled at each control interval.
 - **[`OFOBatchSizeController`][openg2g.controller.ofo.OFOBatchSizeController]**: Uses [`LogisticModelStore`][openg2g.controller.ofo.LogisticModelStore] for logistic curve evaluation. Calls `eval()` and `deriv_wrt_x()` at each control step to compute gradients.
