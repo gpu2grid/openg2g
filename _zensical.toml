@@ -117,3 +117,10 @@ show_root_full_path = true
 members_order = "source"
 relative_crossrefs = true
 filters = ["!^_"]
+
+# mkdocstrings cross-references like [`Coordinator`][openg2g.coordinator.Coordinator]
+# are resolved by the mkdocs-autorefs plugin after Zensical's reference parser has
+# already run. Disable Zensical's pre-autorefs warning to avoid flagging refs as
+# "unresolved" that autorefs then rewrites correctly in the final HTML.
+[project.validation]
+unresolved_references = false

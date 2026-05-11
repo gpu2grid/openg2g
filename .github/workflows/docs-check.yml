@@ -1,0 +1,33 @@
+name: Docs build check
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - "docs/**"
+      - "_zensical.toml"
+      - "openg2g/**"
+      - "scripts/gen_api_docs.py"
+      - "scripts/docs.sh"
+      - "uv.lock"
+      - ".github/workflows/docs-check.yml"
+  pull_request:
+    paths:
+      - "docs/**"
+      - "_zensical.toml"
+      - "openg2g/**"
+      - "scripts/gen_api_docs.py"
+      - "scripts/docs.sh"
+      - "uv.lock"
+      - ".github/workflows/docs-check.yml"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - run: uv sync --only-group docs
+      - run: uv run --no-sync bash scripts/docs.sh build
