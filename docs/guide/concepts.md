@@ -1,6 +1,6 @@
 # Concepts and Background
 
-This page introduces the problem space that OpenG2G addresses and the key concepts behind the library. For the original research motivation, see the [GPU-to-Grid paper](https://arxiv.org/abs/2602.05116).
+This page introduces the problem space that OpenG2G addresses and the key concepts behind the library. For the platform's full design and motivation, see the [OpenG2G paper](https://arxiv.org/abs/2605.05519).
 
 ## AI Datacenters and Grids
 
