@@ -1,7 +1,8 @@
 <div align="center">
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/logo_dark.png">
-  <img alt="OpenG2G" src="docs/assets/logo_light.png" width="400">
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/gpu2grid/openg2g/master/docs/assets/logo_dark.png">
+  <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/gpu2grid/openg2g/master/docs/assets/logo_light.png">
+  <img alt="OpenG2G" width="400" src="https://raw.githubusercontent.com/gpu2grid/openg2g/master/docs/assets/logo_light.png">
 </picture>
 </div>
 
@@ -122,7 +123,7 @@ See [`examples/`](examples/) for complete simulation scripts (offline trace-repl
 
 ## Running Example Simulations
 
-The first run downloads benchmark data from the [ML.ENERGY Benchmark v3 dataset](https://huggingface.co/datasets/ml-energy/benchmark-v3) (gated -- [request access](https://huggingface.co/datasets/ml-energy/benchmark-v3) first) and generates simulation artifacts. Subsequent runs load from cache.
+The first run downloads benchmark data from the [ML.ENERGY Benchmark v3 dataset](https://huggingface.co/datasets/ml-energy/benchmark-v3) (gated; [request access](https://huggingface.co/datasets/ml-energy/benchmark-v3) first) and generates simulation artifacts. Subsequent runs load from cache.
 
 ```bash
 export HF_TOKEN=hf_xxxxxxxxxxx  # needed for first run only
